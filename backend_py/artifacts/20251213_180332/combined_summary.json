@@ -1,0 +1,125 @@
+{
+  "timestamp": "20251213_180332",
+  "input": {
+    "tours_file": "..\\data\\sample_tours.csv",
+    "drivers_file": "..\\data\\sample_drivers.csv",
+    "tours_count": 15,
+    "drivers_count": 4
+  },
+  "scenarios": {
+    "A": {
+      "scenario": "Run A",
+      "timestamp": "2025-12-13T18:03:32.945008",
+      "status": "HARD_OK",
+      "config": {
+        "time_limit_seconds": 10.0,
+        "seed": 42,
+        "num_workers": 4,
+        "fallback_enabled": true
+      },
+      "timing": {
+        "solve_time_seconds": 0.01,
+        "time_limit_hit": false
+      },
+      "input": {
+        "tours_total": 15,
+        "drivers_total": 4,
+        "coverable_tours": 15
+      },
+      "output": {
+        "tours_assigned": 15,
+        "tours_unassigned": 0,
+        "coverage_rate": 1.0,
+        "drivers_used": 2,
+        "blocks_triple": 3,
+        "blocks_double": 3,
+        "blocks_single": 0,
+        "validation_ok": true
+      },
+      "fallback_triggered": false,
+      "used_hard_coverage": true,
+      "hints": {
+        "provided": 6,
+        "used": 6,
+        "effectiveness": 1.0
+      },
+      "unassigned_reasons": {}
+    },
+    "B": {
+      "scenario": "Run B",
+      "timestamp": "2025-12-13T18:03:32.979249",
+      "status": "HARD_OK",
+      "config": {
+        "time_limit_seconds": 120.0,
+        "seed": 42,
+        "num_workers": 4,
+        "fallback_enabled": true
+      },
+      "timing": {
+        "solve_time_seconds": 0.01,
+        "time_limit_hit": false
+      },
+      "input": {
+        "tours_total": 15,
+        "drivers_total": 4,
+        "coverable_tours": 15
+      },
+      "output": {
+        "tours_assigned": 15,
+        "tours_unassigned": 0,
+        "coverage_rate": 1.0,
+        "drivers_used": 2,
+        "blocks_triple": 3,
+        "blocks_double": 3,
+        "blocks_single": 0,
+        "validation_ok": true
+      },
+      "fallback_triggered": false,
+      "used_hard_coverage": true,
+      "hints": {
+        "provided": 6,
+        "used": 6,
+        "effectiveness": 1.0
+      },
+      "unassigned_reasons": {}
+    },
+    "C": {
+      "scenario": "Run C",
+      "timestamp": "2025-12-13T18:03:33.011885",
+      "status": "HARD_OK",
+      "config": {
+        "time_limit_seconds": 120.0,
+        "seed": 42,
+        "num_workers": 8,
+        "fallback_enabled": true
+      },
+      "timing": {
+        "solve_time_seconds": 0.01,
+        "time_limit_hit": false
+      },
+      "input": {
+        "tours_total": 15,
+        "drivers_total": 4,
+        "coverable_tours": 15
+      },
+      "output": {
+        "tours_assigned": 15,
+        "tours_unassigned": 0,
+        "coverage_rate": 1.0,
+        "drivers_used": 2,
+        "blocks_triple": 3,
+        "blocks_double": 3,
+        "blocks_single": 0,
+        "validation_ok": true
+      },
+      "fallback_triggered": false,
+      "used_hard_coverage": true,
+      "hints": {
+        "provided": 6,
+        "used": 6,
+        "effectiveness": 1.0
+      },
+      "unassigned_reasons": {}
+    }
+  }
+}

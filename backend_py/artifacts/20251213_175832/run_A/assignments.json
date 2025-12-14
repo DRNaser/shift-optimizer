@@ -1,0 +1,122 @@
+[
+  {
+    "driver_id": "D-001",
+    "day": "Mon",
+    "block_id": "B-aaf82639",
+    "block_type": "3er",
+    "tours": [
+      {
+        "id": "T-001",
+        "time": "06:00-10:00"
+      },
+      {
+        "id": "T-002",
+        "time": "10:30-14:30"
+      },
+      {
+        "id": "T-003",
+        "time": "15:00-19:00"
+      }
+    ],
+    "total_hours": 12.0,
+    "span_hours": 13.0
+  },
+  {
+    "driver_id": "D-002",
+    "day": "Tue",
+    "block_id": "B-6eb521b2",
+    "block_type": "3er",
+    "tours": [
+      {
+        "id": "T-004",
+        "time": "07:00-11:00"
+      },
+      {
+        "id": "T-005",
+        "time": "11:30-15:30"
+      },
+      {
+        "id": "T-006",
+        "time": "16:00-20:00"
+      }
+    ],
+    "total_hours": 12.0,
+    "span_hours": 13.0
+  },
+  {
+    "driver_id": "D-001",
+    "day": "Wed",
+    "block_id": "B-ca8ceaac",
+    "block_type": "2er",
+    "tours": [
+      {
+        "id": "T-007",
+        "time": "06:30-10:30"
+      },
+      {
+        "id": "T-008",
+        "time": "11:00-15:00"
+      }
+    ],
+    "total_hours": 8.0,
+    "span_hours": 8.5
+  },
+  {
+    "driver_id": "D-002",
+    "day": "Thu",
+    "block_id": "B-e4aa8d36",
+    "block_type": "3er",
+    "tours": [
+      {
+        "id": "T-009",
+        "time": "08:00-12:00"
+      },
+      {
+        "id": "T-010",
+        "time": "12:30-16:30"
+      },
+      {
+        "id": "T-011",
+        "time": "17:00-21:00"
+      }
+    ],
+    "total_hours": 12.0,
+    "span_hours": 13.0
+  },
+  {
+    "driver_id": "D-001",
+    "day": "Fri",
+    "block_id": "B-f0e81f8c",
+    "block_type": "2er",
+    "tours": [
+      {
+        "id": "T-012",
+        "time": "06:00-10:00"
+      },
+      {
+        "id": "T-013",
+        "time": "10:30-14:30"
+      }
+    ],
+    "total_hours": 8.0,
+    "span_hours": 8.5
+  },
+  {
+    "driver_id": "D-001",
+    "day": "Sat",
+    "block_id": "B-64fb2c9b",
+    "block_type": "2er",
+    "tours": [
+      {
+        "id": "T-014",
+        "time": "08:00-12:00"
+      },
+      {
+        "id": "T-015",
+        "time": "12:30-16:30"
+      }
+    ],
+    "total_hours": 8.0,
+    "span_hours": 8.5
+  }
+]

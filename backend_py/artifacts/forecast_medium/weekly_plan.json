@@ -1,0 +1,195 @@
+{
+  "status": "SOFT_FALLBACK_HOURS",
+  "drivers": [
+    {
+      "id": "V001",
+      "hours_week": 40.0,
+      "days_worked": 4,
+      "blocks_1er": 0,
+      "blocks_2er": 2,
+      "blocks_3er": 2,
+      "schedule": {
+        "Mon": [
+          {
+            "block_id": "B3-T001-T002-T003",
+            "tours": [
+              "T001",
+              "T002",
+              "T003"
+            ],
+            "start": "05:00",
+            "end": "18:00",
+            "hours": 12.0
+          }
+        ],
+        "Tue": [
+          {
+            "block_id": "B2-T009-T010",
+            "tours": [
+              "T009",
+              "T010"
+            ],
+            "start": "06:00",
+            "end": "14:30",
+            "hours": 8.0
+          }
+        ],
+        "Fri": [
+          {
+            "block_id": "B3-T021-T022-T023",
+            "tours": [
+              "T021",
+              "T022",
+              "T023"
+            ],
+            "start": "06:00",
+            "end": "19:00",
+            "hours": 12.0
+          }
+        ],
+        "Sat": [
+          {
+            "block_id": "B2-T026-T027",
+            "tours": [
+              "T026",
+              "T027"
+            ],
+            "start": "08:00",
+            "end": "16:30",
+            "hours": 8.0
+          }
+        ]
+      }
+    },
+    {
+      "id": "V002",
+      "hours_week": 40.0,
+      "days_worked": 4,
+      "blocks_1er": 0,
+      "blocks_2er": 2,
+      "blocks_3er": 2,
+      "schedule": {
+        "Tue": [
+          {
+            "block_id": "B3-T006-T007-T008",
+            "tours": [
+              "T006",
+              "T007",
+              "T008"
+            ],
+            "start": "05:30",
+            "end": "18:30",
+            "hours": 12.0
+          }
+        ],
+        "Wed": [
+          {
+            "block_id": "B3-T011-T012-T013",
+            "tours": [
+              "T011",
+              "T012",
+              "T013"
+            ],
+            "start": "06:00",
+            "end": "19:00",
+            "hours": 12.0
+          }
+        ],
+        "Thu": [
+          {
+            "block_id": "B2-T019-T020",
+            "tours": [
+              "T019",
+              "T020"
+            ],
+            "start": "06:00",
+            "end": "14:30",
+            "hours": 8.0
+          }
+        ],
+        "Sat": [
+          {
+            "block_id": "B2-T028-T029",
+            "tours": [
+              "T028",
+              "T029"
+            ],
+            "start": "09:00",
+            "end": "17:30",
+            "hours": 8.0
+          }
+        ]
+      }
+    },
+    {
+      "id": "V003",
+      "hours_week": 40.0,
+      "days_worked": 5,
+      "blocks_1er": 1,
+      "blocks_2er": 3,
+      "blocks_3er": 1,
+      "schedule": {
+        "Mon": [
+          {
+            "block_id": "B2-T004-T005",
+            "tours": [
+              "T004",
+              "T005"
+            ],
+            "start": "06:00",
+            "end": "14:30",
+            "hours": 8.0
+          }
+        ],
+        "Wed": [
+          {
+            "block_id": "B2-T014-T015",
+            "tours": [
+              "T014",
+              "T015"
+            ],
+            "start": "07:00",
+            "end": "15:30",
+            "hours": 8.0
+          }
+        ],
+        "Thu": [
+          {
+            "block_id": "B3-T016-T017-T018",
+            "tours": [
+              "T016",
+              "T017",
+              "T018"
+            ],
+            "start": "05:00",
+            "end": "18:00",
+            "hours": 12.0
+          }
+        ],
+        "Fri": [
+          {
+            "block_id": "B2-T024-T025",
+            "tours": [
+              "T024",
+              "T025"
+            ],
+            "start": "07:00",
+            "end": "15:30",
+            "hours": 8.0
+          }
+        ],
+        "Sat": [
+          {
+            "block_id": "B1-T030",
+            "tours": [
+              "T030"
+            ],
+            "start": "10:00",
+            "end": "14:00",
+            "hours": 4.0
+          }
+        ]
+      }
+    }
+  ]
+}

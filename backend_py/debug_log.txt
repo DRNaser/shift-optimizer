@@ -1,0 +1,3 @@
+Solver generated blocks: Total=1
+1er: 0, 2er: 0, 3er: 1
+Constraints: MAX_TOURS=3, MIN_PAUSE=30

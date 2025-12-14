@@ -1,0 +1,28 @@
+==================================================
+SCENARIO: Run A
+==================================================
+
+STATUS: HARD_OK
+
+CONFIG:
+  Time Limit: 10.0s
+  Seed: 42
+  Workers: 4
+
+INPUT:
+  Tours: 15
+  Drivers: 4
+  Coverable Tours: 15
+
+OUTPUT:
+  Assigned: 15/15 (100.0%)
+  Unassigned: 0
+  Drivers Used: 2
+  Blocks: 3x3er, 3x2er, 0x1er
+
+TIMING:
+  Solve Time: 0.02s
+  Time Limit Hit: NO
+
+
+==================================================

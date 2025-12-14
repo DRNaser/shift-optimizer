@@ -1,0 +1,10 @@
+{
+  "total_tours": 15,
+  "coverable_tours": 15,
+  "infeasible_tours": 0,
+  "forced_tours": 0,
+  "coverage_rate": 1.0,
+  "is_model_feasible": true,
+  "blocking_summary": {},
+  "infeasible_details": []
+}
