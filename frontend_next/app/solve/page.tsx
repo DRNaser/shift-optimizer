@@ -31,6 +31,7 @@ export default function SolvePage() {
 
   const handleToursData = (loadedTours: TourInput[]) => {
     setTours(loadedTours)
+    setTourCount(loadedTours.length)
     setError(null)
   }
 
@@ -78,7 +79,7 @@ export default function SolvePage() {
 
             {/* Right Column - Progress and Actions */}
             <div className="space-y-6">
-              <SolveProgress isRunning={isRunning} />
+              <SolveProgress isRunning={isRunning} isComplete={isComplete} />
 
               <Card className="bg-card border-border">
                 <CardHeader>

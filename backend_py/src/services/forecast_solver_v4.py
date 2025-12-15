@@ -23,9 +23,13 @@ from datetime import datetime, time
 from typing import NamedTuple
 from enum import Enum
 import math
-import time as time_module
+from time import perf_counter
+import logging
 
 from ortools.sat.python import cp_model
+
+# Setup logger
+logger = logging.getLogger("ForecastSolverV4")
 
 from src.domain.models import Block, Tour, Weekday
 from src.services.smart_block_builder import (
@@ -46,7 +50,8 @@ class ConfigV4(NamedTuple):
     time_limit_phase1: float = 120.0
     time_limit_phase2: float = 60.0
     seed: int = 42
-    num_workers: int = 8
+    num_workers: int = 1  # Determinism: use 1 worker
+    max_blocks: int = 30000  # Hard limit to prevent model explosion
 
 
 # =============================================================================
@@ -120,12 +125,13 @@ def solve_capacity_phase(
     Returns:
         (selected_blocks, stats)
     """
-    print(f"\n{'='*60}")
-    print("PHASE 1: Capacity Planning (use_block model)")
-    print(f"{'='*60}")
-    print(f"Blocks: {len(blocks)}, Tours: {len(tours)}")
+    print(f"\n{'='*60}", flush=True)
+    print("PHASE 1: Capacity Planning (use_block model)", flush=True)
+    print(f"{'='*60}", flush=True)
+    print(f"Blocks: {len(blocks)}, Tours: {len(tours)}", flush=True)
     
-    start = time_module.time()
+    t0 = perf_counter()
+    print("PHASE 1A: CP-SAT model build start...", flush=True)
     
     model = cp_model.CpModel()
     
@@ -134,25 +140,31 @@ def solve_capacity_phase(
     for b, block in enumerate(blocks):
         use[b] = model.NewBoolVar(f"use_{b}")
     
-    print(f"Variables: {len(use)} (vs {len(use) * 150}+ in old model)")
+    print(f"Variables: {len(use)} (vs {len(use) * 150}+ in old model)", flush=True)
     
+    # Precompute block index lookup for O(1) block → variable mapping
+    block_id_to_idx = {block.id: idx for idx, block in enumerate(blocks)}
+
     # Constraint: Coverage (each tour exactly once)
-    print("Adding coverage constraints...")
+    print("Adding coverage constraints...", flush=True)
     for tour in tours:
         blocks_with_tour = block_index.get(tour.id, [])
         if not blocks_with_tour:
             raise ValueError(f"Tour {tour.id} has no blocks!")
         
-        # Find indices of blocks containing this tour
+        # Use the pre-built block_index for O(1) lookup instead of scanning all blocks
         block_indices = []
-        for b, block in enumerate(blocks):
-            if any(t.id == tour.id for t in block.tours):
-                block_indices.append(b)
+        for block in blocks_with_tour:
+            b_idx = block_id_to_idx.get(block.id)
+            if b_idx is not None:
+                block_indices.append(b_idx)
+
+        if not block_indices:
+            raise ValueError(f"Tour {tour.id} has no indexed blocks!")
         
         model.Add(sum(use[b] for b in block_indices) == 1)
     
-    # Note: Overlap constraints are NOT needed in this model!
-    print("Overlap constraints: NOT NEEDED (implicit in coverage)")
+    print("Coverage constraints added.", flush=True)
     
     # Objective: Use POLICY-DERIVED scores if available
     # Higher policy score = more desirable block = LOWER cost
@@ -180,18 +192,22 @@ def solve_capacity_phase(
     
     model.Minimize(sum(block_cost))
     
+    print(f"PHASE 1A: CP-SAT model build done in {perf_counter() - t0:.2f}s", flush=True)
+    
     # Solve
-    print("Solving...")
+    t1 = perf_counter()
+    print(f"PHASE 1B: CP-SAT solve start (time limit: {config.time_limit_phase1}s)...", flush=True)
     solver = cp_model.CpSolver()
     solver.parameters.max_time_in_seconds = config.time_limit_phase1
     solver.parameters.num_workers = config.num_workers
     solver.parameters.random_seed = config.seed
     
     status = solver.Solve(model)
-    elapsed = time_module.time() - start
+    elapsed = perf_counter() - t0
+    print(f"PHASE 1B: CP-SAT solve done status={status} in {perf_counter() - t1:.2f}s", flush=True)
     
     if status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
-        print(f"[FAILED] No solution found")
+        logger.error("[FAILED] No solution found")
         return [], {"status": "FAILED", "time": elapsed}
     
     # Extract selected blocks
@@ -275,12 +291,12 @@ def assign_drivers_greedy(
     4. FTE drivers: try to fill 42-53h/week
     5. PT drivers: overflow (no hour constraints)
     """
-    print(f"\n{'='*60}")
-    print("PHASE 2: Driver Assignment (Greedy)")
-    print(f"{'='*60}")
-    print(f"Blocks to assign: {len(blocks)}")
+    logger.info(f"\n{'='*60}")
+    logger.info("PHASE 2: Driver Assignment (Greedy)")
+    logger.info(f"{'='*60}")
+    logger.info(f"Blocks to assign: {len(blocks)}")
     
-    start = time_module.time()
+    t0 = perf_counter()
     
     # Group blocks by day, then sort by start time
     blocks_by_day: dict[str, list[Block]] = defaultdict(list)
@@ -347,24 +363,49 @@ def assign_drivers_greedy(
         d["blocks"].append(block)
         d["day_blocks"][block.day.value].append(block)
     
-    # Assign blocks day by day
-    for day in ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]:
-        if day not in blocks_by_day:
-            continue
+    # Assign blocks - fill FTEs first, PT for overflow
+    # Strategy: 
+    # 1. Try existing FTEs that have room
+    # 2. If no FTE has room, create new FTE if it can reach 42h
+    # 3. Use PT as overflow for remaining blocks
+    
+    # First pass: calculate total hours to estimate driver needs
+    total_block_hours = sum(b.total_work_hours for b in blocks)
+    estimated_ftes = int(total_block_hours / 47.5) + 1  # ~47.5h average FTE
+    logger.info(f"Total block hours: {total_block_hours:.1f}h, estimated FTEs: {estimated_ftes}")
+    
+    # Pre-create a pool of FTEs
+    for _ in range(estimated_ftes):
+        create_fte()
+    
+    # Sort all blocks by hours descending (assign larger blocks first for better packing)
+    all_blocks_sorted = sorted(blocks, key=lambda b: b.total_work_hours, reverse=True)
+    
+    for block in all_blocks_sorted:
+        assigned = False
         
-        for block in blocks_by_day[day]:
-            assigned = False
-            
-            # Try existing FTE drivers
+        # Sort FTE drivers by hours ascending (fill emptier drivers first)
+        fte_drivers = [(did, d) for did, d in drivers.items() if d["type"] == "FTE"]
+        fte_drivers.sort(key=lambda x: x[1]["hours"])
+        
+        for driver_id, d in fte_drivers:
+            if can_take_block(driver_id, block):
+                assign_block(driver_id, block)
+                assigned = True
+                break
+        
+        if not assigned:
+            # No FTE can take it - use PT
+            # Try existing PT first
             for driver_id in list(drivers.keys()):
-                if drivers[driver_id]["type"] == "FTE" and can_take_block(driver_id, block):
+                if drivers[driver_id]["type"] == "PT" and can_take_block(driver_id, block):
                     assign_block(driver_id, block)
                     assigned = True
                     break
             
             if not assigned:
-                # Create new FTE
-                driver_id = create_fte()
+                # Create new PT
+                driver_id = create_pt()
                 assign_block(driver_id, block)
     
     # Check FTE hour constraints
@@ -373,7 +414,7 @@ def assign_drivers_greedy(
         if d["type"] == "FTE" and d["hours"] < config.min_hours_per_fte:
             under_hours.append((driver_id, d["hours"]))
     
-    elapsed = time_module.time() - start
+    elapsed = perf_counter() - t0
     
     # Build assignments
     assignments = []
@@ -401,12 +442,14 @@ def assign_drivers_greedy(
         "time": round(elapsed, 2),
     }
     
-    print(f"Assigned to {len(assignments)} drivers")
-    print(f"  FTE: {stats['drivers_fte']} (hours: {stats['fte_hours_min']}-{stats['fte_hours_max']}h)")
-    print(f"  PT: {stats['drivers_pt']}")
+
+    
+    logger.info(f"Assigned to {len(assignments)} drivers")
+    logger.info(f"  FTE: {stats['drivers_fte']} (hours: {stats['fte_hours_min']}-{stats['fte_hours_max']}h)")
+    logger.info(f"  PT: {stats['drivers_pt']}")
     if under_hours:
-        print(f"  [WARN] {len(under_hours)} FTE drivers under {config.min_hours_per_fte}h")
-    print(f"Time: {elapsed:.2f}s")
+        logger.warning(f"  [WARN] {len(under_hours)} FTE drivers under {config.min_hours_per_fte}h")
+    logger.info(f"Time: {elapsed:.2f}s")
     
     return assignments, stats
 
@@ -442,29 +485,45 @@ def solve_forecast_v4(
     import json
     from pathlib import Path
     
-    print(f"\n{'='*70}")
-    print("FORECAST SOLVER v4 - USE_BLOCK MODEL")
-    print(f"{'='*70}")
-    print(f"Tours: {len(tours)}")
+    logger.info(f"\n{'='*70}")
+    logger.info("FORECAST SOLVER v4 - USE_BLOCK MODEL")
+    logger.info(f"{'='*70}")
+    logger.info(f"Tours: {len(tours)}")
     
     total_hours = sum(t.duration_hours for t in tours)
-    print(f"Total hours: {total_hours:.1f}h")
+    logger.info(f"Total hours: {total_hours:.1f}h")
     
-    # Build blocks
-    print("\nBuilding blocks...")
-    block_start = time_module.time()
+    # Phase A: Build blocks
+    t_block = perf_counter()
+    print("PHASE A: Block building start...", flush=True)
     blocks, block_stats = build_weekly_blocks_smart(tours)
-    block_time = time_module.time() - block_start
-    
-    block_index = build_block_index(blocks)
+    block_time = perf_counter() - t_block
+    print(f"PHASE A: Block building done in {block_time:.2f}s, generated {len(blocks)} blocks", flush=True)
     
     # Extract scores from block_stats
     block_scores = block_stats.get("block_scores", {})
     block_props = block_stats.get("block_props", {})
     
-    print(f"Blocks: {len(blocks)} (1er={block_stats['blocks_1er']}, 2er={block_stats['blocks_2er']}, 3er={block_stats['blocks_3er']})")
+    # Block pruning: sort deterministically and limit to max_blocks
+    original_count = len(blocks)
+    if config.max_blocks and len(blocks) > config.max_blocks:
+        print(f"Pruning blocks: {len(blocks)} > max_blocks={config.max_blocks}", flush=True)
+        # Sort by score (descending) then by id (ascending) for determinism
+        blocks = sorted(blocks, key=lambda b: (-block_scores.get(b.id, 0), b.id))
+        blocks = blocks[:config.max_blocks]
+        print(f"Pruned from {original_count} to {len(blocks)} blocks", flush=True)
+        # Rebuild index after pruning
+        block_index = build_block_index(blocks)
+        # Update block_scores and block_props to only include pruned blocks
+        pruned_ids = {b.id for b in blocks}
+        block_scores = {k: v for k, v in block_scores.items() if k in pruned_ids}
+        block_props = {k: v for k, v in block_props.items() if k in pruned_ids}
+    else:
+        block_index = build_block_index(blocks)
+    
+    print(f"Blocks: {len(blocks)} (1er={block_stats['blocks_1er']}, 2er={block_stats['blocks_2er']}, 3er={block_stats['blocks_3er']})", flush=True)
     if block_scores:
-        print(f"Policy scores loaded: {len(block_scores)} blocks")
+        print(f"Policy scores loaded: {len(block_scores)} blocks", flush=True)
     
     # Phase 1: Capacity (use policy scores)
     selected_blocks, phase1_stats = solve_capacity_phase(
@@ -483,7 +542,10 @@ def solve_forecast_v4(
         )
     
     # Phase 2: Assignment
+    t_greedy = perf_counter()
+    logger.info("PHASE C: Greedy assignment start")
     assignments, phase2_stats = assign_drivers_greedy(selected_blocks, config)
+    logger.info("PHASE C: Greedy assignment done in %.2fs", perf_counter() - t_greedy)
     
     # Determine status
     fte_count = phase2_stats["drivers_fte"]
@@ -522,13 +584,16 @@ def solve_forecast_v4(
     # Generate style_report.json (Task 4)
     _generate_style_report(selected_blocks, phase1_stats, block_props)
     
-    print(f"\n{'='*60}")
-    print("SUMMARY")
-    print(f"{'='*60}")
-    print(f"Status: {status}")
-    print(f"Blocks: {phase1_stats['selected_blocks']} selected")
-    print(f"Drivers: {fte_count} FTE + {phase2_stats['drivers_pt']} PT")
-    print(f"Total time: {solve_times['total']:.2f}s")
+    # Generate style_report.json (Task 4)
+    _generate_style_report(selected_blocks, phase1_stats, block_props)
+    
+    logger.info(f"\n{'='*60}")
+    logger.info("SUMMARY")
+    logger.info(f"{'='*60}")
+    logger.info(f"Status: {status}")
+    logger.info(f"Blocks: {phase1_stats['selected_blocks']} selected")
+    logger.info(f"Drivers: {fte_count} FTE + {phase2_stats['drivers_pt']} PT")
+    logger.info(f"Total time: {solve_times['total']:.2f}s")
     
     return SolveResultV4(
         status=status,
@@ -613,5 +678,5 @@ def _generate_style_report(selected_blocks: list[Block], phase1_stats: dict, blo
     with open(output_path, "w", encoding="utf-8") as f:
         json.dump(report, f, indent=2, ensure_ascii=False)
     
-    print(f"Style report saved to: {output_path}")
+    logger.info(f"Style report saved to: {output_path}")
 

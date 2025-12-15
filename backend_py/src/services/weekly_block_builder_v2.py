@@ -27,9 +27,12 @@ from src.domain.constraints import HARD_CONSTRAINTS
 # CONFIGURATION
 # =============================================================================
 
-MAX_BLOCKS_PER_DAY = 20_000  # Reduced for scalability
-MAX_PAUSE_MINUTES = 45  # REDUCED: 45 min max gap (was 120)
-MIN_PAUSE_MINUTES = 0   # No minimum gap (can be back-to-back)
+# NOTE: Pause constraints now use HARD_CONSTRAINTS for consistency across all builders.
+# The validator is the single source of truth for constraint values.
+
+MAX_BLOCKS_PER_DAY = 20_000  # Safety limit for scalability
+MAX_PAUSE_MINUTES = HARD_CONSTRAINTS.MAX_PAUSE_BETWEEN_TOURS  # Use central config (120 min)
+MIN_PAUSE_MINUTES = HARD_CONSTRAINTS.MIN_PAUSE_BETWEEN_TOURS  # Use central config (30 min)
 MAX_3ER_PER_DAY = 3_000  # Hard limit on 3er blocks per day
 MAX_2ER_PER_DAY = 8_000  # Hard limit on 2er blocks per day
 

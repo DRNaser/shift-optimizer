@@ -1,25 +1,67 @@
 "use client"
 
+import { useState, useEffect } from "react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
-import { AlertTriangle } from "lucide-react"
+import { AlertTriangle, CheckCircle2, Loader2 } from "lucide-react"
+import { SolveResponse } from "@/lib/api"
 
-const uncoveredTours = [
-  { id: "T-1042", day: "Mon", time: "05:30-07:00", reason: "Early morning slot" },
-  { id: "T-1156", day: "Mon", time: "21:00-22:30", reason: "Late evening slot" },
-  { id: "T-2089", day: "Tue", time: "05:45-07:15", reason: "Early morning slot" },
-  { id: "T-3201", day: "Wed", time: "21:30-23:00", reason: "Late evening slot" },
-  { id: "T-4055", day: "Thu", time: "05:15-06:45", reason: "Early morning slot" },
-  { id: "T-4312", day: "Thu", time: "13:00-14:30", reason: "Isolated time slot" },
-  { id: "T-5178", day: "Fri", time: "21:15-22:45", reason: "Late evening slot" },
-  { id: "T-6022", day: "Sat", time: "05:00-06:30", reason: "Early morning slot" },
-  { id: "T-6089", day: "Sat", time: "22:00-23:30", reason: "Late evening slot" },
-  { id: "T-7015", day: "Sun", time: "05:30-07:00", reason: "Early morning slot" },
-  { id: "T-7102", day: "Sun", time: "12:30-14:00", reason: "Isolated time slot" },
-  { id: "T-7198", day: "Sun", time: "21:45-23:15", reason: "Late evening slot" },
-]
+interface UncoveredTour {
+  id: string
+  day: string
+  time: string
+  reason: string
+}
 
 export function UncoveredTours() {
+  const [uncoveredTours, setUncoveredTours] = useState<UncoveredTour[]>([])
+  const [loading, setLoading] = useState(true)
+
+  useEffect(() => {
+    const stored = sessionStorage.getItem('solveResult')
+    if (stored) {
+      try {
+        const result: SolveResponse = JSON.parse(stored)
+        // unassigned_tours from the response
+        const unassigned = result.unassigned_tours || []
+        const tours: UncoveredTour[] = unassigned.map((t: any) => ({
+          id: t.id || 'Unknown',
+          day: t.day || '',
+          time: `${t.start_time || ''}-${t.end_time || ''}`,
+          reason: 'Could not be assigned',
+        }))
+        setUncoveredTours(tours)
+      } catch (e) {
+        console.error('Failed to parse solve result:', e)
+      }
+    }
+    setLoading(false)
+  }, [])
+
+  if (loading) {
+    return (
+      <Card className="bg-card border-border">
+        <CardContent className="flex items-center justify-center py-8">
+          <Loader2 className="h-6 w-6 animate-spin text-primary" />
+        </CardContent>
+      </Card>
+    )
+  }
+
+  if (uncoveredTours.length === 0) {
+    return (
+      <Card className="bg-card border-border">
+        <CardHeader>
+          <div className="flex items-center gap-2">
+            <CheckCircle2 className="h-5 w-5 text-primary" />
+            <CardTitle className="text-card-foreground">All Tours Covered</CardTitle>
+          </div>
+          <p className="text-sm text-muted-foreground">All tours have been assigned to drivers</p>
+        </CardHeader>
+      </Card>
+    )
+  }
+
   return (
     <Card className="bg-card border-border">
       <CardHeader>

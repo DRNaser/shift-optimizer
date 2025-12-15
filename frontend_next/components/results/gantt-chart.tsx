@@ -1,11 +1,12 @@
 "use client"
 
-import { useState } from "react"
+import { useState, useEffect } from "react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Button } from "@/components/ui/button"
-import { ChevronLeft, ChevronRight } from "lucide-react"
+import { ChevronLeft, ChevronRight, Loader2, AlertTriangle } from "lucide-react"
 import { cn } from "@/lib/utils"
+import { SolveResponse } from "@/lib/api"
 
 interface Block {
   id: string
@@ -22,51 +23,92 @@ interface Driver {
   totalHours: number
 }
 
-// Generate mock driver data
-const generateDrivers = (): Driver[] => {
-  const drivers: Driver[] = []
-  for (let i = 1; i <= 80; i++) {
-    const blocks: Block[] = []
-    const daysWorked = Math.floor(Math.random() * 2) + 4 // 4-5 days
-    const days = [0, 1, 2, 3, 4, 5, 6].sort(() => Math.random() - 0.5).slice(0, daysWorked)
-
-    days.forEach((day) => {
-      const numBlocks = Math.floor(Math.random() * 2) + 1
-      let currentTime = 6 + Math.floor(Math.random() * 4)
-
-      for (let b = 0; b < numBlocks; b++) {
-        const duration = 2 + Math.floor(Math.random() * 4)
-        blocks.push({
-          id: `${i}-${day}-${b}`,
-          tours: Math.floor(Math.random() * 2) + 1,
-          start: currentTime,
-          end: currentTime + duration,
-          day,
-        })
-        currentTime += duration + 1
-        if (currentTime > 18) break
-      }
-    })
-
-    const totalHours = blocks.reduce((sum, b) => sum + (b.end - b.start), 0)
-    drivers.push({
-      id: `DRV-${String(i).padStart(3, "0")}`,
-      name: `Driver ${i}`,
-      blocks,
-      totalHours,
-    })
-  }
-  return drivers
-}
-
-const drivers = generateDrivers()
 const days = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+const dayMap: Record<string, number> = {
+  "MONDAY": 0, "TUESDAY": 1, "WEDNESDAY": 2, "THURSDAY": 3,
+  "FRIDAY": 4, "SATURDAY": 5, "SUNDAY": 6,
+  "Mon": 0, "Tue": 1, "Wed": 2, "Thu": 3, "Fri": 4, "Sat": 5, "Sun": 6
+}
 const hours = Array.from({ length: 16 }, (_, i) => i + 6) // 6am to 10pm
 
 export function GanttChart() {
   const [selectedDay, setSelectedDay] = useState<string>("all")
   const [page, setPage] = useState(0)
+  const [drivers, setDrivers] = useState<Driver[]>([])
+  const [loading, setLoading] = useState(true)
   const driversPerPage = 10
+
+  useEffect(() => {
+    const stored = sessionStorage.getItem('solveResult')
+    if (stored) {
+      try {
+        const result: SolveResponse = JSON.parse(stored)
+        // Group assignments by driver
+        const driverMap = new Map<string, Driver>()
+
+        for (const assignment of result.assignments) {
+          const driverId = assignment.driver_id
+          if (!driverMap.has(driverId)) {
+            driverMap.set(driverId, {
+              id: driverId,
+              name: driverId,
+              blocks: [],
+              totalHours: 0
+            })
+          }
+
+          const driver = driverMap.get(driverId)!
+          const block = assignment.block
+
+          // Parse start/end times
+          const startParts = block.tours[0]?.start_time?.split(":") || ["0", "0"]
+          const endParts = block.tours[block.tours.length - 1]?.end_time?.split(":") || ["0", "0"]
+          const start = parseInt(startParts[0]) + parseInt(startParts[1]) / 60
+          const end = parseInt(endParts[0]) + parseInt(endParts[1]) / 60
+
+          driver.blocks.push({
+            id: block.id,
+            tours: block.tours.length,
+            start: start,
+            end: end,
+            day: dayMap[assignment.day] ?? 0
+          })
+          driver.totalHours += block.total_work_hours || (end - start)
+        }
+
+        setDrivers(Array.from(driverMap.values()))
+      } catch (e) {
+        console.error('Failed to parse solve result:', e)
+      }
+    }
+    setLoading(false)
+  }, [])
+
+  if (loading) {
+    return (
+      <Card className="bg-card border-border">
+        <CardContent className="flex items-center justify-center py-8">
+          <Loader2 className="h-6 w-6 animate-spin text-primary" />
+        </CardContent>
+      </Card>
+    )
+  }
+
+  if (drivers.length === 0) {
+    return (
+      <Card className="bg-card border-border">
+        <CardHeader>
+          <CardTitle className="text-card-foreground">Driver Schedule</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className="flex items-center gap-2 p-3 bg-secondary rounded-lg">
+            <AlertTriangle className="h-5 w-5 text-muted-foreground" />
+            <p className="text-sm text-muted-foreground">No schedule data yet. Run an optimization first.</p>
+          </div>
+        </CardContent>
+      </Card>
+    )
+  }
 
   const filteredDrivers = drivers.slice(page * driversPerPage, (page + 1) * driversPerPage)
 

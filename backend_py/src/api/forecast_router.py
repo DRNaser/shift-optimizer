@@ -5,6 +5,8 @@ Adapts frontend requests to v4 solver
 """
 
 import uuid
+import logging
+import traceback
 from datetime import time as dt_time
 from fastapi import APIRouter, HTTPException
 
@@ -15,6 +17,9 @@ from src.api.models import (
 )
 from src.domain.models import Tour, Weekday
 from src.services.forecast_solver_v4 import solve_forecast_v4, ConfigV4
+
+# Setup logger
+logger = logging.getLogger("ForecastRouter")
 
 router = APIRouter(prefix="/api/v1", tags=["forecast"])
 
@@ -71,26 +76,65 @@ async def create_schedule(request: ScheduleRequest):
     Converts frontend format to internal Tour objects,
     runs v4 solver, and converts response back.
     """
+    logger.info("=" * 60)
+    logger.info("SCHEDULE REQUEST RECEIVED")
+    logger.info("=" * 60)
+    
     # Convert frontend tours to internal Tours
+    logger.info(f"Converting {len(request.tours)} tours...")
     tours = _convert_tours(request.tours)
     
     if not tours:
+        logger.error("No valid tours after conversion!")
         raise HTTPException(status_code=400, detail="No valid tours provided")
+    
+    logger.info(f"Successfully converted {len(tours)} tours")
     
     # Build config from request
     config = ConfigV4(
         time_limit_phase1=float(request.time_limit_seconds),
         seed=request.seed or 42,
     )
+    logger.info(f"Config: time_limit={config.time_limit_phase1}s, seed={config.seed}")
+    logger.info(f"Solver type: {request.solver_type}")
     
     # Run solver
     try:
+        logger.info("Starting solver...")
         result = solve_forecast_v4(tours, config)
+        logger.info(f"Solver completed! Status: {result.status}")
+        logger.info(f"KPI: {result.kpi}")
+        
+        # Optional LNS refinement for cpsat+lns
+        if request.solver_type == "cpsat+lns" and result.assignments:
+            logger.info("=" * 40)
+            logger.info("Starting LNS Phase 3 refinement...")
+            from src.services.lns_refiner_v4 import refine_assignments_v4, LNSConfigV4
+            
+            lns_config = LNSConfigV4(
+                max_iterations=request.lns_iterations,
+                seed=config.seed,
+            )
+            
+            refined_assignments = refine_assignments_v4(result.assignments, lns_config)
+            
+            # Update result with refined assignments
+            result.assignments = refined_assignments
+            result.kpi["lns_applied"] = True
+            result.kpi["lns_iterations"] = request.lns_iterations
+            logger.info("LNS refinement complete")
+            
     except Exception as e:
+        logger.error(f"SOLVER ERROR: {str(e)}")
+        logger.error(traceback.format_exc())
         raise HTTPException(status_code=500, detail=f"Solver error: {str(e)}")
     
     # Convert response
+    logger.info("Converting response...")
     response = _convert_response(result, request, tours)
+    
+    logger.info(f"Response ready: {len(response.assignments)} assignments")
+    logger.info("=" * 60)
     
     return response
 

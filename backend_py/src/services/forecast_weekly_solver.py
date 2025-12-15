@@ -1,9 +1,13 @@
 """
-FORECAST WEEKLY SOLVER v2
-=========================
-CP-SAT solver for forecast-only weekly planning with virtual drivers.
+FORECAST WEEKLY SOLVER v2 - CANONICAL SOLVER
+=============================================
+This is the CANONICAL solver for forecast-based weekly planning.
 
-KEY IMPROVEMENTS in v2:
+Other solvers:
+- forecast_solver_v4: Experimental use_block/set-partitioning model (Stage-A block selection)
+- cpsat_solver: Legacy driver-assignment model (for future real driver/skills/availability)
+
+KEY FEATURES:
 - Range-feasibility guard (K_min <= K_max check)
 - 4-phase lexicographic optimization:
   1. Minimize driver count

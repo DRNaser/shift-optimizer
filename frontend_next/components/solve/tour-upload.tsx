@@ -101,7 +101,7 @@ export function TourUpload({ onToursLoaded, onToursData }: TourUploadProps) {
               </Button>
             </label>
             <p className="text-xs text-muted-foreground mt-4">
-              Supports CSV files with tour_id, start_time, end_time columns
+              Forecast-Format: Montag/Anzahl, dann Zeilen wie 04:45-09:15 15
             </p>
           </div>
         ) : (
