@@ -5,7 +5,9 @@ Pydantic schemas for FastAPI request/response models.
 """
 
 from datetime import date, time
-from pydantic import BaseModel, Field
+from typing import Literal
+
+from pydantic import BaseModel, Field, field_validator
 
 from src.domain.models import (
     BlockType,
@@ -44,6 +46,9 @@ class DriverInput(BaseModel):
     )
 
 
+SolverType = Literal["greedy", "cpsat", "cpsat+lns"]
+
+
 class ScheduleRequest(BaseModel):
     """Request to create a schedule."""
     tours: list[TourInput]
@@ -51,7 +56,7 @@ class ScheduleRequest(BaseModel):
     week_start: str = Field(..., pattern=r"^\d{4}-\d{2}-\d{2}$", description="YYYY-MM-DD")
     prefer_larger_blocks: bool = Field(default=True)
     seed: int | None = Field(default=None, description="Seed for reproducibility")
-    solver_type: str = Field(
+    solver_type: SolverType = Field(
         default="cpsat",
         description="Solver: 'greedy', 'cpsat', or 'cpsat+lns'"
     )
@@ -71,6 +76,14 @@ class ScheduleRequest(BaseModel):
         default_factory=list,
         description="Block IDs that should not be changed during optimization"
     )
+
+    @field_validator("solver_type", mode="before")
+    @classmethod
+    def normalize_solver_type(cls, solver_type: str) -> str:
+        """Ensure solver type is normalized and validated."""
+        if isinstance(solver_type, str):
+            return solver_type.lower()
+        return solver_type
 
 
 # =============================================================================
