@@ -1,14 +1,18 @@
 // API Service for SHIFT OPTIMIZER
 // Connects to new Python FastAPI backend
 
+/// <reference types="vite/client" />
+
 import {
   ScheduleRequest,
   ScheduleResponse,
   HealthResponse,
-  ApiError
+  ApiError,
+  DiagnosticsResponse
 } from '../types';
 
-const API_BASE = 'http://localhost:8000/api/v1';
+// Configurable API base URL - set VITE_API_BASE in .env for deployments
+const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:8000/api/v1';
 
 // =============================================================================
 // HEALTH CHECK
@@ -55,6 +59,26 @@ export async function getConstraints(): Promise<Record<string, Record<string, nu
 }
 
 // =============================================================================
+// DIAGNOSTICS
+// =============================================================================
+
+export async function getUnassignedDiagnostics(request: ScheduleRequest): Promise<DiagnosticsResponse> {
+  const response = await fetch(`${API_BASE}/unassigned-diagnostics`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(request),
+  });
+
+  if (!response.ok) {
+    throw await createApiError(response);
+  }
+
+  return response.json();
+}
+
+// =============================================================================
 // ERROR HANDLING
 // =============================================================================
 
@@ -83,3 +107,4 @@ async function createApiError(response: Response): Promise<ApiError> {
 
 // Legacy export for backward compatibility
 export const optimizeShiftsApi = createSchedule;
+

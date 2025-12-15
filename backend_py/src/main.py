@@ -6,10 +6,19 @@ Main entry point for the backend API.
 This is the production API server.
 """
 
+import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from src.api.routes import router
+
+
+# =============================================================================
+# CONFIGURATION
+# =============================================================================
+
+# CORS origins: comma-separated list, default to wildcard for development
+CORS_ORIGINS = os.getenv("CORS_ORIGINS", "*").split(",")
 
 
 # =============================================================================
@@ -48,7 +57,7 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Configure appropriately for production
+    allow_origins=CORS_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

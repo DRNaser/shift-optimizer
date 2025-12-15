@@ -12,6 +12,10 @@ RUN npm ci
 # Copy source
 COPY . .
 
+# Build argument for API URL (can be overridden at build time)
+ARG VITE_API_BASE=http://localhost:8000/api/v1
+ENV VITE_API_BASE=$VITE_API_BASE
+
 # Build for production
 RUN npm run build
 

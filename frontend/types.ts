@@ -136,6 +136,37 @@ export interface ApiError {
 }
 
 // =============================================================================
+// DIAGNOSTICS TYPES
+// =============================================================================
+
+export interface DiagnosticBlocker {
+  code: string;
+  count: number;
+}
+
+export interface DiagnosticDetail {
+  tour_id: string;
+  day: string;
+  time: string;
+  is_feasible: boolean;
+  reason_code: string;
+  candidate_blocks_total: number;
+  candidate_drivers_total: number;
+  top_blockers: DiagnosticBlocker[];
+  has_any_blocks: boolean;
+  has_any_feasible_driver: boolean;
+  is_globally_conflicting: boolean;
+}
+
+export interface DiagnosticsResponse {
+  total_tours: number;
+  coverable_tours: number;
+  infeasible_tours: number;
+  reason_summary: Record<string, number>;
+  diagnostics: DiagnosticDetail[];
+}
+
+// =============================================================================
 // UI STATE TYPES
 // =============================================================================
 
