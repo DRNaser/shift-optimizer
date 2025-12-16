@@ -87,6 +87,7 @@ def can_assign_block(
     1. No overlap via boolean array or interval check? 
        Using Global Timestamp check for simplicity and robustness.
     2. Rest time >= 11h (660 min) between any two blocks.
+    3. 3-tour recovery: After a 3-tour day, next day must be free.
     
     Returns:
         (allowed: bool, reason: str)
@@ -118,6 +119,33 @@ def can_assign_block(
             msg = (f"Rest Violation: {hours:.2f}h < 11h between "
                    f"{current.block_id} (Day {current.day_idx}) and "
                    f"{next_block.block_id} (Day {next_block.day_idx})")
+            return False, msg
+    
+    # 3. 3-Tour Recovery Rule
+    # Helper: count tours for a specific day
+    def tours_for_day(day_idx: int) -> int:
+        day_blocks = [b for b in existing_blocks if get_day_index(b.day) == day_idx]
+        return sum(len(b.tours) for b in day_blocks)
+    
+    # Helper: check if any block exists on a day
+    def has_block_on_day(day_idx: int) -> bool:
+        return any(get_day_index(b.day) == day_idx for b in existing_blocks)
+    
+    candidate_day_idx = get_day_index(new_block.day)
+    
+    # Check 1: If previous day already has 3 tours, today must be free
+    if candidate_day_idx > 0:
+        prev_day_idx = candidate_day_idx - 1
+        if tours_for_day(prev_day_idx) >= 3:
+            msg = f"3-Tour Recovery: Day {prev_day_idx} has 3 tours, day {candidate_day_idx} must be free"
+            return False, msg
+    
+    # Check 2: If adding candidate makes today have 3 tours, next day must be free
+    tours_today = tours_for_day(candidate_day_idx) + len(new_block.tours)
+    if tours_today >= 3 and candidate_day_idx < 6:
+        next_day_idx = candidate_day_idx + 1
+        if has_block_on_day(next_day_idx):
+            msg = f"3-Tour Recovery: Adding block would give day {candidate_day_idx} 3 tours, but day {next_day_idx} is not free"
             return False, msg
             
     return True, "OK"

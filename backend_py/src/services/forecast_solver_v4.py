@@ -53,6 +53,10 @@ class ConfigV4(NamedTuple):
     seed: int = 42
     num_workers: int = 1  # Determinism: use 1 worker
     max_blocks: int = 30000  # Hard limit to prevent model explosion
+    w_new_driver: float = 500.0  # Penalty for activating any new FTE (REDUCED to prefer FTE)
+    w_pt_new: float = 10000.0  # Additional penalty for new PT drivers (INCREASED to minimize PT)
+    w_pt_weekday: float = 5000.0  # PT on Mon-Fri very expensive
+    w_pt_saturday: float = 5000.0  # PT on Saturday also expensive (minimize all PT!)
 
 
 # =============================================================================
@@ -405,29 +409,51 @@ def assign_drivers_greedy(
     for block in all_blocks_sorted:
         assigned = False
         
-        # Sort FTE drivers by hours ascending (fill emptier drivers first)
-        fte_drivers = [(did, d) for did, d in drivers.items() if d["type"] == "FTE"]
-        fte_drivers.sort(key=lambda x: x[1]["hours"])
+        # Score all drivers (FTE first, then PT)
+        # Lower score = better candidate
+        candidates = []
         
-        for driver_id, d in fte_drivers:
-            if can_take_block(driver_id, block):
-                assign_block(driver_id, block)
-                assigned = True
-                break
+        for driver_id, d in drivers.items():
+            if not can_take_block(driver_id, block):
+                continue
+            
+            # Calculate score based on current workload and activation status
+            is_new_driver = len(d["blocks"]) == 0
+            
+            # Base score: prefer drivers with more hours (better consolidation)
+            # Invert so that drivers with fewer hours get higher base score
+            score = config.max_hours_per_fte - d["hours"]
+            
+            # Apply activation penalty
+            if is_new_driver:
+                score += config.w_new_driver
+                if d["type"] == "PT":
+                    score += config.w_pt_new
+            
+            # FTE preference: give FTE drivers lower score
+            if d["type"] == "PT":
+                score += 100  # Slight penalty for PT vs FTE (all else equal)
+                
+                # Day-based PT penalty: strong penalty on weekdays, none on Saturday
+                day = block.day.value
+                if day == "Sat":
+                    score += config.w_pt_saturday
+                else:
+                    score += config.w_pt_weekday
+            
+            candidates.append((score, driver_id, d))
+        
+        if candidates:
+            # Sort by score (ascending) and take best
+            candidates.sort(key=lambda x: x[0])
+            _, best_driver_id, _ = candidates[0]
+            assign_block(best_driver_id, block)
+            assigned = True
         
         if not assigned:
-            # No FTE can take it - use PT
-            # Try existing PT first
-            for driver_id in list(drivers.keys()):
-                if drivers[driver_id]["type"] == "PT" and can_take_block(driver_id, block):
-                    assign_block(driver_id, block)
-                    assigned = True
-                    break
-            
-            if not assigned:
-                # Create new PT
-                driver_id = create_pt()
-                assign_block(driver_id, block)
+            # No existing driver can take it - create new PT
+            driver_id = create_pt()
+            assign_block(driver_id, block)
     
     # Check FTE hour constraints
     under_hours = []
@@ -454,6 +480,16 @@ def assign_drivers_greedy(
     fte_hours = [a.total_hours for a in assignments if a.driver_type == "FTE"]
     pt_hours = [a.total_hours for a in assignments if a.driver_type == "PT"]
     
+    # Distribution metrics
+    pt_single_segment = len([a for a in assignments if a.driver_type == "PT" and len(a.blocks) == 1])
+    pt_low_utilization = len([a for a in assignments if a.driver_type == "PT" and a.total_hours <= 4.5])
+    
+    # Tight rest count
+    tight_rest_count = 0
+    for a in assignments:
+        if a.analysis.get("min_rest_hours") == 11.0:
+            tight_rest_count += 1
+    
     stats = {
         "drivers_fte": len([a for a in assignments if a.driver_type == "FTE"]),
         "drivers_pt": len([a for a in assignments if a.driver_type == "PT"]),
@@ -462,13 +498,21 @@ def assign_drivers_greedy(
         "fte_hours_avg": round(sum(fte_hours) / len(fte_hours), 2) if fte_hours else 0,
         "under_hours_count": len(under_hours),
         "time": round(elapsed, 2),
+        # Distribution metrics
+        "pt_single_segment_count": pt_single_segment,
+        "pt_low_utilization_count": pt_low_utilization,
+        "tight_rest_count": tight_rest_count,
     }
     
 
     
+    
     logger.info(f"Assigned to {len(assignments)} drivers")
     logger.info(f"  FTE: {stats['drivers_fte']} (hours: {stats['fte_hours_min']}-{stats['fte_hours_max']}h)")
     logger.info(f"  PT: {stats['drivers_pt']}")
+    logger.info(f"  PT with single segment: {stats['pt_single_segment_count']}")
+    logger.info(f"  PT with <=4.5h: {stats['pt_low_utilization_count']}")
+    logger.info(f"  Tight rests (11.0h exactly): {stats['tight_rest_count']}")
     if under_hours:
         logger.warning(f"  [WARN] {len(under_hours)} FTE drivers under {config.min_hours_per_fte}h")
     logger.info(f"Time: {elapsed:.2f}s")
@@ -563,11 +607,48 @@ def solve_forecast_v4(
             block_stats=block_stats
         )
     
-    # Phase 2: Assignment
+    # ======================================================================
+    # PHASE 2A: GREEDY ASSIGNMENT (Warm Start for CP-SAT)
+    # ======================================================================
     t_greedy = perf_counter()
-    logger.info("PHASE C: Greedy assignment start")
-    assignments, phase2_stats = assign_drivers_greedy(selected_blocks, config)
-    logger.info("PHASE C: Greedy assignment done in %.2fs", perf_counter() - t_greedy)
+    logger.info("PHASE 2A: Greedy assignment start")
+    greedy_assignments, phase2_stats = assign_drivers_greedy(selected_blocks, config)
+    logger.info("PHASE 2A: Greedy assignment done in %.2fs", perf_counter() - t_greedy)
+    logger.info(f"Greedy result: {phase2_stats['drivers_fte']} FTE + {phase2_stats['drivers_pt']} PT")
+    
+    # ======================================================================
+    # PHASE 2B: CP-SAT ASSIGNMENT OPTIMIZER (Main)
+    # ======================================================================
+    try:
+        from src.services.cpsat_assigner import assign_drivers_cpsat
+        
+        logger.info("=" * 60)
+        logger.info("PHASE 2B: CP-SAT Assignment Optimizer")
+        logger.info("=" * 60)
+        
+        cpsat_assignments, cpsat_stats = assign_drivers_cpsat(
+            selected_blocks,
+            config,
+            warm_start=greedy_assignments,
+            time_limit=config.time_limit_phase2
+        )
+        
+        # Use CP-SAT result if successful
+        if cpsat_stats.get("status") in ("OPTIMAL", "FEASIBLE"):
+            logger.info("CP-SAT assignment successful!")
+            logger.info(f"Result: {cpsat_stats['drivers_fte']} FTE + {cpsat_stats['drivers_pt']} PT")
+            logger.info(f"Improvement: PT {phase2_stats['drivers_pt']} -> {cpsat_stats['drivers_pt']} (Delta {cpsat_stats['drivers_pt'] - phase2_stats['drivers_pt']})")
+            assignments = cpsat_assignments
+            # Update stats with CP-SAT results
+            phase2_stats.update(cpsat_stats)
+        else:
+            logger.warning(f"CP-SAT failed ({cpsat_stats.get('error')}), using greedy fallback")
+            assignments = greedy_assignments
+            
+    except Exception as e:
+        logger.error(f"CP-SAT assignment error: {e}", exc_info=True)
+        logger.warning("Using greedy fallback")
+        assignments = greedy_assignments
     
     # Determine status
     fte_count = phase2_stats["drivers_fte"]

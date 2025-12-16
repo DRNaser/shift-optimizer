@@ -49,6 +49,16 @@ class LNSConfigV4:
     max_tours_per_day: int = 3
     # Early stopping: stop if no improvement after N consecutive failed repairs
     early_stop_after_failures: int = 5
+    # Activation cost weights
+    w_new_driver: float = 500.0  # Penalty for activating new FTE (reduced to prefer FTE)
+    w_pt_new: float = 10000.0  # Additional penalty for new PT driver (increased to minimize PT)
+    w_pt_used: float = 500.0  # Penalty for using ANY PT driver in repair (increased)
+    # PT day preference - minimize PT everywhere
+    w_pt_weekday_block: int = 5000  # Per weekday block assigned to PT
+    w_pt_saturday_block: int = 5000  # Per Saturday block assigned to PT (expensive everywhere!)
+    # Consolidation options
+    enable_consolidation: bool = True
+    max_consolidation_iterations: int = 5
 
 
 # =============================================================================
@@ -73,6 +83,7 @@ class DriverState:
     driver_type: str  # "FTE" or "PT"
     fixed_blocks: list[BlockInfo] = field(default_factory=list)
     destroyed_blocks: list[BlockInfo] = field(default_factory=list)
+    was_used_in_incumbent: bool = False  # Track if driver was used before destroy
     
     @property
     def fixed_minutes(self) -> int:
@@ -175,9 +186,14 @@ def destroy_drivers(
     
     for idx, assignment in enumerate(sorted_assignments):
         log_progress(f"  Processing assignment[{idx}]: driver={assignment.driver_id}")
+        
+        # Track if this driver was used in incumbent (before destroy)
+        was_used = len(assignment.blocks) > 0
+        
         driver = DriverState(
             driver_id=assignment.driver_id,
             driver_type=assignment.driver_type,
+            was_used_in_incumbent=was_used,  # Set flag BEFORE destroying
         )
         
         log_progress(f"    Processing {len(assignment.blocks)} blocks...")
@@ -355,9 +371,45 @@ def repair_assignments(
                         model.Add(x[b1.block_id, d.driver_id] == 0)
     
     # ==========================================================================
-    # Objective: minimize number of drivers used
+    # Objective: minimize weighted cost including PT usage and activation penalties
     # ==========================================================================
-    model.Minimize(sum(used[d.driver_id] for d in candidate_drivers))
+    # Calculate cost for each driver
+    cost_vars = []
+    for d in candidate_drivers:
+        # Base cost: 1 if driver is used, 0 otherwise
+        base_cost = used[d.driver_id]
+        
+        # PT usage penalty (applies to ANY PT driver, incumbent or new)
+        pt_usage_penalty = int(config.w_pt_used) if d.driver_type == "PT" else 0
+        
+        # Activation penalty: only for drivers NOT in incumbent
+        activation_penalty = 0
+        if not d.was_used_in_incumbent:
+            activation_penalty = int(config.w_new_driver)
+            if d.driver_type == "PT":
+                activation_penalty += int(config.w_pt_new)
+        
+        # Total weight = 1 (base) + PT usage + activation
+        weight = 1 + pt_usage_penalty + activation_penalty
+        
+        # Cost = weight × used[d]
+        # If used[d] = 0, cost = 0
+        # If used[d] = 1, cost = weight
+        cost_vars.append(weight * base_cost)
+    
+    # PT weekday penalty: per-block cost for assigning blocks to PT on weekdays
+    assign_cost = []
+    for b in blocks:
+        for d in candidate_drivers:
+            if d.driver_type == "PT":
+                # day_idx: 0=Mon, 1=Tue, ..., 5=Sat, 6=Sun
+                is_saturday = (b.day_idx == 5)
+                penalty = config.w_pt_saturday_block if is_saturday else config.w_pt_weekday_block
+                if penalty:
+                    assign_cost.append(penalty * x[b.block_id, d.driver_id])
+    
+    # Combined objective: driver costs + assignment costs
+    model.Minimize(sum(cost_vars) + sum(assign_cost))
     
     # ==========================================================================
     # Solve
@@ -446,6 +498,184 @@ def apply_repair(
 
 
 # =============================================================================
+# CONSOLIDATION
+# =============================================================================
+
+def consolidate_drivers(
+    assignments: list,  # list[DriverAssignment]
+    config: LNSConfigV4,
+) -> list:
+    """
+    Attempt to consolidate low-utilization drivers by moving their blocks to others.
+    
+    Strategy:
+    1. Sort drivers by total hours (ascending)
+    2. For each low-utilization driver (< 9h):
+       - Try to reassign all blocks to other drivers
+       - If all blocks can move, remove driver
+    3. Repeat until no more consolidations or max iterations
+    
+    Returns:
+        Consolidated list of assignments
+    """
+    from src.services.constraints import can_assign_block
+    
+    if not config.enable_consolidation:
+        return assignments
+    
+    log_progress(f"[CONSOLIDATE] Starting with {len(assignments)} drivers")
+    
+    improved = True
+    iteration = 0
+    
+    while improved and iteration < config.max_consolidation_iterations:
+        iteration += 1
+        improved = False
+        
+        # Sort drivers by total hours (ascending) - target low-utilization first
+        # Add driver_id as secondary key for determinism
+        sorted_assignments = sorted(
+            assignments,
+            key=lambda a: (a.total_hours, a.driver_id)
+        )
+        
+        for candidate_idx, candidate in enumerate(sorted_assignments):
+            # Only consolidate drivers with < 9 hours (typically PT with 1-2 segments)
+            if candidate.total_hours >= 9.0:
+                break  # Rest are higher utilization
+            
+            if not candidate.blocks:
+                continue  # Skip empty drivers
+            
+            log_progress(f"[CONSOLIDATE] Trying to merge driver {candidate.driver_id} ({candidate.total_hours:.1f}h, {len(candidate.blocks)} blocks)")
+            
+            # Try to reassign all blocks to other drivers
+            reassignments = {}  # block_id -> target_driver_id
+            
+            for block in candidate.blocks:
+                found_target = False
+                
+                # Type-aware target selection: for PT candidates, prefer FTE targets
+                # Sort targets: FTE first, then by hours, then by driver_id (deterministic)
+                targets = [a for a in sorted_assignments if sorted_assignments.index(a) != candidate_idx]
+                targets = sorted(
+                    targets,
+                    key=lambda a: (
+                        a.driver_type != "FTE",  # FTE first (False < True)
+                        a.total_hours,           # Lower hours first
+                        a.driver_id              # Deterministic tiebreaker
+                    )
+                )
+                
+                # Try all other drivers
+                for other in targets:
+                    
+                    # Check if this driver can take the block
+                    # Build list of blocks the target driver would have after reassignments
+                    target_blocks = [b for b in other.blocks]
+                    
+                    # Add already-planned reassignments to this driver
+                    for reassigned_block in candidate.blocks:
+                        if reassignments.get(reassigned_block.id) == other.driver_id:
+                            target_blocks.append(reassigned_block)
+                    
+                    # Check constraint
+                    allowed, reason = can_assign_block(target_blocks, block)
+                    
+                    if allowed:
+                        # FTE hour check
+                        if other.driver_type == "FTE":
+                            new_hours = other.total_hours + block.total_work_hours
+                            # Add hours from other reassignments too
+                            for reassigned_block in candidate.blocks:
+                                if reassignments.get(reassigned_block.id) == other.driver_id:
+                                    new_hours += reassigned_block.total_work_hours
+                            
+                            if new_hours > config.max_hours_per_fte:
+                                continue  # Would exceed FTE limit
+                        
+                        # This driver can take it
+                        reassignments[block.id] = other.driver_id
+                        found_target = True
+                        break
+                
+                if not found_target:
+                    # Cannot move all blocks - abort consolidation of this driver
+                    log_progress(f"[CONSOLIDATE] Cannot move block {block.id}, aborting merge")
+                    reassignments = {}
+                    break
+            
+            # If we successfully planned reassignment of ALL blocks, apply it
+            if reassignments and len(reassignments) == len(candidate.blocks):
+                log_progress(f"[CONSOLIDATE] Merging {candidate.driver_id} into other drivers")
+                
+                # Apply reassignments
+                new_assignments = []
+                for assignment in sorted_assignments:
+                    if assignment.driver_id == candidate.driver_id:
+                        # Skip the consolidated driver
+                        continue
+                    
+                    # Collect blocks for this driver
+                    blocks = list(assignment.blocks)
+                    for block in candidate.blocks:
+                        if reassignments.get(block.id) == assignment.driver_id:
+                            blocks.append(block)
+                    
+                    if blocks:
+                        # Rebuild assignment
+                        from src.services.forecast_solver_v4 import DriverAssignment, _analyze_driver_workload
+                        total_hours = sum(b.total_work_hours for b in blocks)
+                        days = len(set(b.day.value for b in blocks))
+                        new_assignments.append(DriverAssignment(
+                            driver_id=assignment.driver_id,
+                            driver_type=assignment.driver_type,
+                            blocks=sorted(blocks, key=lambda b: (b.day.value, b.first_start)),
+                            total_hours=total_hours,
+                            days_worked=days,
+                            analysis=_analyze_driver_workload(blocks)
+                        ))
+                
+                assignments = new_assignments
+                improved = True
+                log_progress(f"[CONSOLIDATE] Success! Now {len(assignments)} drivers")
+                break  # Restart with new sorted list
+    
+    log_progress(f"[CONSOLIDATE] Finished after {iteration} iterations, {len(assignments)} drivers remain")
+    return assignments
+
+
+# =============================================================================
+# SCORING FOR ACCEPTANCE
+# =============================================================================
+
+def score_assignments(assignments: list) -> tuple:
+    """
+    Calculate lexicographic score for LNS acceptance.
+    
+    Lower score = better.
+    Priority order: driver count > PT count > PT single-segment > tight rests
+    
+    Returns:
+        (driver_count, pt_count, pt_single_segment, tight_rest_count)
+    """
+    used = [a for a in assignments if a.blocks]
+    
+    driver_cnt = len(used)
+    pt_cnt = sum(1 for a in used if a.driver_type == "PT")
+    pt_single = sum(1 for a in used if a.driver_type == "PT" and len(a.blocks) == 1)
+    
+    # Count tight rests (exactly 11.0h)
+    tight_rest = 0
+    for a in used:
+        analysis = getattr(a, "analysis", None)
+        if analysis and analysis.get("min_rest_hours") == 11.0:
+            tight_rest += 1
+    
+    return (driver_cnt, pt_cnt, pt_single, tight_rest)
+
+
+# =============================================================================
 # MAIN LNS REFINER
 # =============================================================================
 
@@ -484,16 +714,25 @@ def refine_assignments_v4(
     if len(assignments) > 3:
         log_progress(f"  ... and {len(assignments) - 3} more assignments")
     
+    
     best_assignments = assignments
-    best_driver_count = len([a for a in assignments if a.blocks])
-    log_progress(f"Initial driver count: {best_driver_count}")
+    best_score = score_assignments(assignments)
     
-    rng = random.Random(config.seed)
+    # Log initial distribution metrics
+    pt_initial = len([a for a in assignments if a.driver_type == "PT" and a.blocks])
+    pt_single_initial = len([a for a in assignments if a.driver_type == "PT" and len(a.blocks) == 1 and a.blocks])
+    pt_low_util_initial = len([a for a in assignments if a.driver_type == "PT" and a.total_hours <= 4.5 and a.blocks])
     
-    # Early stopping counter
+    log_progress(f"Initial driver count: {best_score[0]}")
+    log_progress(f"  PT drivers: {pt_initial}")
+    log_progress(f"  PT with single segment: {pt_single_initial}")
+    log_progress(f"  PT with <=4.5h: {pt_low_util_initial}")
+    log_progress(f"Initial score: {best_score}")
+    
     consecutive_failures = 0
     
     for iteration in range(config.max_iterations):
+        # Deterministic seed per iteration
         iter_seed = config.seed + iteration
         iter_rng = random.Random(iter_seed)
         
@@ -532,23 +771,39 @@ def refine_assignments_v4(
         
         # Apply and evaluate
         new_assignments = apply_repair(best_assignments, block_mapping)
-        new_driver_count = len([a for a in new_assignments if a.blocks])
         
-        # Accept if strictly better
-        if new_driver_count < best_driver_count:
-            logger.info(f"Accepted: {new_driver_count} drivers (was {best_driver_count})")
+        # Consolidate low-utilization drivers
+        if config.enable_consolidation:
+            new_assignments = consolidate_drivers(new_assignments, config)
+        
+        new_score = score_assignments(new_assignments)
+        
+        # Accept if score is strictly better (lexicographic comparison)
+        if new_score < best_score:
+            logger.info(f"Accepted: score {new_score} < {best_score}")
             best_assignments = new_assignments
-            best_driver_count = new_driver_count
+            best_score = new_score
             consecutive_failures = 0  # Reset on improvement
         else:
-            logger.info(f"Rejected: {new_driver_count} drivers (best {best_driver_count})")
+            logger.info(f"Rejected: score {new_score} >= {best_score}")
             consecutive_failures += 1
             if consecutive_failures >= config.early_stop_after_failures:
                 log_progress(f"EARLY STOP: {consecutive_failures} consecutive failures, stopping LNS")
                 break
     
+    
+    # Log final distribution metrics
+    pt_final = len([a for a in best_assignments if a.driver_type == "PT" and a.blocks])
+    pt_single_final = len([a for a in best_assignments if a.driver_type == "PT" and len(a.blocks) == 1 and a.blocks])
+    pt_low_util_final = len([a for a in best_assignments if a.driver_type == "PT" and a.total_hours <= 4.5 and a.blocks])
+    
     logger.info("=" * 60)
-    logger.info(f"LNS V4 COMPLETE: {best_driver_count} drivers")
+    logger.info(f"LNS V4 COMPLETE")
+    logger.info(f"Final score: {best_score}")
+    logger.info(f"  Drivers: {best_score[0]} (PT: {pt_final})")
+    logger.info(f"  PT drivers: {pt_initial} -> {pt_final}")
+    logger.info(f"  PT with single segment: {pt_single_initial} -> {pt_single_final}")
+    logger.info(f"  PT with <=4.5h: {pt_low_util_initial} -> {pt_low_util_final}")
     logger.info("=" * 60)
     
     return best_assignments

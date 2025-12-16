@@ -12,6 +12,16 @@ from fastapi.middleware.cors import CORSMiddleware
 from pathlib import Path
 
 # =============================================================================
+# UTF-8 ENCODING FIX for Windows
+# =============================================================================
+# Reconfigure stdout/stderr to use UTF-8 to prevent encoding crashes
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass  # Python < 3.7 doesn't have reconfigure
+
+# =============================================================================
 # LOGGING SETUP - File-based logging for debugging
 # =============================================================================
 
@@ -28,7 +38,7 @@ log_file = log_dir / f"solver_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
 root_logger = logging.getLogger()
 root_logger.setLevel(logging.INFO)
 
-# File handler - captures everything
+# File handler - captures everything with UTF-8 encoding
 file_handler = logging.FileHandler(log_file, encoding='utf-8')
 file_handler.setLevel(logging.DEBUG)
 file_handler.setFormatter(logging.Formatter('%(asctime)s | %(levelname)s | %(name)s | %(message)s'))
@@ -90,11 +100,11 @@ def create_app():
     app.include_router(forecast_router)
     
     # Static Files (Frontend)
-    # In PyInstaller, we will bundle 'frontend_next/out' to 'site'
+    # In PyInstaller, we will bundle 'frontend/dist' to 'site'
     if getattr(sys, 'frozen', False):
         static_dir = base_dir / "site"
     else:
-        static_dir = base_dir / "frontend_next" / "out"
+        static_dir = base_dir / "frontend" / "dist"
         
     if static_dir.exists():
         app.mount("/", StaticFiles(directory=str(static_dir), html=True), name="static")
@@ -109,6 +119,13 @@ def start_server():
     # Port 8000 is hardcoded in the frontend currently
     uvicorn.run(app, host="127.0.0.1", port=8000, log_level="info")
 
+class Api:
+    def open_link(self, url):
+        """Open a URL in the default system browser."""
+        import webbrowser
+        logger.info(f"Opening external link: {url}")
+        webbrowser.open(url)
+
 if __name__ == "__main__":
     import time
     
@@ -119,13 +136,17 @@ if __name__ == "__main__":
     # Wait for server to start
     time.sleep(1)
     
+    # Create API instance
+    api = Api()
+    
     # Create window
     window = webview.create_window(
         "Shift Optimizer", 
         "http://127.0.0.1:8000",
         width=1280,
         height=800,
-        resizable=True
+        resizable=True,
+        js_api=api
     )
     
     # Start UI (blocking) - debug=True enables right-click > Inspect
