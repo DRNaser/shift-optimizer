@@ -191,3 +191,44 @@ class SoftObjectives:
 
 
 SOFT_OBJECTIVES: Final[SoftObjectives] = SoftObjectives()
+
+
+# =============================================================================
+# SOFT PENALTY CONFIGURATION (Fatigue Prevention)
+# =============================================================================
+
+@dataclass(frozen=True)
+class SoftPenaltyConfig:
+    """
+    Configurable soft penalty weights for fatigue prevention.
+    Negative weights discourage patterns, higher magnitude = stronger penalty.
+    """
+    
+    # Triple block penalty (3 tours in one block)
+    TRIPLE_BLOCK_PENALTY: int = 50
+    """Penalty for assigning a 3-tour block (discourages physically demanding blocks)."""
+    
+    # Early/Late shift penalties
+    EARLY_START_PENALTY: int = 30
+    """Penalty for blocks starting before EARLY_THRESHOLD_HOUR."""
+    
+    LATE_END_PENALTY: int = 30
+    """Penalty for blocks ending at or after LATE_THRESHOLD_HOUR."""
+    
+    # Thresholds
+    EARLY_THRESHOLD_HOUR: int = 6
+    """Hour before which starts are considered 'early' (default: 06:00)."""
+    
+    LATE_THRESHOLD_HOUR: int = 21
+    """Hour at or after which ends are considered 'late' (default: 21:00)."""
+    
+    # Comfort rest penalty (legal but tight)
+    SHORT_REST_PENALTY: int = 20
+    """Penalty for rest periods that are legal (≥11h) but below comfort threshold."""
+    
+    COMFORT_REST_HOURS: float = 13.0
+    """Rest periods below this but ≥MIN_REST_HOURS get a soft penalty."""
+
+
+SOFT_PENALTY_CONFIG: Final[SoftPenaltyConfig] = SoftPenaltyConfig()
+

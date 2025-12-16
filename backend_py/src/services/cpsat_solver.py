@@ -36,7 +36,7 @@ from src.domain.models import (
     WeeklyPlan,
     WeeklyPlanStats,
 )
-from src.domain.constraints import HARD_CONSTRAINTS
+from src.domain.constraints import HARD_CONSTRAINTS, SOFT_PENALTY_CONFIG
 from src.domain.validator import Validator
 from src.services.block_builder import build_blocks_greedy
 from src.services.scheduler import BaselineScheduler
@@ -79,6 +79,7 @@ class SolveStatus:
     HARD_OK = "HARD_OK"              # Hard coverage succeeded, all coverable tours assigned
     SOFT_FALLBACK = "SOFT_FALLBACK"  # Fallback triggered OR not all covered
     FAILED = "FAILED"                # Solver failed completely
+    INVALID = "INVALID"              # Plan produced but failed post-solve validation
 
 
 # =============================================================================
@@ -562,6 +563,54 @@ class CPSATSchedulerModel:
                 self.driver_used[d_idx] = used
                 terms.append(-used * 50)
         
+        # =====================================================================
+        # FATIGUE PREVENTION PENALTIES (Issue 2)
+        # =====================================================================
+        # Apply soft penalties for patterns that are legal but fatiguing
+        
+        for b_idx, block in enumerate(self.blocks):
+            for d_idx in range(len(self.drivers)):
+                if (b_idx, d_idx) not in self.assignment:
+                    continue
+                var = self.assignment[(b_idx, d_idx)]
+                
+                # Penalty for triple blocks (physically demanding)
+                if len(block.tours) == 3:
+                    terms.append(-var * SOFT_PENALTY_CONFIG.TRIPLE_BLOCK_PENALTY)
+                
+                # Penalty for early starts (before threshold, e.g., 06:00)
+                if block.first_start.hour < SOFT_PENALTY_CONFIG.EARLY_THRESHOLD_HOUR:
+                    terms.append(-var * SOFT_PENALTY_CONFIG.EARLY_START_PENALTY)
+                
+                # Penalty for late ends (at or after threshold, e.g., 21:00)
+                if block.last_end.hour >= SOFT_PENALTY_CONFIG.LATE_THRESHOLD_HOUR:
+                    terms.append(-var * SOFT_PENALTY_CONFIG.LATE_END_PENALTY)
+        
+        # Penalty for short (but legal) rest between consecutive days
+        days = list(Weekday)
+        comfort_mins = int(SOFT_PENALTY_CONFIG.COMFORT_REST_HOURS * 60)
+        rest_mins = int(HARD_CONSTRAINTS.MIN_REST_HOURS * 60)
+        
+        for d_idx, driver in enumerate(self.drivers):
+            for i in range(len(days) - 1):
+                d1, d2 = days[i], days[i + 1]
+                b1s = [(j, b) for j, b in enumerate(self.blocks) if b.day == d1 and (j, d_idx) in self.assignment]
+                b2s = [(j, b) for j, b in enumerate(self.blocks) if b.day == d2 and (j, d_idx) in self.assignment]
+                for j1, blk1 in b1s:
+                    for j2, blk2 in b2s:
+                        e1 = blk1.last_end.hour * 60 + blk1.last_end.minute
+                        s2 = blk2.first_start.hour * 60 + blk2.first_start.minute
+                        rest = (s2 + 24 * 60) - e1
+                        # If rest is legal but below comfort threshold, add soft penalty
+                        if rest_mins <= rest < comfort_mins:
+                            # Create auxiliary variable for this pair
+                            pair_var = self.model.NewBoolVar(f"short_rest_{d_idx}_{j1}_{j2}")
+                            self.model.AddMinEquality(pair_var, [
+                                self.assignment[(j1, d_idx)],
+                                self.assignment[(j2, d_idx)]
+                            ])
+                            terms.append(-pair_var * SOFT_PENALTY_CONFIG.SHORT_REST_PENALTY)
+        
         if terms:
             self.model.Maximize(sum(terms))
     
@@ -731,6 +780,23 @@ class CPSATScheduler:
             version="3.0.0",
             solver_seed=self.config.seed
         )
+        
+        # =====================================================================
+        # POST-SOLVE VALIDATION GATE (Issue 3)
+        # =====================================================================
+        # Final safety check - if validation found rest violations, mark plan INVALID
+        if not plan.validation.is_valid:
+            rest_violations = [v for v in plan.validation.hard_violations 
+                              if "rest" in v.lower()]
+            if rest_violations:
+                print(f"[VALIDATION GATE] INVALID PLAN: {len(rest_violations)} rest violations detected")
+                for rv in rest_violations[:5]:  # Show first 5
+                    print(f"  - {rv}")
+                plan.validation = ValidationResult(
+                    is_valid=False,
+                    hard_violations=[f"INVALID_PLAN: {len(rest_violations)} rest rule violations detected"],
+                    warnings=rest_violations[:10]  # Include first 10 as warnings for details
+                )
         
         return plan
     

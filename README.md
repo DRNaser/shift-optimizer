@@ -94,6 +94,28 @@ curl -X POST http://localhost:8000/api/v1/schedule \
 | `MIN_REST_HOURS` | 11h | Min rest between days |
 | `MAX_TOURS_PER_DAY` | 3 | Max tours per driver per day |
 
+### Rest Time Enforcement (v3.1+)
+
+The solver enforces a **hard 11-hour minimum rest** between consecutive work days.
+This is a legal requirement and cannot be overridden.
+
+**Example:**
+- Driver ends at 22:00 Monday
+- Driver cannot start before 09:00 Tuesday (22:00 + 11h = 09:00)
+
+### Soft Penalties (Fatigue Prevention)
+
+To promote driver well-being, the solver applies soft penalties:
+
+| Pattern | Penalty | Description |
+|---------|---------|-------------|
+| **Triple blocks** | -50 | 3-tour blocks are physically demanding |
+| **Early starts** | -30 | Blocks starting before 06:00 |
+| **Late ends** | -30 | Blocks ending at/after 21:00 |
+| **Tight rest** | -20 | Legal (11-13h) but uncomfortable rest |
+
+Configure via `SoftPenaltyConfig` in `src/domain/constraints.py`.
+
 ---
 
 ## Project Structure
