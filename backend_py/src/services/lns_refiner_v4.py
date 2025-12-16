@@ -17,12 +17,18 @@ Determinism:
 
 import random
 import logging
+import traceback
 from dataclasses import dataclass, field
 from ortools.sat.python import cp_model
 
 from src.domain.models import Block, Weekday
 
 logger = logging.getLogger("LNS_V4")
+
+
+def log_progress(msg: str):
+    """Print with flush for immediate visibility."""
+    print(f"[LNS] {msg}", flush=True)
 
 
 # =============================================================================
@@ -88,17 +94,31 @@ def time_to_minutes(t) -> int:
 
 def block_to_info(block: Block, day_idx: int) -> BlockInfo:
     """Convert v4 Block to BlockInfo for LNS."""
-    start_min = time_to_minutes(block.first_start)
-    end_min = time_to_minutes(block.last_end)
-    duration_min = int(block.total_work_hours * 60)
-    return BlockInfo(
-        block_id=block.id,
-        day_idx=day_idx,
-        start_min=start_min,
-        end_min=end_min,
-        duration_min=duration_min,
-        tour_count=len(block.tours),
-    )
+    try:
+        log_progress(f"  Converting block {block.id} (type={type(block).__name__})")
+        log_progress(f"    Block attributes: {dir(block)}")
+        log_progress(f"    Getting first_start...")
+        start_min = time_to_minutes(block.first_start)
+        log_progress(f"    first_start OK: {block.first_start}")
+        log_progress(f"    Getting last_end...")
+        end_min = time_to_minutes(block.last_end)
+        log_progress(f"    last_end OK: {block.last_end}")
+        duration_min = int(block.total_work_hours * 60)
+        log_progress(f"    Block conversion complete: start={start_min}, end={end_min}, duration={duration_min}")
+        return BlockInfo(
+            block_id=block.id,
+            day_idx=day_idx,
+            start_min=start_min,
+            end_min=end_min,
+            duration_min=duration_min,
+            tour_count=len(block.tours),
+        )
+    except AttributeError as e:
+        log_progress(f"  ERROR converting block {block.id}: {e}")
+        log_progress(f"  Block type: {type(block)}")
+        log_progress(f"  Block dir: {dir(block)}")
+        log_progress(f"  Traceback: {traceback.format_exc()}")
+        raise
 
 
 def blocks_overlap(b1: BlockInfo, b2: BlockInfo) -> bool:
@@ -136,36 +156,45 @@ def destroy_drivers(
         - driver_states: List of DriverState with fixed/destroyed blocks
         - blocks_to_repair: List of BlockInfo that need reassignment
     """
+    log_progress(f"destroy_drivers: {len(assignments)} assignments, fraction={fraction}")
+    
     # Sort for determinism
     sorted_assignments = sorted(assignments, key=lambda a: a.driver_id)
+    log_progress(f"  Sorted {len(sorted_assignments)} assignments")
     
     # Select drivers to destroy
     num_to_destroy = max(1, int(len(sorted_assignments) * fraction))
     destroy_indices = rng.sample(range(len(sorted_assignments)), min(num_to_destroy, len(sorted_assignments)))
     destroy_set = set(destroy_indices)
+    log_progress(f"  Will destroy drivers at indices: {sorted(destroy_set)}")
     
     driver_states = []
     blocks_to_repair = []
     
     for idx, assignment in enumerate(sorted_assignments):
+        log_progress(f"  Processing assignment[{idx}]: driver={assignment.driver_id}")
         driver = DriverState(
             driver_id=assignment.driver_id,
             driver_type=assignment.driver_type,
         )
         
-        for block in sorted(assignment.blocks, key=lambda b: b.id):
+        log_progress(f"    Processing {len(assignment.blocks)} blocks...")
+        for block_idx, block in enumerate(sorted(assignment.blocks, key=lambda b: b.id)):
+            log_progress(f"      Block[{block_idx}]: id={block.id}")
             day_idx = get_day_idx(block.day)
             block_info = block_to_info(block, day_idx)
             
             if idx in destroy_set:
                 driver.destroyed_blocks.append(block_info)
                 blocks_to_repair.append(block_info)
+                log_progress(f"      -> DESTROYED")
             else:
                 driver.fixed_blocks.append(block_info)
+                log_progress(f"      -> FIXED")
         
         driver_states.append(driver)
     
-    logger.info(f"Destroyed {len(blocks_to_repair)} blocks from {num_to_destroy} drivers")
+    log_progress(f"destroy_drivers COMPLETE: {len(blocks_to_repair)} blocks to repair from {num_to_destroy} drivers")
     return driver_states, blocks_to_repair
 
 
@@ -382,19 +411,33 @@ def refine_assignments_v4(
     
     Iteratively destroys part of the assignment and repairs with CP-SAT.
     """
+    log_progress("=" * 60)
+    log_progress("LNS V4 REFINEMENT START")
+    log_progress("=" * 60)
+    
     if config is None:
         config = LNSConfigV4()
+        log_progress("Using default config")
+    
+    log_progress(f"Config: iterations={config.max_iterations}, destroy={config.destroy_fraction}")
+    log_progress(f"Input: {len(assignments)} driver assignments")
     
     if not assignments:
+        log_progress("No assignments to refine, returning empty")
         return assignments
     
-    logger.info("=" * 60)
-    logger.info("LNS V4 REFINEMENT START")
-    logger.info(f"Config: iterations={config.max_iterations}, destroy={config.destroy_fraction}")
-    logger.info("=" * 60)
+    # Log input structure
+    for i, a in enumerate(assignments[:3]):  # First 3 only
+        log_progress(f"  Assignment[{i}]: driver={a.driver_id}, type={a.driver_type}, blocks={len(a.blocks)}")
+        for j, block in enumerate(a.blocks[:2]):  # First 2 blocks only
+            log_progress(f"    Block[{j}]: id={block.id}, type={type(block).__name__}")
+    
+    if len(assignments) > 3:
+        log_progress(f"  ... and {len(assignments) - 3} more assignments")
     
     best_assignments = assignments
     best_driver_count = len([a for a in assignments if a.blocks])
+    log_progress(f"Initial driver count: {best_driver_count}")
     
     rng = random.Random(config.seed)
     
@@ -402,7 +445,7 @@ def refine_assignments_v4(
         iter_seed = config.seed + iteration
         iter_rng = random.Random(iter_seed)
         
-        logger.info(f"Iteration {iteration + 1}/{config.max_iterations}")
+        log_progress(f"\n--- Iteration {iteration + 1}/{config.max_iterations} ---")
         
         # Destroy
         driver_states, blocks_to_repair = destroy_drivers(

@@ -107,22 +107,44 @@ async def create_schedule(request: ScheduleRequest):
         
         # Optional LNS refinement for cpsat+lns
         if request.solver_type == "cpsat+lns" and result.assignments:
-            logger.info("=" * 40)
-            logger.info("Starting LNS Phase 3 refinement...")
+            print("=" * 60, flush=True)
+            print("STARTING LNS PHASE 3 REFINEMENT", flush=True)
+            print("=" * 60, flush=True)
+            print(f"Input assignments: {len(result.assignments)}", flush=True)
+            
+            # Log assignment structure before LNS
+            for i, a in enumerate(result.assignments[:3]):
+                print(f"  Assignment[{i}]: driver={a.driver_id}, type={a.driver_type}, blocks={len(a.blocks)}", flush=True)
+                for j, block in enumerate(a.blocks[:2]):
+                    print(f"    Block[{j}]: id={block.id}, day={block.day}, tours={len(block.tours)}", flush=True)
+                    print(f"      Block type: {type(block).__name__}", flush=True)
+                    print(f"      Has first_start: {hasattr(block, 'first_start')}", flush=True)
+                    if hasattr(block, 'first_start'):
+                        print(f"      first_start = {block.first_start}", flush=True)
+                    print(f"      Has start_time: {hasattr(block, 'start_time')}", flush=True)
+            
             from src.services.lns_refiner_v4 import refine_assignments_v4, LNSConfigV4
             
             lns_config = LNSConfigV4(
                 max_iterations=request.lns_iterations,
                 seed=config.seed,
             )
+            print(f"LNS Config: iterations={lns_config.max_iterations}, seed={lns_config.seed}", flush=True)
             
-            refined_assignments = refine_assignments_v4(result.assignments, lns_config)
-            
-            # Update result with refined assignments
-            result.assignments = refined_assignments
-            result.kpi["lns_applied"] = True
-            result.kpi["lns_iterations"] = request.lns_iterations
-            logger.info("LNS refinement complete")
+            try:
+                refined_assignments = refine_assignments_v4(result.assignments, lns_config)
+                print(f"LNS refinement COMPLETE: {len(refined_assignments)} assignments", flush=True)
+                
+                # Update result with refined assignments
+                result.assignments = refined_assignments
+                result.kpi["lns_applied"] = True
+                result.kpi["lns_iterations"] = request.lns_iterations
+                print("LNS results applied successfully", flush=True)
+            except Exception as lns_error:
+                print(f"LNS ERROR: {lns_error}", flush=True)
+                import traceback
+                print(f"LNS TRACEBACK:\n{traceback.format_exc()}", flush=True)
+                raise
             
     except Exception as e:
         logger.error(f"SOLVER ERROR: {str(e)}")
