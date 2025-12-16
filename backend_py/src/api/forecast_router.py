@@ -9,6 +9,7 @@ import logging
 import traceback
 from datetime import time as dt_time
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import StreamingResponse
 
 from src.api.models import (
     ScheduleRequest, ScheduleResponse, HealthResponse,
@@ -17,6 +18,7 @@ from src.api.models import (
 )
 from src.domain.models import Tour, Weekday
 from src.services.forecast_solver_v4 import solve_forecast_v4, ConfigV4
+from src.services.log_stream import emit_log, get_log_generator, clear_logs
 
 # Setup logger
 logger = logging.getLogger("ForecastRouter")
@@ -65,6 +67,28 @@ async def get_constraints():
 
 
 # =============================================================================
+# LOG STREAM (SSE)
+# =============================================================================
+
+@router.get("/logs/stream")
+async def stream_logs():
+    """
+    Server-Sent Events endpoint for live log streaming.
+    
+    Connect with EventSource in browser to receive real-time solver logs.
+    """
+    return StreamingResponse(
+        get_log_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",  # Disable nginx buffering if present
+        }
+    )
+
+
+# =============================================================================
 # SCHEDULE
 # =============================================================================
 
@@ -76,18 +100,27 @@ async def create_schedule(request: ScheduleRequest):
     Converts frontend format to internal Tour objects,
     runs v4 solver, and converts response back.
     """
+    # Clear previous logs for new solve session
+    clear_logs()
+    emit_log("═" * 40, "INFO")
+    emit_log("SCHEDULE REQUEST RECEIVED", "INFO")
+    emit_log("═" * 40, "INFO")
+    
     logger.info("=" * 60)
     logger.info("SCHEDULE REQUEST RECEIVED")
     logger.info("=" * 60)
     
     # Convert frontend tours to internal Tours
+    emit_log(f"Converting {len(request.tours)} tours...", "INFO")
     logger.info(f"Converting {len(request.tours)} tours...")
     tours = _convert_tours(request.tours)
     
     if not tours:
         logger.error("No valid tours after conversion!")
+        emit_log("ERROR: No valid tours after conversion!", "ERROR")
         raise HTTPException(status_code=400, detail="No valid tours provided")
     
+    emit_log(f"✓ Converted {len(tours)} tours", "SUCCESS")
     logger.info(f"Successfully converted {len(tours)} tours")
     
     # Build config from request
@@ -95,13 +128,18 @@ async def create_schedule(request: ScheduleRequest):
         time_limit_phase1=float(request.time_limit_seconds),
         seed=request.seed or 42,
     )
+    emit_log(f"Config: time_limit={config.time_limit_phase1}s, seed={config.seed}", "INFO")
+    emit_log(f"Solver type: {request.solver_type}", "INFO")
     logger.info(f"Config: time_limit={config.time_limit_phase1}s, seed={config.seed}")
     logger.info(f"Solver type: {request.solver_type}")
     
     # Run solver
     try:
+        emit_log("Starting solver...", "INFO")
         logger.info("Starting solver...")
         result = solve_forecast_v4(tours, config)
+        emit_log(f"✓ Solver completed! Status: {result.status}", "SUCCESS")
+        emit_log(f"Drivers FTE: {result.kpi.get('drivers_fte', 0)}, PT: {result.kpi.get('drivers_pt', 0)}", "INFO")
         logger.info(f"Solver completed! Status: {result.status}")
         logger.info(f"KPI: {result.kpi}")
         

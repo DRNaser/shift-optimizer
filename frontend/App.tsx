@@ -1,7 +1,7 @@
 // SHIFT OPTIMIZER - Main App
 // React frontend for the weekly shift optimizer
 
-import React, { useState, useCallback } from 'react';
+import { useState, useCallback } from 'react';
 import {
   TourInput,
   DriverInput,
@@ -16,6 +16,7 @@ import WeekOverview from './components/WeekOverview';
 import UnassignedTours from './components/UnassignedTours';
 import StatsDashboard from './components/StatsDashboard';
 import ExportButton from './components/ExportButton';
+import LogSidebar from './components/LogSidebar';
 import { createSchedule } from './services/api';
 import { LoadingIcon } from './components/Icons';
 
@@ -85,8 +86,9 @@ function App() {
   }, [tours, drivers, solverType, timeLimit, lnsIterations]);
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-100 to-slate-200 font-sans text-slate-800">
+    <div className="min-h-screen bg-gradient-to-br from-slate-100 to-slate-200 font-sans text-slate-800" style={{ marginRight: '320px' }}>
       <Header />
+      <LogSidebar />
 
       <main className="container mx-auto px-4 py-8 max-w-7xl">
         {/* Setup Section */}
