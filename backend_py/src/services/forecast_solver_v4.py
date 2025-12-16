@@ -337,10 +337,21 @@ def assign_drivers_greedy(
         }
         return driver_id
     
+    # Rest time constraint (11h minimum between consecutive days)
+    MIN_REST_HOURS = 11.0
+    MIN_REST_MINS = int(MIN_REST_HOURS * 60)
+    
+    # Day order for rest checks
+    WEEKDAY_ORDER = ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY", "SUNDAY"]
+    
+    def get_day_index(day: str) -> int:
+        return WEEKDAY_ORDER.index(day) if day in WEEKDAY_ORDER else -1
+    
     def can_take_block(driver_id: str, block: Block) -> bool:
         """Check if driver can take this block."""
         d = drivers[driver_id]
         day = block.day.value
+        day_idx = get_day_index(day)
         
         # Check overlap with existing blocks on same day
         for existing in d["day_blocks"][day]:
@@ -352,6 +363,32 @@ def assign_drivers_greedy(
             new_hours = d["hours"] + block.total_work_hours
             if new_hours > config.max_hours_per_fte:
                 return False
+        
+        # ===================================================================
+        # HARD REST CONSTRAINT: 11h minimum between consecutive days
+        # ===================================================================
+        block_start_mins = block.first_start.hour * 60 + block.first_start.minute
+        block_end_mins = block.last_end.hour * 60 + block.last_end.minute
+        
+        # Check previous day
+        if day_idx > 0:
+            prev_day = WEEKDAY_ORDER[day_idx - 1]
+            for prev_block in d["day_blocks"].get(prev_day, []):
+                prev_end_mins = prev_block.last_end.hour * 60 + prev_block.last_end.minute
+                # Rest = (next_start + 24h) - prev_end
+                rest_mins = (block_start_mins + 24 * 60) - prev_end_mins
+                if rest_mins < MIN_REST_MINS:
+                    return False  # Would violate 11h rest
+        
+        # Check next day
+        if day_idx < len(WEEKDAY_ORDER) - 1:
+            next_day = WEEKDAY_ORDER[day_idx + 1]
+            for next_block in d["day_blocks"].get(next_day, []):
+                next_start_mins = next_block.first_start.hour * 60 + next_block.first_start.minute
+                # Rest = (next_start + 24h) - this_block_end
+                rest_mins = (next_start_mins + 24 * 60) - block_end_mins
+                if rest_mins < MIN_REST_MINS:
+                    return False  # Would violate 11h rest
         
         return True
     

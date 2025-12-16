@@ -28,12 +28,16 @@ app.add_middleware(
         "http://localhost:5174",   # Vite dev (alternate port)
         "http://localhost:5175",   # Vite dev (alternate port 2)
         "http://localhost:5176",   # Vite dev (alternate port 3)
+        "http://localhost:5177",   # Vite dev (alternate port 4)
+        "http://localhost:5178",   # Vite dev (alternate port 5)
         "http://localhost:3000",   # React dev
         "http://localhost:4173",   # Vite preview
         "http://127.0.0.1:5173",
         "http://127.0.0.1:5174",
         "http://127.0.0.1:5175",
         "http://127.0.0.1:5176",
+        "http://127.0.0.1:5177",
+        "http://127.0.0.1:5178",
         "http://127.0.0.1:3000",
     ],
     allow_credentials=True,
