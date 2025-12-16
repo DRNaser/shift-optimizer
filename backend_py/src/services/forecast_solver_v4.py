@@ -48,6 +48,7 @@ class ConfigV4(NamedTuple):
     """Configuration for v4 solver."""
     min_hours_per_fte: float = 42.0
     max_hours_per_fte: float = 53.0
+    pt_min_hours: float = 6.0  # Target minimum hours per PT activation to avoid tiny PT shifts
     time_limit_phase1: float = 120.0
     time_limit_phase2: float = 60.0
     seed: int = 42
