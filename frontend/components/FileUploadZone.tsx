@@ -53,6 +53,27 @@ export default function FileUploadZone({ onDataLoad }: FileUploadZoneProps) {
         }
     };
 
+    // Auto-generate drivers based on tour count and distribution
+    const generateDriversForTours = (tours: TourInput[]): DriverInput[] => {
+        if (tours.length === 0) return [];
+
+        // Calculate how many drivers we need:
+        // - Each tour is ~4.5 hours, max 53 hours/week per driver = ~11-12 tours/driver
+        // - But need to account for overlapping tours and rest requirements
+        // - Conservative estimate: 1 driver per 8 tours, minimum 4 drivers
+        const estimatedDriverCount = Math.max(4, Math.ceil(tours.length / 8));
+
+        const drivers: DriverInput[] = [];
+        for (let i = 1; i <= estimatedDriverCount; i++) {
+            drivers.push({
+                id: `D-${String(i).padStart(3, '0')}`,
+                name: `Fahrer ${i}`,
+            });
+        }
+
+        return drivers;
+    };
+
     const handleFiles = async (files: File[]) => {
         setIsProcessing(true);
         setError(null);
@@ -76,9 +97,16 @@ export default function FileUploadZone({ onDataLoad }: FileUploadZoneProps) {
                 setError(`Parsed with warnings:\n${result.errors.join('\n')}`);
             }
 
-            if (result.tours.length > 0 || result.drivers.length > 0) {
-                onDataLoad(result.tours, result.drivers);
-                setSuccess(`✓ Loaded ${result.tours.length} tours and ${result.drivers.length} drivers`);
+            // Auto-generate drivers if only tours were loaded (forecast file)
+            let drivers = result.drivers;
+            if (result.tours.length > 0 && result.drivers.length === 0) {
+                drivers = generateDriversForTours(result.tours);
+                result.errors.push(`Auto-generated ${drivers.length} drivers for ${result.tours.length} tours`);
+            }
+
+            if (result.tours.length > 0 || drivers.length > 0) {
+                onDataLoad(result.tours, drivers);
+                setSuccess(`✓ Loaded ${result.tours.length} tours and ${drivers.length} drivers`);
             } else {
                 setError('No valid data found in file');
             }
@@ -91,18 +119,107 @@ export default function FileUploadZone({ onDataLoad }: FileUploadZoneProps) {
 
     const parseCSV = (file: File): Promise<ParseResult> => {
         return new Promise((resolve) => {
-            Papa.parse(file, {
-                header: true,
-                skipEmptyLines: true,
-                complete: (results) => {
-                    const parsed = parseData(results.data as any[]);
+            // First, read the file to detect format
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                const text = e.target?.result as string;
+
+                // Check if this is a German forecast format (semicolon-separated, German day names)
+                const germanDays = ['Montag', 'Dienstag', 'Mittwoch', 'Donnerstag', 'Freitag', 'Samstag', 'Sonntag'];
+                const isGermanForecast = germanDays.some(day => text.includes(day)) && text.includes(';');
+
+                if (isGermanForecast) {
+                    // Parse as German forecast format
+                    const parsed = parseForecastData(text);
                     resolve(parsed);
-                },
-                error: (error) => {
-                    resolve({ tours: [], drivers: [], errors: [error.message] });
-                },
-            });
+                } else {
+                    // Parse as standard CSV
+                    Papa.parse(file, {
+                        header: true,
+                        skipEmptyLines: true,
+                        complete: (results) => {
+                            const parsed = parseData(results.data as any[]);
+                            resolve(parsed);
+                        },
+                        error: (error) => {
+                            resolve({ tours: [], drivers: [], errors: [error.message] });
+                        },
+                    });
+                }
+            };
+            reader.onerror = () => {
+                resolve({ tours: [], drivers: [], errors: ['Failed to read file'] });
+            };
+            reader.readAsText(file);
         });
+    };
+
+    // Parse German forecast format: Day;Count header followed by TimeRange;Count rows
+    const parseForecastData = (text: string): ParseResult => {
+        const tours: TourInput[] = [];
+        const errors: string[] = [];
+
+        // German to English day mapping
+        const germanDayMap: Record<string, Weekday> = {
+            'montag': 'MONDAY',
+            'dienstag': 'TUESDAY',
+            'mittwoch': 'WEDNESDAY',
+            'donnerstag': 'THURSDAY',
+            'freitag': 'FRIDAY',
+            'samstag': 'SATURDAY',
+            'sonntag': 'SUNDAY',
+        };
+
+        const lines = text.split(/\r?\n/);
+        let currentDay: Weekday | null = null;
+        let tourIndex = 0;
+
+        for (const line of lines) {
+            const trimmedLine = line.trim();
+            if (!trimmedLine || trimmedLine === ';') continue;
+
+            const parts = trimmedLine.split(';').map(p => p.trim());
+            if (parts.length < 2) continue;
+
+            const firstPart = parts[0].toLowerCase();
+
+            // Check if this is a day header (e.g., "Montag;Anzahl")
+            const matchedDay = Object.keys(germanDayMap).find(day =>
+                firstPart.includes(day)
+            );
+
+            if (matchedDay) {
+                currentDay = germanDayMap[matchedDay];
+                continue;
+            }
+
+            // Check if this is a time range row (e.g., "04:45-09:15;15")
+            const timeRangeMatch = parts[0].match(/^(\d{1,2}:\d{2})-(\d{1,2}:\d{2})$/);
+            if (timeRangeMatch && currentDay) {
+                const startTime = timeRangeMatch[1];
+                const endTime = timeRangeMatch[2];
+                const count = parseInt(parts[1], 10);
+
+                if (!isNaN(count) && count > 0) {
+                    // Create 'count' number of tours for this time slot
+                    for (let i = 0; i < count; i++) {
+                        tourIndex++;
+                        tours.push({
+                            id: `T-${String(tourIndex).padStart(4, '0')}`,
+                            day: currentDay,
+                            start_time: startTime.padStart(5, '0'),
+                            end_time: endTime.padStart(5, '0'),
+                        });
+                    }
+                }
+            }
+        }
+
+        if (tours.length === 0) {
+            errors.push('No valid tour data found in forecast file');
+        }
+
+        return { tours, drivers: [], errors };
     };
 
     const parseExcel = (file: File): Promise<ParseResult> => {
@@ -184,6 +301,7 @@ export default function FileUploadZone({ onDataLoad }: FileUploadZoneProps) {
 
         const dayUpper = day.toUpperCase();
         const dayMap: Record<string, Weekday> = {
+            // English
             'MON': 'MONDAY', 'MONDAY': 'MONDAY',
             'TUE': 'TUESDAY', 'TUESDAY': 'TUESDAY',
             'WED': 'WEDNESDAY', 'WEDNESDAY': 'WEDNESDAY',
@@ -191,6 +309,14 @@ export default function FileUploadZone({ onDataLoad }: FileUploadZoneProps) {
             'FRI': 'FRIDAY', 'FRIDAY': 'FRIDAY',
             'SAT': 'SATURDAY', 'SATURDAY': 'SATURDAY',
             'SUN': 'SUNDAY', 'SUNDAY': 'SUNDAY',
+            // German
+            'MONTAG': 'MONDAY', 'MO': 'MONDAY',
+            'DIENSTAG': 'TUESDAY', 'DI': 'TUESDAY',
+            'MITTWOCH': 'WEDNESDAY', 'MI': 'WEDNESDAY',
+            'DONNERSTAG': 'THURSDAY', 'DO': 'THURSDAY',
+            'FREITAG': 'FRIDAY', 'FR': 'FRIDAY',
+            'SAMSTAG': 'SATURDAY', 'SA': 'SATURDAY',
+            'SONNTAG': 'SUNDAY', 'SO': 'SUNDAY',
         };
 
         if (dayMap[dayUpper]) return dayMap[dayUpper];

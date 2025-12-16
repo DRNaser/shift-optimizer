@@ -10,15 +10,15 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "papaparse": "^5.5.3",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
-    "xlsx": "^0.18.5",
-    "papaparse": "^5.4.1"
+    "xlsx": "^0.18.5"
   },
   "devDependencies": {
+    "@types/papaparse": "^5.3.14",
     "@types/react": "^18.2.66",
     "@types/react-dom": "^18.2.22",
-    "@types/papaparse": "^5.3.14",
     "@typescript-eslint/eslint-plugin": "^7.2.0",
     "@typescript-eslint/parser": "^7.2.0",
     "@vitejs/plugin-react": "^4.2.1",

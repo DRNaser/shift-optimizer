@@ -88,8 +88,8 @@ def time_to_minutes(t) -> int:
 
 def block_to_info(block: Block, day_idx: int) -> BlockInfo:
     """Convert v4 Block to BlockInfo for LNS."""
-    start_min = time_to_minutes(block.start_time)
-    end_min = time_to_minutes(block.end_time)
+    start_min = time_to_minutes(block.first_start)
+    end_min = time_to_minutes(block.last_end)
     duration_min = int(block.total_work_hours * 60)
     return BlockInfo(
         block_id=block.id,
@@ -361,7 +361,7 @@ def apply_repair(
             new_assignments.append(DriverAssignment(
                 driver_id=driver_id,
                 driver_type=data["driver_type"],
-                blocks=sorted(data["blocks"], key=lambda b: (b.day.value, b.start_time)),
+                blocks=sorted(data["blocks"], key=lambda b: (b.day.value, b.first_start)),
                 total_hours=total_hours,
                 days_worked=days,
             ))
