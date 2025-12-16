@@ -1,9 +1,8 @@
 // Excel Export Component
 // Generates and downloads Excel file with schedule data
 
-import React from 'react';
 import * as XLSX from 'xlsx';
-import { ScheduleResponse, getBlockTypeColor, BlockType } from '../types';
+import { ScheduleResponse } from '../types';
 
 interface ExportButtonProps {
     schedule: ScheduleResponse | null;
@@ -123,6 +122,72 @@ export default function ExportButton({ schedule, disabled = false }: ExportButto
 
         const ws4 = XLSX.utils.aoa_to_sheet(statsData);
         XLSX.utils.book_append_sheet(wb, ws4, 'Statistics');
+
+        // Sheet 5: Roster Matrix (Schichtplan)
+        const rosterData: any[][] = [];
+
+        // German day names (Mon-Sat only, as per user request)
+        const weekdayDE = [
+            { key: 'MONDAY', label: 'Montag' },
+            { key: 'TUESDAY', label: 'Dienstag' },
+            { key: 'WEDNESDAY', label: 'Mittwoch' },
+            { key: 'THURSDAY', label: 'Donnerstag' },
+            { key: 'FRIDAY', label: 'Freitag' },
+            { key: 'SATURDAY', label: 'Samstag' },
+        ];
+
+        // Header row
+        rosterData.push(['Fahrer', ...weekdayDE.map(d => d.label)]);
+
+        // Build driver -> day -> tour times map
+        const rosterMap = new Map<string, { name: string; days: Map<string, string> }>();
+
+        schedule.assignments.forEach(assignment => {
+            if (!rosterMap.has(assignment.driver_id)) {
+                rosterMap.set(assignment.driver_id, {
+                    name: assignment.driver_name,
+                    days: new Map(),
+                });
+            }
+
+            const driver = rosterMap.get(assignment.driver_id)!;
+
+            // Format tour times: HH:MM-HH:MM/HH:MM-HH:MM
+            const tourTimes = assignment.block.tours
+                .sort((a, b) => a.start_time.localeCompare(b.start_time))
+                .map(tour => `${tour.start_time}-${tour.end_time}`)
+                .join('/');
+
+            driver.days.set(assignment.day, tourTimes);
+        });
+
+        // Add driver rows sorted by name
+        const sortedDrivers = Array.from(rosterMap.entries()).sort((a, b) =>
+            a[1].name.localeCompare(b[1].name)
+        );
+
+        for (const [_driverId, driver] of sortedDrivers) {
+            const row = [driver.name];
+            for (const dayInfo of weekdayDE) {
+                row.push(driver.days.get(dayInfo.key) || '-');
+            }
+            rosterData.push(row);
+        }
+
+        const ws5 = XLSX.utils.aoa_to_sheet(rosterData);
+
+        // Set column widths for better readability
+        ws5['!cols'] = [
+            { wch: 20 },  // Fahrer column
+            { wch: 30 },  // Montag
+            { wch: 30 },  // Dienstag
+            { wch: 30 },  // Mittwoch
+            { wch: 30 },  // Donnerstag
+            { wch: 30 },  // Freitag
+            { wch: 30 },  // Samstag
+        ];
+
+        XLSX.utils.book_append_sheet(wb, ws5, 'Schichtplan');
 
         // Generate file
         const fileName = `shift-schedule-${schedule.week_start}-${schedule.solver_type}.xlsx`;

@@ -16,7 +16,6 @@ import WeekOverview from './components/WeekOverview';
 import UnassignedTours from './components/UnassignedTours';
 import StatsDashboard from './components/StatsDashboard';
 import ExportButton from './components/ExportButton';
-import RosterMatrix from './components/RosterMatrix';
 import { createSchedule } from './services/api';
 import { LoadingIcon } from './components/Icons';
 
@@ -190,11 +189,6 @@ function App() {
             {/* Unassigned Tours */}
             <section className="mb-8">
               <UnassignedTours tours={result.unassigned_tours} />
-            </section>
-
-            {/* Roster Matrix */}
-            <section className="mb-8">
-              <RosterMatrix schedule={result} />
             </section>
           </>
         )}
