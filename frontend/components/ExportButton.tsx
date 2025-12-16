@@ -140,25 +140,46 @@ export default function ExportButton({ schedule, disabled = false }: ExportButto
         rosterData.push(['Fahrer', ...weekdayDE.map(d => d.label)]);
 
         // Build driver -> day -> tour times map
-        const rosterMap = new Map<string, { name: string; days: Map<string, string> }>();
+        // First, accumulate tours (as objects) then format to strings
+        type TourTime = { start: string; end: string };
+        const tourAccumulator = new Map<string, { name: string; days: Map<string, TourTime[]> }>();
 
         schedule.assignments.forEach(assignment => {
-            if (!rosterMap.has(assignment.driver_id)) {
-                rosterMap.set(assignment.driver_id, {
+            if (!tourAccumulator.has(assignment.driver_id)) {
+                tourAccumulator.set(assignment.driver_id, {
                     name: assignment.driver_name,
                     days: new Map(),
                 });
             }
 
-            const driver = rosterMap.get(assignment.driver_id)!;
+            const driver = tourAccumulator.get(assignment.driver_id)!;
 
-            // Format tour times: HH:MM-HH:MM/HH:MM-HH:MM
-            const tourTimes = assignment.block.tours
-                .sort((a, b) => a.start_time.localeCompare(b.start_time))
-                .map(tour => `${tour.start_time}-${tour.end_time}`)
-                .join('/');
+            // Get all tours from this block
+            const newTours: TourTime[] = assignment.block.tours.map(tour => ({
+                start: tour.start_time,
+                end: tour.end_time,
+            }));
 
-            driver.days.set(assignment.day, tourTimes);
+            // Accumulate tours for this day (a driver might have multiple blocks per day)
+            const existingTours = driver.days.get(assignment.day) || [];
+            const allTours = [...existingTours, ...newTours];
+
+            driver.days.set(assignment.day, allTours);
+        });
+
+        // Now format the accumulated tours for each driver/day
+        const rosterMap = new Map<string, { name: string; days: Map<string, string> }>();
+        tourAccumulator.forEach((driver, driverId) => {
+            const formattedDays = new Map<string, string>();
+            driver.days.forEach((tours, day) => {
+                // Sort tours by start time and format as HH:MM-HH:MM/HH:MM-HH:MM
+                const formattedTours = tours
+                    .sort((a, b) => a.start.localeCompare(b.start))
+                    .map(t => `${t.start}-${t.end}`)
+                    .join('/');
+                formattedDays.set(day, formattedTours);
+            });
+            rosterMap.set(driverId, { name: driver.name, days: formattedDays });
         });
 
         // Add driver rows sorted by name
