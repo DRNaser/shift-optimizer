@@ -127,8 +127,16 @@ def assign_drivers_cpsat(
     for k in range(K):
         used[k] = model.NewBoolVar(f"used_{k}")
         is_pt[k] = model.NewBoolVar(f"is_pt_{k}")
-    
+
     logger.info(f"Created {len(blocks) * K} assignment variables, {2 * K} slot variables")
+
+    # Track total minutes per slot for reuse in objectives
+    total_minutes = {}
+    for k in range(K):
+        total_minutes[k] = sum(
+            b.total_work_minutes * x[b.id, k]
+            for b in blocks
+        )
     
     # ==========================================================================
     # CONSTRAINTS
@@ -144,13 +152,21 @@ def assign_drivers_cpsat(
         model.Add(sum(x[b.id, k] for b in blocks) > 0).OnlyEnforceIf(used[k])
         model.Add(sum(x[b.id, k] for b in blocks) == 0).OnlyEnforceIf(used[k].Not())
     
-    # 3. One block per driver per day (simplifies overlap)
+    # 3. One block per driver per day (simplifies overlap) and day activation tracking
+    day_used = {}
     for k in range(K):
         for day_idx in range(7):
             day_blocks = [b for b in blocks if get_day_index(b.day) == day_idx]
+            day_used[k, day_idx] = model.NewBoolVar(f"day_used_{k}_{day_idx}")
+
             if day_blocks:
                 model.Add(sum(x[b.id, k] for b in day_blocks) <= 1)
-    
+                # Link day usage flag to assignments
+                model.Add(sum(x[b.id, k] for b in day_blocks) >= 1).OnlyEnforceIf(day_used[k, day_idx])
+                model.Add(sum(x[b.id, k] for b in day_blocks) == 0).OnlyEnforceIf(day_used[k, day_idx].Not())
+            else:
+                model.Add(day_used[k, day_idx] == 0)
+
     # 4. Incompatibility constraints (11h rest + 3-tour recovery)
     incompatible_pairs = precompute_incompatible_pairs(blocks)
     for b1_id, b2_id in incompatible_pairs:
@@ -159,20 +175,31 @@ def assign_drivers_cpsat(
     
     logger.info(f"Added {len(incompatible_pairs) * K} incompatibility constraints")
     
-    # 5. FTE hour limits (42-53h weekly)
+    # 5. FTE hour guidance (soft min, hard max)
+    min_minutes = int(config.min_hours_per_fte * 60)
+    max_minutes = int(config.max_hours_per_fte * 60)
+
+    under_hours = {}
+    pt_under_utilization = {}
+    pt_min_minutes = int(config.pt_min_hours * 60)
+
     for k in range(K):
-        # Calculate total hours for this slot
-        total_minutes = sum(
-            b.total_work_minutes * x[b.id, k]
-            for b in blocks
-        )
-        
-        # If slot is FTE (not PT), enforce hour limits
-        # min_hours constraint: total_minutes >= 42*60 OR slot is PT or slot is unused
-        model.Add(total_minutes >= int(config.min_hours_per_fte * 60)).OnlyEnforceIf([used[k], is_pt[k].Not()])
-        
-        # max_hours constraint: total_minutes <= 53*60 OR slot is PT or slot is unused
-        model.Add(total_minutes <= int(config.max_hours_per_fte * 60)).OnlyEnforceIf([used[k], is_pt[k].Not()])
+        # Track how far below the target min an FTE is (soft constraint)
+        under_hours[k] = model.NewIntVar(0, min_minutes, f"under_hours_{k}")
+
+        # If slot is FTE, allow shortfall but track it; PT or unused => zero shortfall
+        model.Add(total_minutes[k] + under_hours[k] >= min_minutes).OnlyEnforceIf([used[k], is_pt[k].Not()])
+        model.Add(under_hours[k] == 0).OnlyEnforceIf(is_pt[k])
+        model.Add(under_hours[k] == 0).OnlyEnforceIf(used[k].Not())
+
+        # Hard upper bound for FTE hours
+        model.Add(total_minutes[k] <= max_minutes).OnlyEnforceIf([used[k], is_pt[k].Not()])
+
+        # Penalize short PT activations to avoid tiny shifts spawning PT drivers
+        pt_under_utilization[k] = model.NewIntVar(0, pt_min_minutes, f"pt_under_util_{k}")
+        model.Add(pt_under_utilization[k] >= pt_min_minutes - total_minutes[k]).OnlyEnforceIf([used[k], is_pt[k]])
+        model.Add(pt_under_utilization[k] == 0).OnlyEnforceIf(is_pt[k].Not())
+        model.Add(pt_under_utilization[k] == 0).OnlyEnforceIf(used[k].Not())
     
     # ==========================================================================
     # OBJECTIVE
@@ -181,8 +208,11 @@ def assign_drivers_cpsat(
     # Lexicographic via large weight differences
     W_PT_DRIVER = 1_000_000  # Minimize PT drivers (HIGHEST PRIORITY)
     W_TOTAL_DRIVER = 1_000  # Minimize total drivers
+    W_PT_DAY = 500  # Prefer PT to be clustered on fewer days vs scattering tiny shifts
     W_WEEKDAY_PT = 10  # Push PT to Saturday
-    
+    W_UNDER_HOURS = 300  # Encourage fuller FTE utilization over spawning PT
+    W_PT_UNDERUTIL = 200  # Discourage tiny PT activations below the target hours
+
     cost_terms = []
     
     # PT driver cost: need intermediate variable for is_pt[k] AND used[k]
@@ -196,7 +226,15 @@ def assign_drivers_cpsat(
     # Total driver cost
     for k in range(K):
         cost_terms.append(W_TOTAL_DRIVER * used[k])
-    
+
+    # Penalize PT day activations to cluster PT work
+    for k in range(K):
+        for day_idx in range(7):
+            pt_day_used = model.NewBoolVar(f"pt_day_used_{k}_{day_idx}")
+            model.AddBoolAnd([is_pt[k], day_used[k, day_idx]]).OnlyEnforceIf(pt_day_used)
+            model.AddBoolOr([is_pt[k].Not(), day_used[k, day_idx].Not()]).OnlyEnforceIf(pt_day_used.Not())
+            cost_terms.append(W_PT_DAY * pt_day_used)
+
     # Weekday PT assignment cost
     for b in blocks:
         day_idx = get_day_index(b.day)
@@ -207,10 +245,15 @@ def assign_drivers_cpsat(
                 model.AddBoolAnd([is_pt[k], x[b.id, k]]).OnlyEnforceIf(pt_weekday_bk)
                 model.AddBoolOr([is_pt[k].Not(), x[b.id, k].Not()]).OnlyEnforceIf(pt_weekday_bk.Not())
                 cost_terms.append(W_WEEKDAY_PT * pt_weekday_bk)
+
+    # Penalize FTE shortfall vs 42h target (so FTE under target beats PT activation)
+    for k in range(K):
+        cost_terms.append(W_UNDER_HOURS * under_hours[k])
+        cost_terms.append(W_PT_UNDERUTIL * pt_under_utilization[k])
     
     model.Minimize(sum(cost_terms))
     
-    logger.info("Objective: Minimize PT drivers > total drivers > weekday PT")
+    logger.info("Objective: Minimize PT drivers > total drivers > PT day usage/weekday PT > under-hours")
     
     # ==========================================================================
     # WARM START (if provided)
@@ -260,17 +303,32 @@ def assign_drivers_cpsat(
     pt_count = sum(1 for a in assignments if a.driver_type == "PT")
     fte_count = sum(1 for a in assignments if a.driver_type == "FTE")
     
+    under_hours_total = sum(solver.Value(uh) for uh in under_hours.values())
+    pt_under_util_total = sum(solver.Value(pu) for pu in pt_under_utilization.values())
+
+    pt_days = set()
+    for assignment in assignments:
+        if assignment.driver_type == "PT":
+            for b in assignment.blocks:
+                pt_days.add((assignment.driver_id, b.day))
+
     stats = {
         "drivers_total": len(assignments),
         "drivers_fte": fte_count,
         "drivers_pt": pt_count,
         "solve_time": solver.WallTime(),
         "status": solver.StatusName(status),
+        "fte_under_hours_minutes": under_hours_total,
+        "pt_under_util_minutes": pt_under_util_total,
+        "pt_working_days": len(pt_days),
     }
     
     logger.info(f"=== CP-SAT ASSIGNMENT COMPLETE ===")
     logger.info(f"Drivers: {fte_count} FTE + {pt_count} PT = {len(assignments)}")
     logger.info(f"Objective value: {solver.ObjectiveValue()}")
+    logger.info(f"Total FTE under-hours (minutes): {under_hours_total}")
+    logger.info(f"Total PT under-utilization (minutes vs {pt_min_minutes} target): {pt_under_util_total}")
+    logger.info(f"PT working days: {len(pt_days)}")
     
     return assignments, stats
 
@@ -327,6 +385,7 @@ def convert_solution_to_assignments(
             driver_type="PT" if is_pt_slot else "FTE",
             blocks=list(blocks_assigned),
             total_hours=sum(b.total_work_hours for b in blocks_assigned),
+            days_worked=len({b.day for b in blocks_assigned}),
         )
         assignments.append(assignment)
     
