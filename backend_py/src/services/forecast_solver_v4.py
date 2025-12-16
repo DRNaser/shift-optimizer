@@ -32,6 +32,7 @@ from ortools.sat.python import cp_model
 logger = logging.getLogger("ForecastSolverV4")
 
 from src.domain.models import Block, Tour, Weekday
+from src.services.constraints import can_assign_block
 from src.services.smart_block_builder import (
     build_weekly_blocks_smart,
     build_block_index,
@@ -65,6 +66,7 @@ class DriverAssignment:
     blocks: list[Block]
     total_hours: float
     days_worked: int
+    analysis: dict = field(default_factory=dict)
     
     def to_dict(self) -> dict:
         return {
@@ -72,6 +74,7 @@ class DriverAssignment:
             "type": self.driver_type,
             "hours_week": round(self.total_hours, 2),
             "days_worked": self.days_worked,
+            "analysis": self.analysis,
             "blocks": [
                 {
                     "id": b.id,
@@ -298,6 +301,9 @@ def assign_drivers_greedy(
     
     t0 = perf_counter()
     
+    # Day order for rest checks (must match Weekday enum values in models.py)
+    WEEKDAY_ORDER = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+    
     # Group blocks by day, then sort by start time
     blocks_by_day: dict[str, list[Block]] = defaultdict(list)
     for block in blocks:
@@ -305,6 +311,9 @@ def assign_drivers_greedy(
     
     for day in blocks_by_day:
         blocks_by_day[day].sort(key=lambda b: b.first_start)
+    
+    # Deterministic iteration order for days
+    sorted_days = [d for d in WEEKDAY_ORDER if d in blocks_by_day]
     
     # Driver state
     drivers: dict[str, dict] = {}  # id -> {type, hours, days, blocks}
@@ -341,9 +350,6 @@ def assign_drivers_greedy(
     MIN_REST_HOURS = 11.0
     MIN_REST_MINS = int(MIN_REST_HOURS * 60)
     
-    # Day order for rest checks
-    WEEKDAY_ORDER = ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY", "SUNDAY"]
-    
     def get_day_index(day: str) -> int:
         return WEEKDAY_ORDER.index(day) if day in WEEKDAY_ORDER else -1
     
@@ -353,11 +359,6 @@ def assign_drivers_greedy(
         day = block.day.value
         day_idx = get_day_index(day)
         
-        # Check overlap with existing blocks on same day
-        for existing in d["day_blocks"][day]:
-            if blocks_overlap(existing, block):
-                return False
-        
         # Check hours if FTE
         if d["type"] == "FTE":
             new_hours = d["hours"] + block.total_work_hours
@@ -365,31 +366,14 @@ def assign_drivers_greedy(
                 return False
         
         # ===================================================================
-        # HARD REST CONSTRAINT: 11h minimum between consecutive days
+        # CENTRAL VALIDATION (Overlap + 11h Rest)
         # ===================================================================
-        block_start_mins = block.first_start.hour * 60 + block.first_start.minute
-        block_end_mins = block.last_end.hour * 60 + block.last_end.minute
-        
-        # Check previous day
-        if day_idx > 0:
-            prev_day = WEEKDAY_ORDER[day_idx - 1]
-            for prev_block in d["day_blocks"].get(prev_day, []):
-                prev_end_mins = prev_block.last_end.hour * 60 + prev_block.last_end.minute
-                # Rest = (next_start + 24h) - prev_end
-                rest_mins = (block_start_mins + 24 * 60) - prev_end_mins
-                if rest_mins < MIN_REST_MINS:
-                    return False  # Would violate 11h rest
-        
-        # Check next day
-        if day_idx < len(WEEKDAY_ORDER) - 1:
-            next_day = WEEKDAY_ORDER[day_idx + 1]
-            for next_block in d["day_blocks"].get(next_day, []):
-                next_start_mins = next_block.first_start.hour * 60 + next_block.first_start.minute
-                # Rest = (next_start + 24h) - this_block_end
-                rest_mins = (next_start_mins + 24 * 60) - block_end_mins
-                if rest_mins < MIN_REST_MINS:
-                    return False  # Would violate 11h rest
-        
+        # Use central service to check overlap and rest constraints
+        allowed, reason = can_assign_block(d["blocks"], block)
+        if not allowed:
+            # print(f"DEBUG: Rejecting block {block.id} for driver {driver_id}: {reason}")
+            return False
+            
         return True
     
     def assign_block(driver_id: str, block: Block):
@@ -462,7 +446,8 @@ def assign_drivers_greedy(
                 driver_type=d["type"],
                 blocks=d["blocks"],
                 total_hours=d["hours"],
-                days_worked=len(d["days"])
+                days_worked=len(d["days"]),
+                analysis=_analyze_driver_workload(d["blocks"])
             ))
     
     # Stats
@@ -716,4 +701,78 @@ def _generate_style_report(selected_blocks: list[Block], phase1_stats: dict, blo
         json.dump(report, f, indent=2, ensure_ascii=False)
     
     logger.info(f"Style report saved to: {output_path}")
+
+
+def _analyze_driver_workload(blocks: list[Block]) -> dict:
+    """
+    Calculate detailed workload stats for a driver.
+    Satisfies Requirement E: Workload Analysis.
+    """
+    if not blocks:
+         return {
+            "total_work_hours_week": 0.0,
+            "total_span_hours_week": 0.0,
+            "workdays_count": 0,
+            "min_rest_hours": 999.0,
+            "violations_count": 0
+        }
+    
+    # Sort blocks globally by time
+    # blocks are already sorted per-day in greedy, but ensure global order
+    WEEKDAY_ORDER = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+    
+    def get_global_start(b: Block) -> int:
+        day_idx = WEEKDAY_ORDER.index(b.day.value) if b.day.value in WEEKDAY_ORDER else 0
+        return day_idx * 24 * 60 + (b.first_start.hour * 60 + b.first_start.minute)
+        
+    sorted_blocks = sorted(blocks, key=get_global_start)
+    
+    total_work_minutes = sum(b.total_work_minutes for b in blocks)
+    total_span_minutes = 0
+    min_rest_mins = 999999
+    violations = 0
+    
+    # Calculate daily span (sum of spans per day) and rest
+    by_day = defaultdict(list)
+    for b in sorted_blocks:
+        by_day[b.day.value].append(b)
+        
+    for day_blocks in by_day.values():
+        if not day_blocks: continue
+        # Span = End of last block - Start of first block
+        # (Assumes no overlapping blocks on same day, which checks prevent)
+        t_start = min(b.first_start.hour * 60 + b.first_start.minute for b in day_blocks)
+        t_end = max(b.last_end.hour * 60 + b.last_end.minute for b in day_blocks)
+        total_span_minutes += (t_end - t_start)
+        
+    # Calculate Rest
+    for i in range(len(sorted_blocks) - 1):
+        b1 = sorted_blocks[i]
+        b2 = sorted_blocks[i+1]
+        
+        end_global = get_global_start(b1) + b1.span_minutes # Start + Duration? No, Start + Span? 
+        # Wait, get_global_start uses first_start. 
+        # Global End = day_idx * 1440 + last_end_mins
+        day1_idx = WEEKDAY_ORDER.index(b1.day.value)
+        end1_mins = b1.last_end.hour * 60 + b1.last_end.minute
+        global_end1 = day1_idx * 1440 + end1_mins
+        
+        day2_idx = WEEKDAY_ORDER.index(b2.day.value)
+        start2_mins = b2.first_start.hour * 60 + b2.first_start.minute
+        global_start2 = day2_idx * 1440 + start2_mins
+        
+        gap = global_start2 - global_end1
+        if gap < min_rest_mins:
+            min_rest_mins = gap
+            
+        if gap < 11 * 60:
+             violations += 1
+
+    return {
+        "total_work_hours_week": round(total_work_minutes / 60.0, 2),
+        "total_span_hours_week": round(total_span_minutes / 60.0, 2),
+        "workdays_count": len(by_day),
+        "min_rest_hours": round(min_rest_mins / 60.0, 2) if min_rest_mins < 999999 else None,
+        "violations_count": violations
+    }
 

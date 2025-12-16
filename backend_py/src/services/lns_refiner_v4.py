@@ -47,6 +47,8 @@ class LNSConfigV4:
     max_daily_span_minutes: int = 14 * 60  # 14 hours
     min_rest_minutes: int = 11 * 60  # 11 hours
     max_tours_per_day: int = 3
+    # Early stopping: stop if no improvement after N consecutive failed repairs
+    early_stop_after_failures: int = 5
 
 
 # =============================================================================
@@ -306,6 +308,51 @@ def repair_assignments(
                     if combined_end - combined_start > config.max_daily_span_minutes:
                         # This block would violate span with fixed blocks
                         model.Add(x[b.block_id, d.driver_id] == 0)
+
+    # 7. Inter-day rest constraint (11h minimum between consecutive days)
+    # We must check:
+    # - Repair Day D vs Repair Day D+1
+    # - Repair Day D vs Fixed Day D+1
+    # - Fixed Day D vs Repair Day D+1
+    
+    # Pre-calculate start/end in global minutes (relative to D0 00:00) not needed
+    # We can just use: (Start(D+1) + 24*60) - End(D) >= MinRest
+    
+    min_rest = config.min_rest_minutes
+    
+    for d in candidate_drivers:
+        for day_idx in range(6):  # Check 0->1, 1->2, ..., 5->6
+            # Get blocks for Day D and Day D+1
+            d0_repair = [b for b in blocks if b.day_idx == day_idx]
+            d1_repair = [b for b in blocks if b.day_idx == day_idx + 1]
+            
+            d0_fixed = [fb for fb in d.fixed_blocks if fb.day_idx == day_idx]
+            d1_fixed = [fb for fb in d.fixed_blocks if fb.day_idx == day_idx + 1]
+            
+            # Case A: Repair D vs Repair D+1
+            for b0 in d0_repair:
+                for b1 in d1_repair:
+                    # Check rest
+                    rest_val = (b1.start_min + 1440) - b0.end_min
+                    if rest_val < min_rest:
+                        # Cannot assign both to this driver
+                        model.Add(x[b0.block_id, d.driver_id] + x[b1.block_id, d.driver_id] <= 1)
+            
+            # Case B: Repair D vs Fixed D+1
+            for b0 in d0_repair:
+                for fb1 in d1_fixed:
+                    rest_val = (fb1.start_min + 1440) - b0.end_min
+                    if rest_val < min_rest:
+                        # Cannot assign b0 to this driver
+                        model.Add(x[b0.block_id, d.driver_id] == 0)
+            
+            # Case C: Fixed D vs Repair D+1
+            for fb0 in d0_fixed:
+                for b1 in d1_repair:
+                    rest_val = (b1.start_min + 1440) - fb0.end_min
+                    if rest_val < min_rest:
+                        # Cannot assign b1 to this driver
+                        model.Add(x[b1.block_id, d.driver_id] == 0)
     
     # ==========================================================================
     # Objective: minimize number of drivers used
@@ -410,6 +457,7 @@ def refine_assignments_v4(
     Refine v4 driver assignments using LNS.
     
     Iteratively destroys part of the assignment and repairs with CP-SAT.
+    Early stopping: stops if no improvement after N consecutive failures.
     """
     log_progress("=" * 60)
     log_progress("LNS V4 REFINEMENT START")
@@ -420,6 +468,7 @@ def refine_assignments_v4(
         log_progress("Using default config")
     
     log_progress(f"Config: iterations={config.max_iterations}, destroy={config.destroy_fraction}")
+    log_progress(f"Early stopping after {config.early_stop_after_failures} consecutive failures")
     log_progress(f"Input: {len(assignments)} driver assignments")
     
     if not assignments:
@@ -441,6 +490,9 @@ def refine_assignments_v4(
     
     rng = random.Random(config.seed)
     
+    # Early stopping counter
+    consecutive_failures = 0
+    
     for iteration in range(config.max_iterations):
         iter_seed = config.seed + iteration
         iter_rng = random.Random(iter_seed)
@@ -456,6 +508,10 @@ def refine_assignments_v4(
         
         if not blocks_to_repair:
             logger.info("No blocks to repair, skipping iteration")
+            consecutive_failures += 1
+            if consecutive_failures >= config.early_stop_after_failures:
+                log_progress(f"EARLY STOP: {consecutive_failures} consecutive failures, stopping LNS")
+                break
             continue
         
         # Repair
@@ -468,6 +524,10 @@ def refine_assignments_v4(
         
         if not block_mapping:
             logger.info("Repair failed, keeping best")
+            consecutive_failures += 1
+            if consecutive_failures >= config.early_stop_after_failures:
+                log_progress(f"EARLY STOP: {consecutive_failures} consecutive failures, stopping LNS")
+                break
             continue
         
         # Apply and evaluate
@@ -479,11 +539,17 @@ def refine_assignments_v4(
             logger.info(f"Accepted: {new_driver_count} drivers (was {best_driver_count})")
             best_assignments = new_assignments
             best_driver_count = new_driver_count
+            consecutive_failures = 0  # Reset on improvement
         else:
             logger.info(f"Rejected: {new_driver_count} drivers (best {best_driver_count})")
+            consecutive_failures += 1
+            if consecutive_failures >= config.early_stop_after_failures:
+                log_progress(f"EARLY STOP: {consecutive_failures} consecutive failures, stopping LNS")
+                break
     
     logger.info("=" * 60)
     logger.info(f"LNS V4 COMPLETE: {best_driver_count} drivers")
     logger.info("=" * 60)
     
     return best_assignments
+
