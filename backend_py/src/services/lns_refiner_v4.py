@@ -25,6 +25,9 @@ from src.domain.models import Block, Weekday
 
 logger = logging.getLogger("LNS_V4")
 
+# Constants
+DAY_MINUTES = 24 * 60  # 1440 minutes per day
+
 
 def log_progress(msg: str):
     """Print with flush for immediate visibility."""
@@ -37,26 +40,81 @@ def log_progress(msg: str):
 
 @dataclass
 class LNSConfigV4:
-    """Configuration for v4 LNS refiner."""
-    max_iterations: int = 10
-    destroy_fraction: float = 0.30  # 20-35% of drivers
-    repair_time_limit: float = 5.0  # seconds per repair
+    """Configuration for LNS refinement - Production Settings."""
+    # ==========================================================================
+    # CORE LOOP SETTINGS
+    # ==========================================================================
+    max_iterations: int = 300
+    repair_time_limit: float = 5.0  # seconds per repair (faster iterations)
+    lns_time_limit: float = 60.0    # Global time limit for entire LNS phase
+    destroy_fraction: float = 0.15   # Only for random LNS fallback
     seed: int = 42
+    
+    # Early stopping (only count real failures - structurally feasible neighborhoods)
+    early_stop_after_failures: int = 20  # Stop sooner at plateau
+    
+    # ==========================================================================
+    # DRIVER CONSTRAINTS
+    # ==========================================================================
     min_hours_per_fte: float = 42.0
     max_hours_per_fte: float = 53.0
     max_daily_span_minutes: int = 14 * 60  # 14 hours
-    min_rest_minutes: int = 11 * 60  # 11 hours
+    min_rest_minutes: int = 11 * 60        # 11 hours
     max_tours_per_day: int = 3
-    # Early stopping: stop if no improvement after N consecutive failed repairs
-    early_stop_after_failures: int = 5
-    # Activation cost weights
-    w_new_driver: float = 500.0  # Penalty for activating new FTE (reduced to prefer FTE)
-    w_pt_new: float = 10000.0  # Additional penalty for new PT driver (increased to minimize PT)
-    w_pt_used: float = 500.0  # Penalty for using ANY PT driver in repair (increased)
-    # PT day preference - minimize PT everywhere
-    w_pt_weekday_block: int = 5000  # Per weekday block assigned to PT
-    w_pt_saturday_block: int = 5000  # Per Saturday block assigned to PT (expensive everywhere!)
-    # Consolidation options
+    
+    # ==========================================================================
+    # OBJECTIVE WEIGHTS (Production Hierarchy)
+    # ==========================================================================
+    w_total_used_driver: int = 10_000      # Baseline cost for using any driver
+    w_pt_used: int = 50_000                # PT driver is expensive
+    w_new_driver: int = 200_000            # Opening new driver is very expensive
+    w_pt_new: int = 200_000                # Opening new PT is extremely expensive
+    
+    # Soft shaping
+    w_tight_rest_11h: int = 200            # Soft penalty if min rest == 11.0h
+    w_next_day_two_tours_after_heavy: int = 150  # Prefer 1 tour after heavy day
+    
+    # Backward compatibility (PT block costs)
+    w_pt_weekday_block: int = 500          # Per weekday block to PT
+    w_pt_saturday_block: int = 500         # Per Saturday block to PT
+    
+    # ==========================================================================
+    # 3-TOUR HEAVY-DAY RECOVERY
+    # ==========================================================================
+    min_rest_after_3t_minutes: int = 14 * 60  # 14h rest after 3-tour day (HARD)
+    max_next_day_tours_after_3t: int = 2      # Max tours after 3-tour day (HARD)
+    target_next_day_tours_after_3t: int = 1   # Prefer 1 tour (SOFT)
+    w_next_day_tours_excess: int = 150        # Penalty for 2nd tour after heavy
+    
+    # ==========================================================================
+    # RECEIVER GATE (Critical for avoiding INFEASIBLE)
+    # ==========================================================================
+    min_alt_receivers_for_pt_elimination: int = 3  # Skip PT if < 3 receivers
+    candidate_cap_per_block: int = 60              # Max candidates per block
+    
+    # ==========================================================================
+    # PINNED EJECTION GATE (Prevent orphan ejection)
+    # ==========================================================================
+    min_receivers_to_eject: int = 5  # Don't eject blocks with <= N receivers
+    
+    # ==========================================================================
+    # ADAPTIVE EJECTION (Escalation strategy: 2→4→8→12)
+    # ==========================================================================
+    initial_max_ejections: int = 2    # Start with 2 ejections
+    max_ejections_cap: int = 12       # Cap at 12 ejections
+    
+    # ==========================================================================
+    # PT ELIMINATION STRATEGY
+    # ==========================================================================
+    enable_pt_elimination: bool = True
+    pt_elimination_fraction: float = 0.3
+    max_pt_elimination_drivers: int = 5
+    pt_min_hours: float = 9.0  # Minimum hours for PT (soft)
+    repair_prefer_fte: bool = True
+    
+    # ==========================================================================
+    # CONSOLIDATION
+    # ==========================================================================
     enable_consolidation: bool = True
     max_consolidation_iterations: int = 5
 
@@ -74,6 +132,140 @@ class BlockInfo:
     end_min: int
     duration_min: int
     tour_count: int
+
+
+# =============================================================================
+# DRIVER PROFILE CACHE (for fast feasibility checks)
+# =============================================================================
+
+@dataclass
+class DriverProfile:
+    """
+    Pre-computed driver profile for fast feasibility checks.
+    Built once per iteration, avoids O(n) list rebuilding on each check.
+    """
+    driver_id: str
+    driver_type: str  # "FTE" or "PT"
+    week_minutes: int  # Total minutes worked in week
+    
+    # Per-day data (index 0-6)
+    tours_on_day: list[int] = field(default_factory=lambda: [0]*7)
+    first_start: list[int] = field(default_factory=lambda: [None]*7)  # First block start
+    last_end: list[int] = field(default_factory=lambda: [None]*7)     # Last block end
+    blocks_by_day: list[list[tuple]] = field(default_factory=lambda: [[] for _ in range(7)])
+    # Each block tuple: (start_min, end_min, tour_count, block_id)
+    
+    @property
+    def heavy_days(self) -> list[bool]:
+        """Days with 3 tours (trigger 14h rest rule)."""
+        return [t >= 3 for t in self.tours_on_day]
+
+
+def build_driver_profile(
+    driver_id: str,
+    driver_type: str,
+    blocks: list,  # List of Block objects
+    get_day_idx_fn,  # Function to get day index from Weekday
+) -> DriverProfile:
+    """Build a DriverProfile from a driver's blocks."""
+    profile = DriverProfile(
+        driver_id=driver_id,
+        driver_type=driver_type,
+        week_minutes=0,
+        tours_on_day=[0]*7,
+        first_start=[None]*7,
+        last_end=[None]*7,
+        blocks_by_day=[[] for _ in range(7)],
+    )
+    
+    for block in blocks:
+        day_idx = get_day_idx_fn(block.day)
+        start_min = time_to_minutes(block.first_start)
+        end_min = time_to_minutes(block.last_end)
+        duration = end_min - start_min
+        tour_count = len(block.tours) if hasattr(block, 'tours') else 1
+        
+        profile.week_minutes += duration
+        profile.tours_on_day[day_idx] += tour_count
+        
+        # Update first/last
+        if profile.first_start[day_idx] is None or start_min < profile.first_start[day_idx]:
+            profile.first_start[day_idx] = start_min
+        if profile.last_end[day_idx] is None or end_min > profile.last_end[day_idx]:
+            profile.last_end[day_idx] = end_min
+        
+        profile.blocks_by_day[day_idx].append((start_min, end_min, tour_count, block.id))
+    
+    return profile
+
+
+def time_to_minutes(t) -> int:
+    """Convert time to minutes from midnight."""
+    if hasattr(t, 'hour'):
+        return t.hour * 60 + t.minute
+    return int(t)
+
+
+def fast_can_assign(
+    profile: DriverProfile,
+    block_day: int,
+    block_start: int,
+    block_end: int,
+    block_tours: int,
+    block_duration: int,
+    config: 'LNSConfigV4',
+) -> tuple[bool, str]:
+    """
+    Fast feasibility check using pre-computed profile.
+    O(k) per check where k = blocks on that day (small).
+    
+    No list rebuilding, no Block object creation.
+    """
+    # 1. Overlap check with existing blocks on same day
+    for (start, end, _, _) in profile.blocks_by_day[block_day]:
+        # Overlap if intervals intersect
+        if block_start < end and block_end > start:
+            return False, "overlap"
+    
+    # 2. Tours per day check
+    current_tours = profile.tours_on_day[block_day]
+    if current_tours + block_tours > config.max_tours_per_day:
+        return False, f"tours_per_day ({current_tours}+{block_tours}>{config.max_tours_per_day})"
+    
+    # 3. Rest from previous day (11h, or 14h after heavy)
+    if block_day > 0 and profile.last_end[block_day - 1] is not None:
+        prev_end = profile.last_end[block_day - 1]
+        rest = (block_start + DAY_MINUTES) - prev_end
+        
+        # Check if previous day was heavy (3 tours)
+        if profile.tours_on_day[block_day - 1] >= 3:
+            if rest < config.min_rest_after_3t_minutes:
+                return False, f"rest_after_heavy ({rest/60:.1f}h<14h)"
+        else:
+            if rest < config.min_rest_minutes:
+                return False, f"rest_from_prev ({rest/60:.1f}h<11h)"
+    
+    # 4. Rest to next day
+    if block_day < 6 and profile.first_start[block_day + 1] is not None:
+        next_start = profile.first_start[block_day + 1]
+        rest = (next_start + DAY_MINUTES) - block_end
+        if rest < config.min_rest_minutes:
+            return False, f"rest_to_next ({rest/60:.1f}h<11h)"
+    
+    # 5. Weekly hours check (FTE only)
+    if profile.driver_type == "FTE":
+        max_minutes = int(config.max_hours_per_fte * 60)
+        if profile.week_minutes + block_duration > max_minutes:
+            return False, "weekly_hours"
+    
+    # 6. Heavy-day recovery: if adding causes heavy day, check next day tours
+    if current_tours + block_tours >= 3 and block_day < 6:
+        # This would make today a heavy day
+        next_day_tours = profile.tours_on_day[block_day + 1]
+        if next_day_tours > config.max_next_day_tours_after_3t:
+            return False, f"heavy_day_next_tours ({next_day_tours}>{config.max_next_day_tours_after_3t})"
+    
+    return True, ""
 
 
 @dataclass 
@@ -216,6 +408,519 @@ def destroy_drivers(
     return driver_states, blocks_to_repair
 
 
+def destroy_pt_drivers(
+    assignments: list,  # list[DriverAssignment]
+    config: 'LNSConfigV4',
+    rng: random.Random,
+) -> tuple[list[DriverState], list[BlockInfo]]:
+    """
+    PT-TARGETED DESTROY: Specifically targets PT drivers for elimination.
+    
+    Strategy:
+    1. Prioritize low-utilization PT drivers (hours < pt_min_hours)
+    2. Fall back to random PT if no low-util PT found
+    3. Destroy selected PT drivers completely, redistribute their blocks
+    
+    This enables LNS to focus optimization on PT reduction.
+    
+    Returns:
+        - driver_states: List of DriverState with fixed/destroyed blocks
+        - blocks_to_repair: List of BlockInfo that need reassignment
+    """
+    log_progress(f"destroy_pt_drivers: {len(assignments)} assignments")
+    
+    # Separate PT and FTE drivers
+    pt_drivers = [a for a in assignments if a.driver_type == "PT" and a.blocks]
+    fte_drivers = [a for a in assignments if a.driver_type == "FTE"]
+    
+    log_progress(f"  PT drivers: {len(pt_drivers)}, FTE drivers: {len(fte_drivers)}")
+    
+    if not pt_drivers:
+        log_progress("  No PT drivers to destroy, falling back to random destroy")
+        return destroy_drivers(assignments, config.destroy_fraction, rng)
+    
+    # Prioritize low-utilization PT (under pt_min_hours)
+    low_util_pt = [a for a in pt_drivers if a.total_hours < config.pt_min_hours]
+    log_progress(f"  Low-utilization PT (< {config.pt_min_hours}h): {len(low_util_pt)}")
+    
+    # Select PT drivers to destroy
+    if low_util_pt:
+        # Prefer destroying low-util PT
+        candidates = low_util_pt
+    else:
+        # All PT are well-utilized, pick random PT
+        candidates = pt_drivers
+    
+    # Number to destroy: be more aggressive to enable consolidation
+    # Destroy at least 3 or 30% of candidates, capped at max_pt_elimination_drivers
+    num_to_destroy = max(3, int(len(candidates) * config.pt_elimination_fraction))
+    num_to_destroy = min(num_to_destroy, config.max_pt_elimination_drivers, len(candidates))
+    
+    # Sort by hours (ascending) so we pick lowest-util first, then sample
+    sorted_candidates = sorted(candidates, key=lambda a: a.total_hours)
+    selected_pt = sorted_candidates[:num_to_destroy]  # Take lowest utilization
+    
+    # If we want some randomness, use rng.sample instead:
+    # selected_pt = rng.sample(candidates, num_to_destroy)
+    
+    selected_ids = {a.driver_id for a in selected_pt}
+    
+    log_progress(f"  Destroying {len(selected_pt)} PT drivers: {list(selected_ids)}")
+    for pt in selected_pt:
+        log_progress(f"    {pt.driver_id}: {pt.total_hours:.1f}h, {len(pt.blocks)} blocks")
+    
+    # Build driver states
+    driver_states = []
+    blocks_to_repair = []
+    
+    for assignment in sorted(assignments, key=lambda a: a.driver_id):
+        was_used = len(assignment.blocks) > 0
+        is_destroyed = assignment.driver_id in selected_ids
+        
+        driver = DriverState(
+            driver_id=assignment.driver_id,
+            driver_type=assignment.driver_type,
+            was_used_in_incumbent=was_used,
+        )
+        
+        for block in sorted(assignment.blocks, key=lambda b: b.id):
+            day_idx = get_day_idx(block.day)
+            block_info = block_to_info(block, day_idx)
+            
+            if is_destroyed:
+                driver.destroyed_blocks.append(block_info)
+                blocks_to_repair.append(block_info)
+            else:
+                driver.fixed_blocks.append(block_info)
+        
+        driver_states.append(driver)
+    
+    log_progress(f"destroy_pt_drivers COMPLETE: {len(blocks_to_repair)} blocks from {len(selected_pt)} PT drivers")
+    return driver_states, blocks_to_repair
+
+
+def destroy_pt_with_ejections(
+    assignments: list,  # list[DriverAssignment]
+    config: 'LNSConfigV4',
+    rng: random.Random,
+) -> tuple[list[DriverState], list[BlockInfo], set]:
+    """
+    EJECTION CHAIN DESTROY: Proper PT elimination with blocking block ejection.
+    
+    Strategy:
+    1. Select a PT singleton (1 block or low hours)
+    2. Find best target FTE driver (lowest hours)
+    3. Identify why PT block doesn't fit (rest, hours, tours conflict)
+    4. Eject blocking blocks from target driver
+    5. Create repair set = {PT block} + {ejected blocks}
+    6. Ban the PT driver from repair candidates
+    
+    Returns:
+        - driver_states: List of DriverState with fixed/destroyed blocks
+        - blocks_to_repair: List of BlockInfo that need reassignment
+        - banned_driver_ids: Set of driver IDs that should be banned from repair
+    """
+    log_progress("destroy_pt_with_ejections: Starting ejection chain analysis")
+    
+    # Find PT singletons (best candidates for elimination)
+    pt_singletons = [a for a in assignments if a.driver_type == "PT" and len(a.blocks) == 1]
+    pt_low_util = [a for a in assignments if a.driver_type == "PT" and a.total_hours < config.pt_min_hours]
+    
+    # Combine and deduplicate
+    pt_candidates = {a.driver_id: a for a in pt_singletons + pt_low_util}
+    
+    if not pt_candidates:
+        log_progress("  No PT singletons or low-util PT, falling back to random destroy")
+        states, blocks = destroy_drivers(assignments, config.destroy_fraction, rng)
+        return states, blocks, set()
+    
+    log_progress(f"  Found {len(pt_candidates)} PT elimination candidates")
+    
+    # ==========================================================================
+    # RECEIVER GATE: Skip PT if it has < min_alt_receivers feasible receivers
+    # ==========================================================================
+    # Build quick lookup of all driver states (excluding PT candidates) to check receiver count
+    non_pt_assignments = [a for a in assignments if a.driver_id not in pt_candidates]
+    
+    # Sort PT candidates by hours (lowest first - easiest to eliminate)
+    sorted_pt = sorted(pt_candidates.values(), key=lambda a: a.total_hours)
+    
+    # ==========================================================================
+    # BUILD DRIVER PROFILES ONCE (major optimization - O(n) instead of O(n³))
+    # ==========================================================================
+    profiles = {}
+    for a in non_pt_assignments:
+        profiles[a.driver_id] = build_driver_profile(
+            a.driver_id, a.driver_type, a.blocks, get_day_idx
+        )
+    
+    target_pt = None
+    target_pt_block_info = None
+    
+    for pt_candidate in sorted_pt:
+        if len(pt_candidate.blocks) == 0:
+            continue
+        
+        pt_block = pt_candidate.blocks[0]
+        pt_block_info = block_to_info(pt_block, get_day_idx(pt_block.day))
+        
+        # Extract block params for fast_can_assign
+        b_day = pt_block_info.day_idx
+        b_start = pt_block_info.start_min
+        b_end = pt_block_info.end_min
+        b_tours = pt_block_info.tour_count
+        b_duration = pt_block_info.duration_min
+        
+        # Count feasible receivers using cached profiles (FAST)
+        receiver_count = 0
+        for profile in profiles.values():
+            allowed, _ = fast_can_assign(
+                profile, b_day, b_start, b_end, b_tours, b_duration, config
+            )
+            if allowed:
+                receiver_count += 1
+                # Early stop if we have enough receivers
+                if receiver_count >= config.min_alt_receivers_for_pt_elimination:
+                    break
+        
+        log_progress(f"  PT {pt_candidate.driver_id}: {receiver_count}+ feasible receivers")
+        
+        # Check against receiver gate
+        if receiver_count >= config.min_alt_receivers_for_pt_elimination:
+            target_pt = pt_candidate
+            target_pt_block_info = pt_block_info
+            log_progress(f"  SELECTED: {target_pt.driver_id} ({target_pt.total_hours:.1f}h) with {receiver_count}+ receivers")
+            break
+        else:
+            log_progress(f"  SKIPPED: {pt_candidate.driver_id} has only {receiver_count} receivers (< {config.min_alt_receivers_for_pt_elimination})")
+    
+    if target_pt is None:
+        log_progress("  No eliminable PT found (all have < min receivers), falling back to random destroy")
+        states, blocks = destroy_drivers(assignments, config.destroy_fraction, rng)
+        return states, blocks, set()
+    
+    target_pt_block = target_pt.blocks[0]
+    log_progress(f"  PT Block: {target_pt_block.id} Day {get_day_idx(target_pt_block.day)}")
+    
+    # Find potential target FTE drivers (sorted by lowest hours = most capacity)
+    fte_drivers = [a for a in assignments if a.driver_type == "FTE" and a.blocks]
+    fte_drivers.sort(key=lambda a: a.total_hours)
+    
+    blocks_to_repair = [target_pt_block_info]
+    ejected_blocks = []
+    banned_driver_ids = {target_pt.driver_id}  # Ban the PT driver
+    
+    # Try to find an FTE that can absorb with ejections
+    for fte in fte_drivers[:10]:  # Check top 10 FTEs with most capacity
+        # Convert FTE blocks to BlockInfo for analysis
+        fte_block_infos = [block_to_info(b, get_day_idx(b.day)) for b in fte.blocks]
+        
+        # Find blocking blocks
+        blocking = find_blocking_blocks(
+            target_pt_block_info,
+            fte_block_infos,
+            fte.total_hours,
+            config
+        )
+        
+        if blocking:
+            log_progress(f"  FTE {fte.driver_id}: {len(blocking)} blocking blocks")
+            # Add blocking blocks to repair set
+            for block_info in blocking:
+                if block_info not in ejected_blocks:
+                    ejected_blocks.append(block_info)
+            break  # Found a target FTE with blocking blocks
+    
+    # Add ejected blocks to repair set
+    blocks_to_repair.extend(ejected_blocks)
+    
+    log_progress(f"  Ejection set: 1 PT block + {len(ejected_blocks)} ejected = {len(blocks_to_repair)} total")
+    
+    # ==========================================================================
+    # PRE-CHECK: Verify repair blocks have multiple receivers (not orphan-bound)
+    # ==========================================================================
+    # Build temporary driver states to check feasibility
+    temp_driver_states = []
+    for assignment in assignments:
+        if assignment.driver_id in banned_driver_ids:
+            continue
+        temp_state = DriverState(
+            driver_id=assignment.driver_id,
+            driver_type=assignment.driver_type,
+            was_used_in_incumbent=len(assignment.blocks) > 0,
+        )
+        ejected_block_ids = {b.block_id for b in ejected_blocks}
+        for block in assignment.blocks:
+            block_info = block_to_info(block, get_day_idx(block.day))
+            if block.id not in ejected_block_ids:
+                temp_state.fixed_blocks.append(block_info)
+        temp_driver_states.append(temp_state)
+    
+    # Check receiver counts
+    for block in blocks_to_repair:
+        receivers = []
+        for d in temp_driver_states:
+            allowed, _ = can_driver_receive_block(d, block, config)
+            if allowed:
+                receivers.append(d.driver_id)
+        if len(receivers) <= 2:
+            log_progress(f"  WARNING: Block {block.block_id} has only {len(receivers)} receivers - may be orphan-bound")
+    
+    # Build driver states
+    driver_states = []
+    ejected_block_ids = {b.block_id for b in ejected_blocks}
+    
+    for assignment in sorted(assignments, key=lambda a: a.driver_id):
+        was_used = len(assignment.blocks) > 0
+        is_banned = assignment.driver_id in banned_driver_ids
+        
+        driver = DriverState(
+            driver_id=assignment.driver_id,
+            driver_type=assignment.driver_type,
+            was_used_in_incumbent=was_used,
+        )
+        
+        for block in sorted(assignment.blocks, key=lambda b: b.id):
+            day_idx = get_day_idx(block.day)
+            block_info = block_to_info(block, day_idx)
+            
+            if is_banned or block.id in ejected_block_ids:
+                driver.destroyed_blocks.append(block_info)
+            else:
+                driver.fixed_blocks.append(block_info)
+        
+        driver_states.append(driver)
+    
+    log_progress(f"destroy_pt_with_ejections COMPLETE: {len(blocks_to_repair)} blocks, {len(banned_driver_ids)} banned")
+    return driver_states, blocks_to_repair, banned_driver_ids
+
+
+def find_blocking_blocks(
+    pt_block: BlockInfo,
+    fte_blocks: list[BlockInfo],
+    fte_total_hours: float,
+    config: 'LNSConfigV4'
+) -> list[BlockInfo]:
+    """
+    Find which blocks in FTE's schedule prevent inserting the PT block.
+    
+    Checks:
+    1. Rest conflicts (11h, or 14h after heavy day)
+    2. Same-day overlap
+    3. Weekly hours would exceed max
+    
+    Returns list of blocking blocks to eject.
+    """
+    blocking = []
+    pt_day = pt_block.day_idx
+    
+    # Check same-day conflicts (overlap or span)
+    same_day_blocks = [b for b in fte_blocks if b.day_idx == pt_day]
+    for b in same_day_blocks:
+        if blocks_overlap(pt_block, b):
+            blocking.append(b)
+            continue
+        # Check span violation
+        combined_start = min(pt_block.start_min, b.start_min)
+        combined_end = max(pt_block.end_min, b.end_min)
+        if combined_end - combined_start > config.max_daily_span_minutes:
+            blocking.append(b)
+    
+    # Check previous day rest conflict
+    prev_day_blocks = [b for b in fte_blocks if b.day_idx == pt_day - 1]
+    for b in prev_day_blocks:
+        rest = (pt_block.start_min + 1440) - b.end_min
+        # Check if previous day was heavy (3+ tours)
+        prev_day_tours = sum(blk.tour_count for blk in prev_day_blocks)
+        min_rest = config.min_rest_after_3t_minutes if prev_day_tours >= 3 else config.min_rest_minutes
+        if rest < min_rest:
+            blocking.append(b)
+    
+    # Check next day rest conflict
+    next_day_blocks = [b for b in fte_blocks if b.day_idx == pt_day + 1]
+    for b in next_day_blocks:
+        rest = (b.start_min + 1440) - pt_block.end_min
+        # Check if today would become heavy with PT block
+        today_tours = sum(blk.tour_count for blk in same_day_blocks) + pt_block.tour_count
+        min_rest = config.min_rest_after_3t_minutes if today_tours >= 3 else config.min_rest_minutes
+        if rest < min_rest:
+            blocking.append(b)
+    
+    # Check hours conflict - if adding PT would exceed max, eject smallest block
+    pt_duration_hours = pt_block.duration_min / 60.0
+    if fte_total_hours + pt_duration_hours > config.max_hours_per_fte:
+        excess_hours = fte_total_hours + pt_duration_hours - config.max_hours_per_fte
+        # Find smallest block(s) to eject to make room
+        sorted_by_duration = sorted(fte_blocks, key=lambda b: b.duration_min)
+        ejected_hours = 0
+        for b in sorted_by_duration:
+            if b not in blocking:
+                blocking.append(b)
+                ejected_hours += b.duration_min / 60.0
+                if ejected_hours >= excess_hours:
+                    break
+    
+    # Limit to max 3 ejections to keep problem small
+    return blocking[:3]
+
+
+# =============================================================================
+# PRE-REPAIR DIAGNOSTICS
+# =============================================================================
+
+def diagnose_fixed_schedule(
+    candidate_drivers: list[DriverState],
+    config: LNSConfigV4,
+) -> list[str]:
+    """
+    Check if the fixed schedule itself violates repair constraints.
+    
+    Returns list of violations found.
+    """
+    violations = []
+    
+    for d in candidate_drivers:
+        # Check 1: tours per day <= max_tours_per_day
+        for day_idx in range(7):
+            fixed_tours = d.fixed_tours_on_day(day_idx)
+            if fixed_tours > config.max_tours_per_day:
+                violations.append(
+                    f"[CONSTRAINT MISMATCH] Driver {d.driver_id} Day {day_idx}: "
+                    f"{fixed_tours} tours > max {config.max_tours_per_day}"
+                )
+        
+        # Check 2: weekly hours <= max (FTE only)
+        if d.driver_type == "FTE":
+            max_minutes = int(config.max_hours_per_fte * 60)
+            if d.fixed_minutes > max_minutes:
+                violations.append(
+                    f"[CONSTRAINT MISMATCH] FTE {d.driver_id}: "
+                    f"{d.fixed_minutes/60:.1f}h > max {config.max_hours_per_fte}h"
+                )
+        
+        # Check 3: daily span <= max - DISABLED (split-shifts exceed span but are valid)
+        # for day_idx in range(7):
+        #     day_blocks = [fb for fb in d.fixed_blocks if fb.day_idx == day_idx]
+        #     if len(day_blocks) >= 2:
+        #         min_start = min(fb.start_min for fb in day_blocks)
+        #         max_end = max(fb.end_min for fb in day_blocks)
+        #         span = max_end - min_start
+        #         if span > config.max_daily_span_minutes:
+        #             violations.append(
+        #                 f"[CONSTRAINT MISMATCH] Driver {d.driver_id} Day {day_idx}: "
+        #                 f"span {span/60:.1f}h > max {config.max_daily_span_minutes/60:.1f}h"
+        #             )
+    
+    return violations
+
+
+def diagnose_block_receivers(
+    blocks_to_repair: list[BlockInfo],
+    candidate_drivers: list[DriverState],
+    config: LNSConfigV4,
+) -> dict:
+    """
+    For each repair block, count how many candidate drivers can receive it.
+    
+    Returns:
+        {
+            "orphans": [(block_id, top_reasons), ...],  # blocks with 0 receivers
+            "receiver_counts": [(block_id, count), ...],
+            "total_feasible": bool,
+        }
+    """
+    result = {
+        "orphans": [],
+        "receiver_counts": [],
+        "total_feasible": True,
+    }
+    
+    for block in blocks_to_repair:
+        receivers = []
+        rejection_reasons = {}  # reason -> count
+        
+        for d in candidate_drivers:
+            allowed, reason = can_driver_receive_block(d, block, config)
+            if allowed:
+                receivers.append(d.driver_id)
+            else:
+                rejection_reasons[reason] = rejection_reasons.get(reason, 0) + 1
+        
+        result["receiver_counts"].append((block.block_id, len(receivers)))
+        
+        if len(receivers) == 0:
+            result["total_feasible"] = False
+            # Get top 3 rejection reasons
+            sorted_reasons = sorted(rejection_reasons.items(), key=lambda x: -x[1])[:3]
+            result["orphans"].append((block.block_id, sorted_reasons))
+    
+    return result
+
+
+def can_driver_receive_block(
+    driver: DriverState,
+    block: BlockInfo,
+    config: LNSConfigV4,
+) -> tuple[bool, str]:
+    """
+    Check if driver can receive this block, using the SAME constraints as repair model.
+    
+    Checks:
+    1. Overlap with fixed blocks
+    2. Tours per day <= max
+    3. Daily span <= max
+    4. Rest between days >= min
+    5. Weekly hours <= max (FTE)
+    """
+    block_day = block.day_idx
+    
+    # 1. Overlap check
+    fixed_on_day = [fb for fb in driver.fixed_blocks if fb.day_idx == block_day]
+    for fb in fixed_on_day:
+        if blocks_overlap(block, fb):
+            return False, "overlap"
+    
+    # 2. Tours per day check
+    fixed_tours = driver.fixed_tours_on_day(block_day)
+    if fixed_tours + block.tour_count > config.max_tours_per_day:
+        return False, f"tours_per_day ({fixed_tours}+{block.tour_count}>{config.max_tours_per_day})"
+    
+    # 3. Daily span check - DISABLED (causes orphan blocks for split-shifts)
+    # Split-shifts have 16h+ span but only ~9h work - span is only for reporting
+    # if fixed_on_day:
+    #     fixed_start = min(fb.start_min for fb in fixed_on_day)
+    #     fixed_end = max(fb.end_min for fb in fixed_on_day)
+    #     combined_start = min(fixed_start, block.start_min)
+    #     combined_end = max(fixed_end, block.end_min)
+    #     if combined_end - combined_start > config.max_daily_span_minutes:
+    #         return False, "span"
+    
+    # 4. Rest check (11h between consecutive days)
+    # Check rest from previous day to this block
+    prev_day_blocks = [fb for fb in driver.fixed_blocks if fb.day_idx == block_day - 1]
+    if prev_day_blocks:
+        prev_day_end = max(fb.end_min for fb in prev_day_blocks)
+        rest = (block.start_min + DAY_MINUTES) - prev_day_end
+        if rest < config.min_rest_minutes:
+            return False, f"rest_from_prev ({rest/60:.1f}h<11h)"
+    
+    # Check rest from this block to next day
+    next_day_blocks = [fb for fb in driver.fixed_blocks if fb.day_idx == block_day + 1]
+    if next_day_blocks:
+        next_day_start = min(fb.start_min for fb in next_day_blocks)
+        rest = (next_day_start + DAY_MINUTES) - block.end_min
+        if rest < config.min_rest_minutes:
+            return False, f"rest_to_next ({rest/60:.1f}h<11h)"
+    
+    # 5. Weekly hours check (FTE only)
+    if driver.driver_type == "FTE":
+        max_minutes = int(config.max_hours_per_fte * 60)
+        if driver.fixed_minutes + block.duration_min > max_minutes:
+            return False, "weekly_hours"
+    
+    return True, ""
+
+
 # =============================================================================
 # REPAIR OPERATOR (CP-SAT)
 # =============================================================================
@@ -225,9 +930,14 @@ def repair_assignments(
     blocks_to_repair: list[BlockInfo],
     config: LNSConfigV4,
     seed: int,
+    banned_driver_ids: set = None,  # Drivers that should NOT receive any blocks
 ) -> dict[str, str]:
     """
     Repair by reassigning blocks using small CP-SAT.
+    
+    Args:
+        banned_driver_ids: Drivers that are completely excluded from candidates
+                          (used to enforce PT elimination)
     
     Returns:
         block_id -> driver_id mapping
@@ -235,16 +945,69 @@ def repair_assignments(
     if not blocks_to_repair:
         return {}
     
+    if banned_driver_ids is None:
+        banned_driver_ids = set()
+    
     model = cp_model.CpModel()
     
     # Sort for determinism
     blocks = sorted(blocks_to_repair, key=lambda b: b.block_id)
     drivers = sorted(driver_states, key=lambda d: d.driver_id)
     
-    # Only consider drivers who had blocks (candidates)
-    candidate_drivers = [d for d in drivers if d.fixed_blocks or d.destroyed_blocks]
+    # Include drivers as candidates, EXCLUDING banned drivers
+    all_candidates = [
+        d for d in drivers 
+        if d.driver_id not in banned_driver_ids and (d.fixed_blocks or d.destroyed_blocks or d.driver_type == "FTE")
+    ]
     
-    logger.info(f"Repair: {len(blocks)} blocks, {len(candidate_drivers)} candidate drivers")
+    # ==========================================================================
+    # CANDIDATE PRUNING: Only include drivers that can receive at least one block
+    # ==========================================================================
+    # This reduces CP-SAT symmetry and improves solve speed
+    feasible_drivers = set()
+    for b in blocks:
+        block_receivers = []
+        for d in all_candidates:
+            allowed, _ = can_driver_receive_block(d, b, config)
+            if allowed:
+                block_receivers.append(d.driver_id)
+        # Cap receivers per block to avoid too many candidates
+        feasible_drivers.update(block_receivers[:config.candidate_cap_per_block])
+    
+    candidate_drivers = [d for d in all_candidates if d.driver_id in feasible_drivers]
+    
+    # Track which drivers are destroyed PT (for extreme penalty)
+    destroyed_pt_ids = {d.driver_id for d in drivers if d.driver_type == "PT" and d.destroyed_blocks and not d.fixed_blocks}
+    
+    logger.info(f"Repair: {len(blocks)} blocks, {len(candidate_drivers)} candidates (pruned from {len(all_candidates)}, {len(destroyed_pt_ids)} destroyed PT)")
+    
+    # ==========================================================================
+    # PRE-REPAIR DIAGNOSTICS
+    # ==========================================================================
+    
+    # 1. Check if fixed schedule violates repair constraints
+    violations = diagnose_fixed_schedule(candidate_drivers, config)
+    if violations:
+        logger.warning(f"FIXED SCHEDULE VIOLATIONS: {len(violations)} found")
+        for v in violations[:5]:  # Log first 5
+            logger.warning(f"  {v}")
+        if len(violations) > 5:
+            logger.warning(f"  ... and {len(violations) - 5} more")
+    
+    # 2. Check receiver count per block
+    diag = diagnose_block_receivers(blocks, candidate_drivers, config)
+    
+    for block_id, count in diag["receiver_counts"]:
+        if count <= 5:  # Low receiver count is concerning
+            logger.warning(f"Block {block_id}: only {count} feasible receivers")
+    
+    # 3. If any block has 0 receivers, neighborhood is provably infeasible
+    if diag["orphans"]:
+        logger.warning(f"INFEASIBLE NEIGHBORHOOD: {len(diag['orphans'])} orphan blocks")
+        for block_id, reasons in diag["orphans"]:
+            logger.warning(f"  Block {block_id} has 0 receivers. Top reasons: {reasons}")
+        # Don't waste time on CP-SAT - return empty mapping
+        return {}
     
     # Variables
     # x[b,d] = 1 if block b assigned to driver d
@@ -307,23 +1070,24 @@ def repair_assignments(
                 fixed_tours = d.fixed_tours_on_day(day_idx)
                 model.Add(repair_tours + fixed_tours <= config.max_tours_per_day)
     
-    # 6. Daily span constraint (simplified: check if any block would exceed span)
-    # Full constraint with start_min_var/end_max_var is expensive; using simplified version
-    for d in candidate_drivers:
-        for day_idx in range(7):
-            day_blocks = [b for b in blocks if b.day_idx == day_idx]
-            fixed_on_day = [fb for fb in d.fixed_blocks if fb.day_idx == day_idx]
-            
-            if fixed_on_day:
-                fixed_start = min(fb.start_min for fb in fixed_on_day)
-                fixed_end = max(fb.end_min for fb in fixed_on_day)
-                
-                for b in day_blocks:
-                    combined_start = min(fixed_start, b.start_min)
-                    combined_end = max(fixed_end, b.end_min)
-                    if combined_end - combined_start > config.max_daily_span_minutes:
-                        # This block would violate span with fixed blocks
-                        model.Add(x[b.block_id, d.driver_id] == 0)
+    # 6. Daily span constraint - DISABLED
+    # Split-shifts (06:00-10:30 + 18:00-22:30) have 16h30 span but only 9h work.
+    # Enforcing 14h span creates orphan blocks with only 1 receiver.
+    # Span is now only for reporting/KPI, not feasibility.
+    # If needed, use max_segments_per_day (max 2 blocks/day) instead.
+    #
+    # for d in candidate_drivers:
+    #     for day_idx in range(7):
+    #         day_blocks = [b for b in blocks if b.day_idx == day_idx]
+    #         fixed_on_day = [fb for fb in d.fixed_blocks if fb.day_idx == day_idx]
+    #         if fixed_on_day:
+    #             fixed_start = min(fb.start_min for fb in fixed_on_day)
+    #             fixed_end = max(fb.end_min for fb in fixed_on_day)
+    #             for b in day_blocks:
+    #                 combined_start = min(fixed_start, b.start_min)
+    #                 combined_end = max(fixed_end, b.end_min)
+    #                 if combined_end - combined_start > config.max_daily_span_minutes:
+    #                     model.Add(x[b.block_id, d.driver_id] == 0)
 
     # 7. Inter-day rest constraint (11h minimum between consecutive days)
     # We must check:
@@ -376,10 +1140,10 @@ def repair_assignments(
     # Calculate cost for each driver
     cost_vars = []
     for d in candidate_drivers:
-        # Base cost: 1 if driver is used, 0 otherwise
-        base_cost = used[d.driver_id]
+        # Base cost: w_total_used_driver if driver is used (dominant baseline)
+        base_cost = int(config.w_total_used_driver) * used[d.driver_id]
         
-        # PT usage penalty (applies to ANY PT driver, incumbent or new)
+        # PT usage penalty (applies to ANY PT driver)
         pt_usage_penalty = int(config.w_pt_used) if d.driver_type == "PT" else 0
         
         # Activation penalty: only for drivers NOT in incumbent
@@ -389,13 +1153,15 @@ def repair_assignments(
             if d.driver_type == "PT":
                 activation_penalty += int(config.w_pt_new)
         
-        # Total weight = 1 (base) + PT usage + activation
-        weight = 1 + pt_usage_penalty + activation_penalty
+        # EXTREME PENALTY for destroyed PT drivers - we want to eliminate them!
+        # Only use them if absolutely no other option exists
+        destroyed_pt_penalty = 500_000 if d.driver_id in destroyed_pt_ids else 0
         
-        # Cost = weight × used[d]
-        # If used[d] = 0, cost = 0
-        # If used[d] = 1, cost = weight
-        cost_vars.append(weight * base_cost)
+        # Total weight × used[d]
+        weight = pt_usage_penalty + activation_penalty + destroyed_pt_penalty
+        
+        # Cost = base_cost + (weight × used[d])
+        cost_vars.append(base_cost + weight * used[d.driver_id])
     
     # PT weekday penalty: per-block cost for assigning blocks to PT on weekdays
     assign_cost = []
@@ -412,11 +1178,21 @@ def repair_assignments(
     model.Minimize(sum(cost_vars) + sum(assign_cost))
     
     # ==========================================================================
-    # Solve
+    # Solve (with dynamic time limit based on block count)
     # ==========================================================================
     solver = cp_model.CpSolver()
     solver.parameters.random_seed = seed
-    solver.parameters.max_time_in_seconds = config.repair_time_limit
+    
+    # Dynamic time limit: small repairs are fast, large repairs get more time
+    num_blocks = len(blocks)
+    if num_blocks < 10:
+        time_limit = 2.0
+    elif num_blocks < 50:
+        time_limit = 10.0
+    else:
+        time_limit = config.repair_time_limit
+    
+    solver.parameters.max_time_in_seconds = time_limit
     solver.parameters.search_branching = cp_model.FIXED_SEARCH
     solver.parameters.num_workers = 1  # Determinism
     
@@ -654,10 +1430,13 @@ def score_assignments(assignments: list) -> tuple:
     Calculate lexicographic score for LNS acceptance.
     
     Lower score = better.
-    Priority order: driver count > PT count > PT single-segment > tight rests
+    Priority order: TOTAL DRIVERS > PT count > PT single-segment > tight rests
+    
+    HEADCOUNT REDUCTION IS PRIMARY - never increase total drivers to reduce PT!
+    PT reduction is secondary - only reduce PT if it doesn't increase headcount.
     
     Returns:
-        (driver_count, pt_count, pt_single_segment, tight_rest_count)
+        (total_driver_count, pt_count, pt_single_segment, tight_rest_count)
     """
     used = [a for a in assignments if a.blocks]
     
@@ -672,6 +1451,7 @@ def score_assignments(assignments: list) -> tuple:
         if analysis and analysis.get("min_rest_hours") == 11.0:
             tight_rest += 1
     
+    # TOTAL DRIVERS is PRIMARY, then PT count
     return (driver_cnt, pt_cnt, pt_single, tight_rest)
 
 
@@ -731,19 +1511,51 @@ def refine_assignments_v4(
     
     consecutive_failures = 0
     
+    # Time tracking for global time limit
+    import time
+    start_time = time.time()
+    lns_time_limit = config.lns_time_limit
+    
     for iteration in range(config.max_iterations):
+        # Check global time limit
+        elapsed = time.time() - start_time
+        if elapsed >= lns_time_limit:
+            log_progress(f"LNS time limit reached ({elapsed:.1f}s >= {lns_time_limit}s), stopping")
+            break
+        
         # Deterministic seed per iteration
         iter_seed = config.seed + iteration
         iter_rng = random.Random(iter_seed)
         
-        log_progress(f"\n--- Iteration {iteration + 1}/{config.max_iterations} ---")
+        log_progress(f"\n--- Iteration {iteration + 1}/{config.max_iterations} ({elapsed:.1f}s) ---")
         
-        # Destroy
-        driver_states, blocks_to_repair = destroy_drivers(
-            best_assignments,
-            config.destroy_fraction,
-            iter_rng,
-        )
+        # Destroy: Use ejection chain if PT elimination enabled, otherwise random
+        banned_driver_ids = set()  # Drivers that cannot receive blocks
+        
+        if config.enable_pt_elimination:
+            # Check if there are PT drivers to target
+            pt_count = len([a for a in best_assignments if a.driver_type == "PT" and a.blocks])
+            if pt_count > 0:
+                log_progress(f"  Using ejection chain destroy ({pt_count} PT drivers)")
+                driver_states, blocks_to_repair, banned_driver_ids = destroy_pt_with_ejections(
+                    best_assignments,
+                    config,
+                    iter_rng,
+                )
+            else:
+                log_progress("  No PT drivers, using random destroy")
+                driver_states, blocks_to_repair = destroy_drivers(
+                    best_assignments,
+                    config.destroy_fraction,
+                    iter_rng,
+                )
+        else:
+            # Standard random destroy
+            driver_states, blocks_to_repair = destroy_drivers(
+                best_assignments,
+                config.destroy_fraction,
+                iter_rng,
+            )
         
         if not blocks_to_repair:
             logger.info("No blocks to repair, skipping iteration")
@@ -753,12 +1565,13 @@ def refine_assignments_v4(
                 break
             continue
         
-        # Repair
+        # Repair (with banned drivers excluded from candidates)
         block_mapping = repair_assignments(
             driver_states,
             blocks_to_repair,
             config,
             iter_seed,
+            banned_driver_ids=banned_driver_ids,
         )
         
         if not block_mapping:
@@ -799,8 +1612,8 @@ def refine_assignments_v4(
     
     logger.info("=" * 60)
     logger.info(f"LNS V4 COMPLETE")
-    logger.info(f"Final score: {best_score}")
-    logger.info(f"  Drivers: {best_score[0]} (PT: {pt_final})")
+    logger.info(f"Final score: {best_score} (driver_count, pt_count, pt_single, tight_rest)")
+    logger.info(f"  Drivers: {best_score[0]} (PT: {best_score[1]})")
     logger.info(f"  PT drivers: {pt_initial} -> {pt_final}")
     logger.info(f"  PT with single segment: {pt_single_initial} -> {pt_single_final}")
     logger.info(f"  PT with <=4.5h: {pt_low_util_initial} -> {pt_low_util_final}")

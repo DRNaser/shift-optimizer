@@ -70,7 +70,7 @@ class ScheduleRequest(BaseModel):
     week_start: str  # YYYY-MM-DD
     prefer_larger_blocks: bool = True
     seed: Optional[int] = None
-    solver_type: Literal["greedy", "cpsat", "cpsat+lns"] = "cpsat"
+    solver_type: Literal["greedy", "cpsat", "cpsat+lns", "cpsat-global", "set-partitioning"] = "cpsat"
     time_limit_seconds: int = 60
     lns_iterations: int = 10
     locked_block_ids: Optional[list[str]] = None
@@ -126,6 +126,7 @@ class StatsOutputFE(BaseModel):
     block_counts: dict[str, int]
     assignment_rate: float
     average_driver_utilization: float
+    average_work_hours: float = 0.0
     # v4 additions
     block_mix: Optional[dict[str, float]] = None
     template_match_count: Optional[int] = None

@@ -8,7 +8,7 @@ import uuid
 import logging
 import traceback
 from datetime import time as dt_time
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Form, Response
 from fastapi.responses import StreamingResponse
 
 from src.api.models import (
@@ -89,6 +89,108 @@ async def stream_logs():
 
 
 # =============================================================================
+# GLOBAL STATE (Process Local)
+# =============================================================================
+
+LAST_RESULT = None  # Cache the last schedule response for export
+
+
+# =============================================================================
+# EXPORT
+# =============================================================================
+
+@router.get("/export/roster")
+async def export_roster_csv():
+    """
+    Generate and download Roster CSV from the last result.
+    Uses cached state to avoid client-side download issues.
+    """
+    global LAST_RESULT
+    if not LAST_RESULT:
+        raise HTTPException(status_code=404, detail="No schedule available. Run optimization first.")
+    
+    try:
+        csv_content = _generate_roster_csv(LAST_RESULT)
+        
+        # Add BOM for Excel
+        if not csv_content.startswith('\ufeff'):
+            csv_content = '\ufeff' + csv_content
+            
+        return Response(
+            content=csv_content,
+            media_type="text/csv",
+            headers={
+                "Content-Disposition": "attachment; filename=roster_matrix.csv"
+            }
+        )
+    except Exception as e:
+        logger.error(f"Export error: {e}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+def _generate_roster_csv(response: ScheduleResponse) -> str:
+    """Generate CSV string from response object."""
+    # Data structure: driver_id -> { day: [times] }
+    driver_map = {}
+    driver_names = {}
+    
+    # Days order
+    days = ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY"]
+    day_labels = {
+        "MONDAY": "Montag",
+        "TUESDAY": "Dienstag",
+        "WEDNESDAY": "Mittwoch",
+        "THURSDAY": "Donnerstag",
+        "FRIDAY": "Freitag",
+        "SATURDAY": "Samstag",
+        "SUNDAY": "Sonntag"
+    }
+
+    # Populate map
+    for a in response.assignments:
+        d_id = a.driver_id
+        if d_id not in driver_map:
+            driver_map[d_id] = {}
+            driver_names[d_id] = a.driver_name
+            
+        # Ensure day sub-dict exists
+        # Note: a.day is a string like "MONDAY"
+        day_key = a.day
+        if day_key not in driver_map[d_id]:
+            driver_map[d_id][day_key] = []
+            
+        # Add tour times
+        for tour in a.block.tours:
+            time_str = f"{tour.start_time}-{tour.end_time}"
+            driver_map[d_id][day_key].append(time_str)
+
+    # Sort drivers (by ID or name)
+    sorted_ids = sorted(driver_map.keys())
+
+    # Build CSV lines
+    lines = []
+    
+    # Header
+    header = ["Fahrer"] + [day_labels.get(d, d) for d in days]
+    lines.append(";".join(header))
+    
+    # Rows
+    for d_id in sorted_ids:
+        name = driver_names.get(d_id, d_id)
+        row = [name]
+        
+        for day in days:
+            times = driver_map.get(d_id, {}).get(day, [])
+            cell = ", ".join(times)
+            row.append(cell)
+            
+        lines.append(";".join(row))
+        
+    return "\n".join(lines)
+
+
+# =============================================================================
 # SCHEDULE
 # =============================================================================
 
@@ -103,6 +205,8 @@ async def create_schedule(request: ScheduleRequest):
     # Clear previous logs for new solve session
     clear_logs()
     emit_log("═" * 40, "INFO")
+    
+    # ... (existing logging code) ...
     emit_log("SCHEDULE REQUEST RECEIVED", "INFO")
     emit_log("═" * 40, "INFO")
     
@@ -137,7 +241,28 @@ async def create_schedule(request: ScheduleRequest):
     try:
         emit_log("Starting solver...", "INFO")
         logger.info("Starting solver...")
-        result = solve_forecast_v4(tours, config)
+        
+        # Use FTE-only global CP-SAT for cpsat-global solver type
+        if request.solver_type == "cpsat-global":
+            emit_log("Using GLOBAL CP-SAT FTE-ONLY solver", "INFO")
+            from src.services.forecast_solver_v4 import solve_forecast_fte_only
+            result = solve_forecast_fte_only(
+                tours,
+                time_limit_feasible=float(request.time_limit_seconds),  # Use full time
+                time_limit_optimize=float(request.time_limit_seconds),
+                seed=request.seed or 42,
+            )
+        elif request.solver_type == "set-partitioning":
+            emit_log("Using SET-PARTITIONING (Crew Scheduling) solver", "INFO")
+            from src.services.forecast_solver_v4 import solve_forecast_set_partitioning
+            result = solve_forecast_set_partitioning(
+                tours,
+                time_limit=float(request.time_limit_seconds),
+                seed=request.seed or 42,
+            )
+        else:
+            result = solve_forecast_v4(tours, config)
+        
         emit_log(f"✓ Solver completed! Status: {result.status}", "SUCCESS")
         emit_log(f"Drivers FTE: {result.kpi.get('drivers_fte', 0)}, PT: {result.kpi.get('drivers_pt', 0)}", "INFO")
         logger.info(f"Solver completed! Status: {result.status}")
@@ -166,8 +291,9 @@ async def create_schedule(request: ScheduleRequest):
             lns_config = LNSConfigV4(
                 max_iterations=request.lns_iterations,
                 seed=config.seed,
+                lns_time_limit=float(request.time_limit_seconds),  # Use frontend time limit
             )
-            print(f"LNS Config: iterations={lns_config.max_iterations}, seed={lns_config.seed}", flush=True)
+            print(f"LNS Config: iterations={lns_config.max_iterations}, seed={lns_config.seed}, time_limit={lns_config.lns_time_limit}s", flush=True)
             
             try:
                 refined_assignments = refine_assignments_v4(result.assignments, lns_config)
@@ -180,7 +306,6 @@ async def create_schedule(request: ScheduleRequest):
                 print("LNS results applied successfully", flush=True)
             except Exception as lns_error:
                 print(f"LNS ERROR: {lns_error}", flush=True)
-                import traceback
                 print(f"LNS TRACEBACK:\n{traceback.format_exc()}", flush=True)
                 raise
             
@@ -192,6 +317,10 @@ async def create_schedule(request: ScheduleRequest):
     # Convert response
     logger.info("Converting response...")
     response = _convert_response(result, request, tours)
+    
+    # Cache result for export
+    global LAST_RESULT
+    LAST_RESULT = response
     
     logger.info(f"Response ready: {len(response.assignments)} assignments")
     logger.info("=" * 60)
@@ -303,6 +432,7 @@ def _convert_response(result, request: ScheduleRequest, tours: list[Tour]) -> Sc
         block_counts=block_counts,
         assignment_rate=1.0 if total_assigned == len(tours) else total_assigned / len(tours),
         average_driver_utilization=kpi.get("fte_hours_avg", 0) / 53.0,
+        average_work_hours=kpi.get("fte_hours_avg", 0.0),
         block_mix=kpi.get("block_mix"),
         template_match_count=kpi.get("template_match_count"),
         split_2er_count=kpi.get("split_2er_count"),

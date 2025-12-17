@@ -1,7 +1,7 @@
 # -*- mode: python ; coding: utf-8 -*-
 from PyInstaller.utils.hooks import collect_all
 
-datas = [('frontend_next/out', 'site'), ('backend_py/src', 'src'), ('backend_py/data', 'data')]
+datas = [('frontend/dist', 'site'), ('backend_py/src', 'src'), ('backend_py/data', 'data')]
 binaries = []
 hiddenimports = ['uvicorn.logging', 'uvicorn.loops', 'uvicorn.loops.auto', 'uvicorn.protocols', 'uvicorn.protocols.http', 'uvicorn.protocols.http.auto', 'uvicorn.lifespan', 'uvicorn.lifespan.on']
 tmp_ret = collect_all('ortools')

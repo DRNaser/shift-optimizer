@@ -4,8 +4,9 @@ echo      SHIFT OPTIMIZER - BUILD TOOL
 echo ==========================================
 echo.
 
-echo 1. Building Next.js Frontend...
-cd frontend_next
+echo 1. Building React Frontend...
+cd frontend
+call npm install
 call npm run build
 if %ERRORLEVEL% NEQ 0 (
     echo Frontend build failed!
@@ -17,7 +18,7 @@ cd ..
 echo.
 echo 2. Packaging Application...
 echo This may take a while...
-python -m PyInstaller --noconfirm --clean --onedir --windowed --name "ShiftOptimizer" --add-data "frontend_next/out;site" --add-data "backend_py/src;src" --add-data "backend_py/data;data" --paths "backend_py" --collect-all ortools --hidden-import=uvicorn.logging --hidden-import=uvicorn.loops --hidden-import=uvicorn.loops.auto --hidden-import=uvicorn.protocols --hidden-import=uvicorn.protocols.http --hidden-import=uvicorn.protocols.http.auto --hidden-import=uvicorn.lifespan --hidden-import=uvicorn.lifespan.on backend_py/desktop_main.py
+python -m PyInstaller --noconfirm --clean --onedir --windowed --name "ShiftOptimizer" --add-data "frontend/dist;site" --add-data "backend_py/src;src" --add-data "backend_py/data;data" --paths "backend_py" --collect-all ortools --hidden-import=uvicorn.logging --hidden-import=uvicorn.loops --hidden-import=uvicorn.loops.auto --hidden-import=uvicorn.protocols --hidden-import=uvicorn.protocols.http --hidden-import=uvicorn.protocols.http.auto --hidden-import=uvicorn.lifespan --hidden-import=uvicorn.lifespan.on backend_py/desktop_main.py
 
 if %ERRORLEVEL% NEQ 0 (
     echo Packaging failed!

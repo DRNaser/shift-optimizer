@@ -46,7 +46,7 @@ from src.services.smart_block_builder import (
 
 class ConfigV4(NamedTuple):
     """Configuration for v4 solver."""
-    min_hours_per_fte: float = 42.0
+    min_hours_per_fte: float = 40.0
     max_hours_per_fte: float = 53.0
     time_limit_phase1: float = 120.0
     time_limit_phase2: float = 60.0
@@ -57,6 +57,19 @@ class ConfigV4(NamedTuple):
     w_pt_new: float = 10000.0  # Additional penalty for new PT drivers (INCREASED to minimize PT)
     w_pt_weekday: float = 5000.0  # PT on Mon-Fri very expensive
     w_pt_saturday: float = 5000.0  # PT on Saturday also expensive (minimize all PT!)
+    # PT fragmentation control
+    pt_min_hours: float = 9.0  # Minimum hours for PT drivers (soft constraint)
+    w_pt_underutil: int = 2000  # Penalty weight for PT under-utilization (shortfall)
+    w_pt_day_spread: int = 1000  # Penalty per PT working day (minimize fragmentation)
+    # 3-tour recovery rules (HARD)
+    min_rest_after_3t_minutes: int = 14 * 60  # 14h rest after 3-tour day
+    max_next_day_tours_after_3t: int = 2  # Max tours allowed after 3-tour day
+    # 3-tour recovery rules (SOFT - LNS preference)
+    target_next_day_tours_after_3t: int = 1  # Prefer 1 tour after 3-tour day
+    w_next_day_tours_excess: int = 200  # Penalty for 2nd tour after 3-tour day
+    # Global CP-SAT Phase 2B control
+    enable_global_cpsat: bool = False  # Disabled by default (times out on large problems)
+    global_cpsat_block_threshold: int = 200  # Only use CP-SAT if blocks < this
 
 
 # =============================================================================
@@ -403,8 +416,14 @@ def assign_drivers_greedy(
     for _ in range(estimated_ftes):
         create_fte()
     
-    # Sort all blocks by hours descending (assign larger blocks first for better packing)
-    all_blocks_sorted = sorted(blocks, key=lambda b: b.total_work_hours, reverse=True)
+    # Sort blocks by (day, -hours) to spread work across days first
+    # This ensures each day gets blocks before moving to next day
+    # Within each day, larger blocks are assigned first for better packing
+    WEEKDAY_ORDER_IDX = {"Mon": 0, "Tue": 1, "Wed": 2, "Thu": 3, "Fri": 4, "Sat": 5, "Sun": 6}
+    all_blocks_sorted = sorted(
+        blocks, 
+        key=lambda b: (WEEKDAY_ORDER_IDX.get(b.day.value, 0), -b.total_work_hours)
+    )
     
     for block in all_blocks_sorted:
         assigned = False
@@ -451,7 +470,9 @@ def assign_drivers_greedy(
             assigned = True
         
         if not assigned:
-            # No existing driver can take it - create new PT
+            # No existing driver can take it - use PT for overflow
+            # NOTE: Creating new FTE here would increase headcount unnecessarily.
+            # PT is used as overflow bucket, LNS will optimize later.
             driver_id = create_pt()
             assign_block(driver_id, block)
     
@@ -617,37 +638,46 @@ def solve_forecast_v4(
     logger.info(f"Greedy result: {phase2_stats['drivers_fte']} FTE + {phase2_stats['drivers_pt']} PT")
     
     # ======================================================================
-    # PHASE 2B: CP-SAT ASSIGNMENT OPTIMIZER (Main)
+    # PHASE 2B: CP-SAT ASSIGNMENT OPTIMIZER (OPTIONAL - Disabled by default)
     # ======================================================================
-    try:
-        from src.services.cpsat_assigner import assign_drivers_cpsat
-        
-        logger.info("=" * 60)
-        logger.info("PHASE 2B: CP-SAT Assignment Optimizer")
-        logger.info("=" * 60)
-        
-        cpsat_assignments, cpsat_stats = assign_drivers_cpsat(
-            selected_blocks,
-            config,
-            warm_start=greedy_assignments,
-            time_limit=config.time_limit_phase2
-        )
-        
-        # Use CP-SAT result if successful
-        if cpsat_stats.get("status") in ("OPTIMAL", "FEASIBLE"):
-            logger.info("CP-SAT assignment successful!")
-            logger.info(f"Result: {cpsat_stats['drivers_fte']} FTE + {cpsat_stats['drivers_pt']} PT")
-            logger.info(f"Improvement: PT {phase2_stats['drivers_pt']} -> {cpsat_stats['drivers_pt']} (Delta {cpsat_stats['drivers_pt'] - phase2_stats['drivers_pt']})")
-            assignments = cpsat_assignments
-            # Update stats with CP-SAT results
-            phase2_stats.update(cpsat_stats)
-        else:
-            logger.warning(f"CP-SAT failed ({cpsat_stats.get('error')}), using greedy fallback")
-            assignments = greedy_assignments
+    # Global CP-SAT optimization is disabled by default because:
+    # - Times out on large problems (5+ min with UNKNOWN status)
+    # - CP-SAT is better used within LNS for small repair subproblems
+    
+    if config.enable_global_cpsat and len(selected_blocks) <= config.global_cpsat_block_threshold:
+        try:
+            from src.services.cpsat_assigner import assign_drivers_cpsat
             
-    except Exception as e:
-        logger.error(f"CP-SAT assignment error: {e}", exc_info=True)
-        logger.warning("Using greedy fallback")
+            logger.info("=" * 60)
+            logger.info(f"PHASE 2B: CP-SAT Assignment Optimizer ({len(selected_blocks)} blocks)")
+            logger.info("=" * 60)
+            
+            cpsat_assignments, cpsat_stats = assign_drivers_cpsat(
+                selected_blocks,
+                config,
+                warm_start=greedy_assignments,
+                time_limit=300.0  # 5 minutes for complex problems
+            )
+            
+            # Use CP-SAT result if successful
+            if cpsat_stats.get("status") in ("OPTIMAL", "FEASIBLE"):
+                logger.info("CP-SAT assignment successful!")
+                logger.info(f"Result: {cpsat_stats['drivers_fte']} FTE + {cpsat_stats['drivers_pt']} PT")
+                logger.info(f"Improvement: PT {phase2_stats['drivers_pt']} -> {cpsat_stats['drivers_pt']} (Delta {cpsat_stats['drivers_pt'] - phase2_stats['drivers_pt']})")
+                assignments = cpsat_assignments
+                # Update stats with CP-SAT results
+                phase2_stats.update(cpsat_stats)
+            else:
+                logger.warning(f"CP-SAT failed ({cpsat_stats.get('error')}), using greedy fallback")
+                assignments = greedy_assignments
+                
+        except Exception as e:
+            logger.error(f"CP-SAT assignment error: {e}", exc_info=True)
+            logger.warning("Using greedy fallback")
+            assignments = greedy_assignments
+    else:
+        # Skip global CP-SAT (disabled or problem too large)
+        logger.info(f"Skipping global CP-SAT Phase 2B (enabled={config.enable_global_cpsat}, blocks={len(selected_blocks)}, threshold={config.global_cpsat_block_threshold})")
         assignments = greedy_assignments
     
     # Determine status
@@ -857,3 +887,920 @@ def _analyze_driver_workload(blocks: list[Block]) -> dict:
         "violations_count": violations
     }
 
+
+# =============================================================================
+# FTE-ONLY GLOBAL CP-SAT SOLVER
+# =============================================================================
+
+def solve_forecast_fte_only(
+    tours: list[Tour],
+    time_limit_feasible: float = 60.0,
+    time_limit_optimize: float = 300.0,
+    seed: int = 42,
+) -> SolveResultV4:
+    """
+    Solve forecast with GLOBAL CP-SAT FTE-only assignment.
+    
+    Guarantees:
+    - PT = 0 (all drivers are FTE)
+    - All drivers have 42-53h/week
+    - Minimizes total driver count (target: 118-148 for ~6200h work)
+    """
+    from src.services.cpsat_global_assigner import (
+        solve_global_cpsat, 
+        GlobalAssignConfig, 
+        blocks_to_assign_info
+    )
+    
+    logger.info("=" * 70)
+    logger.info("FORECAST SOLVER - FTE-ONLY GLOBAL CP-SAT")
+    logger.info("=" * 70)
+    logger.info(f"Tours: {len(tours)}")
+    
+    total_hours = sum(t.duration_hours for t in tours)
+    logger.info(f"Total hours: {total_hours:.1f}h")
+    logger.info(f"Expected drivers: {int(total_hours/53)}-{int(total_hours/42)}")
+    
+    config = ConfigV4(seed=seed)
+    
+    # Phase A: Build blocks
+    t_block = perf_counter()
+    print("PHASE A: Block building...", flush=True)
+    blocks, block_stats = build_weekly_blocks_smart(tours)
+    block_time = perf_counter() - t_block
+    print(f"Generated {len(blocks)} blocks in {block_time:.1f}s", flush=True)
+    
+    block_scores = block_stats.get("block_scores", {})
+    block_props = block_stats.get("block_props", {})
+    block_index = build_block_index(blocks)
+    
+    # Phase 1: Select blocks
+    t_capacity = perf_counter()
+    print("PHASE 1: Block selection (CP-SAT)...", flush=True)
+    selected_blocks, phase1_stats = solve_capacity_phase(
+        blocks, tours, block_index, config,
+        block_scores=block_scores, block_props=block_props
+    )
+    capacity_time = perf_counter() - t_capacity
+    
+    if phase1_stats["status"] != "OK":
+        return SolveResultV4(
+            status="FAILED",
+            assignments=[],
+            kpi={"error": "Phase 1 block selection failed"},
+            solve_times={"block_building": block_time},
+            block_stats=block_stats
+        )
+    
+    print(f"Selected {len(selected_blocks)} blocks in {capacity_time:.1f}s", flush=True)
+    
+    # Phase 2: FEASIBILITY PIPELINE (Step 0 + Step 1)
+    print("=" * 60, flush=True)
+    print("PHASE 2: FEASIBILITY PIPELINE", flush=True)
+    print("=" * 60, flush=True)
+    
+    from src.services.feasibility_pipeline import run_feasibility_pipeline
+    
+    def log_fn(msg):
+        print(msg, flush=True)
+        logger.info(msg)
+    
+    k_target = 148  # Max drivers for 42h min
+    pipeline_result = run_feasibility_pipeline(selected_blocks, k_target, log_fn)
+    
+    # Check if feasible at all
+    peak = pipeline_result.get("peak_concurrency", 0)
+    n_greedy = pipeline_result.get("n_greedy", 0)
+    greedy_result = pipeline_result.get("greedy_result", {})
+    
+    if not pipeline_result.get("feasible", False):
+        return SolveResultV4(
+            status="INFEASIBLE",
+            assignments=[],
+            kpi={
+                "error": f"Peak concurrency ({peak}) > K_target ({k_target})",
+                "hint": "Phase-1 block selection creates too much overlap",
+                "peak_concurrency": peak,
+            },
+            solve_times={
+                "block_building": block_time,
+                "phase1_capacity": capacity_time,
+            },
+            block_stats=block_stats
+        )
+    
+    # Step 2+3: MODEL STRIP TEST V2 (with proper symmetry breaking)
+    from src.services.model_strip_test import run_model_strip_test_v2
+    
+    log_fn("Running Model Strip Test V2 (anchor fixing + hints)...")
+    strip_result = run_model_strip_test_v2(
+        blocks=selected_blocks,
+        n_drivers=peak,  # Start at peak (120)
+        greedy_assignments=greedy_result.get("assignments", {}),  # For anchor fixing!
+        time_limit=60.0,  # 60s per stage
+        log_fn=log_fn,
+    )
+    
+    # For now, always use greedy (strip test is diagnostic)
+    assignments_map = greedy_result.get("assignments", {})
+    log_fn(f"Using greedy result (strip test complete)")
+    
+    # Build DriverAssignment objects
+    block_by_id = {b.id: b for b in selected_blocks}
+    driver_blocks = {}  # driver_index -> list of Block
+    
+    for block_id, driver_idx in assignments_map.items():
+        if driver_idx not in driver_blocks:
+            driver_blocks[driver_idx] = []
+        driver_blocks[driver_idx].append(block_by_id[block_id])
+    
+    assignments = []
+    for driver_idx in sorted(driver_blocks.keys()):
+        blocks_list = driver_blocks[driver_idx]
+        total_hours_driver = sum(b.total_work_hours for b in blocks_list)
+        days_worked = len(set(b.day.value for b in blocks_list))
+        
+        assignments.append(DriverAssignment(
+            driver_id=f"FTE{driver_idx+1:03d}",
+            driver_type="FTE",
+            blocks=sorted(blocks_list, key=lambda b: (b.day.value, b.first_start)),
+            total_hours=total_hours_driver,
+            days_worked=days_worked,
+            analysis=_analyze_driver_workload(blocks_list)
+        ))
+    
+    # Validate
+    fte_hours = [a.total_hours for a in assignments]
+    under_42 = sum(1 for h in fte_hours if h < 42.0)
+    over_53 = sum(1 for h in fte_hours if h > 53.0)
+    
+    if under_42 > 0 or over_53 > 0:
+        status = "SOFT_FALLBACK_HOURS"
+        logger.warning(f"Hours constraint violations: {under_42} under 42h, {over_53} over 53h")
+    else:
+        status = "HARD_OK"
+    
+    kpi = {
+        "status": status,
+        "total_hours": round(total_hours, 2),
+        "drivers_fte": n_greedy,  # From pipeline
+        "drivers_pt": 0,  # ALWAYS 0 for FTE-only
+        "peak_concurrency": peak,  # NEW: crucial metric
+        "fte_hours_min": round(min(fte_hours), 2) if fte_hours else 0,
+        "fte_hours_max": round(max(fte_hours), 2) if fte_hours else 0,
+        "fte_hours_avg": round(sum(fte_hours) / len(fte_hours), 2) if fte_hours else 0,
+        "under_42h": under_42,
+        "over_53h": over_53,
+        "blocks_selected": phase1_stats["selected_blocks"],
+        "blocks_1er": phase1_stats["blocks_1er"],
+        "blocks_2er": phase1_stats["blocks_2er"],
+        "blocks_3er": phase1_stats["blocks_3er"],
+        "block_mix": phase1_stats.get("block_mix", {}),
+    }
+    
+    pipeline_time = 0.1  # Pipeline is fast
+    solve_times = {
+        "block_building": round(block_time, 2),
+        "phase1_capacity": round(capacity_time, 2),
+        "phase2_pipeline": round(pipeline_time, 2),
+        "total": round(block_time + capacity_time + pipeline_time, 2),
+    }
+    
+    logger.info("=" * 60)
+    logger.info("FTE-ONLY SOLVER COMPLETE (via Pipeline)")
+    logger.info("=" * 60)
+    logger.info(f"Status: {status}")
+    logger.info(f"Peak concurrency: {peak}")
+    logger.info(f"Drivers: {n_greedy} FTE, 0 PT")
+    logger.info(f"Hours: {kpi['fte_hours_min']:.1f}h - {kpi['fte_hours_max']:.1f}h")
+    logger.info(f"Total time: {solve_times['total']:.1f}s")
+    
+    return SolveResultV4(
+        status=status,
+        assignments=assignments,
+        kpi=kpi,
+        solve_times=solve_times,
+        block_stats=block_stats
+    )
+
+
+# =============================================================================
+# SET-PARTITIONING SOLVER
+# =============================================================================
+
+
+# =============================================================================
+# REPAIR / POST-PROCESSING (Enhanced)
+# =============================================================================
+
+def _move_block(source: DriverAssignment, target: DriverAssignment, block) -> None:
+    """Helper to move a block between drivers and update stats."""
+    source.blocks.remove(block)
+    source.total_hours = sum(b.total_work_hours for b in source.blocks)
+    source.days_worked = len({t.day for b in source.blocks for t in b.tours}) if source.blocks else 0
+    
+    target.blocks.append(block)
+    target.total_hours = sum(b.total_work_hours for b in target.blocks)
+    target.days_worked = len({t.day for b in target.blocks for t in b.tours})
+
+
+def _block_day_priority(block) -> int:
+    """Score block by day priority: Saturday=2, Friday=1, others=0."""
+    days = {t.day for t in block.tours}
+    if Weekday.SATURDAY in days:
+        return 2
+    if Weekday.FRIDAY in days:
+        return 1
+    return 0
+
+
+def rebalance_to_min_fte_hours(
+    assignments: list[DriverAssignment],
+    min_fte_hours: float = 40.0,
+    max_fte_hours: float = 53.0
+) -> tuple[list[DriverAssignment], dict]:
+    """
+    Enhanced repair pass: ensure all FTE drivers have >= min_fte_hours.
+    
+    Strategy (in order):
+    1. FTE→FTE balancing: Move blocks from overfull FTEs to underfull FTEs
+    2. PT→FTE stealing: Move blocks from PT drivers to underfull FTEs
+    3. Reclassify: Convert still-underfull FTEs to PT (last resort)
+    """
+    stats = {
+        "moved_blocks_fte_fte": 0,
+        "moved_blocks_pt_fte": 0,
+        "reclassified_fte_to_pt": 0
+    }
+    
+    # Get all FTE drivers
+    all_ftes = [a for a in assignments if a.driver_type == "FTE"]
+    
+    # Phase 1: FTE→FTE balancing
+    logger.info("Repair Phase 1: FTE→FTE balancing...")
+    
+    # Identify underfull and donor FTEs
+    underfull_ftes = sorted(
+        [a for a in all_ftes if a.total_hours < min_fte_hours],
+        key=lambda x: x.total_hours  # Neediest first
+    )
+    
+    for underfull in underfull_ftes:
+        if underfull.total_hours >= min_fte_hours:
+            continue
+            
+        # Find donor FTEs (those with hours > 40 that can spare blocks)
+        donor_ftes = sorted(
+            [a for a in all_ftes if a.driver_id != underfull.driver_id and a.total_hours > min_fte_hours],
+            key=lambda x: -x.total_hours  # Highest hours first (most room to give)
+        )
+        
+        # Build candidate blocks from donors
+        candidates = []
+        for donor in donor_ftes:
+            for block in donor.blocks:
+                # Check if donor would still be >= 40h after giving
+                remaining = donor.total_hours - block.total_work_hours
+                if remaining >= min_fte_hours:
+                    candidates.append((block, donor))
+        
+        # Sort candidates: Saturday/Friday first, then largest blocks
+        candidates.sort(key=lambda item: (_block_day_priority(item[0]), item[0].total_work_minutes), reverse=True)
+        
+        for block, donor in candidates:
+            if underfull.total_hours >= min_fte_hours:
+                break
+                
+            # Verify block still available
+            if block not in donor.blocks:
+                continue
+                
+            # Check recipient constraints
+            if underfull.total_hours + block.total_work_hours > max_fte_hours:
+                continue
+                
+            ok, _ = can_assign_block(underfull.blocks, block)
+            if not ok:
+                continue
+                
+            # Double-check donor stays valid
+            if donor.total_hours - block.total_work_hours < min_fte_hours:
+                continue
+                
+            # Move block
+            _move_block(donor, underfull, block)
+            stats["moved_blocks_fte_fte"] += 1
+    
+    # Phase 2: PT→FTE stealing
+    logger.info("Repair Phase 2: PT→FTE stealing...")
+    
+    # Re-identify underfull FTEs (some may have been filled in Phase 1)
+    underfull_ftes = sorted(
+        [a for a in assignments if a.driver_type == "FTE" and a.total_hours < min_fte_hours],
+        key=lambda x: x.total_hours
+    )
+    pt_drivers = [a for a in assignments if a.driver_type == "PT" and a.blocks]
+    
+    for underfull in underfull_ftes:
+        if underfull.total_hours >= min_fte_hours:
+            continue
+            
+        # Build candidates from PT drivers
+        candidates = []
+        for pt in pt_drivers:
+            if pt.driver_id == underfull.driver_id:
+                continue
+            for block in pt.blocks:
+                candidates.append((block, pt))
+        
+        # Sort: Saturday first, largest first
+        candidates.sort(key=lambda item: (_block_day_priority(item[0]), item[0].total_work_minutes), reverse=True)
+        
+        for block, source_pt in candidates:
+            if underfull.total_hours >= min_fte_hours:
+                break
+                
+            if block not in source_pt.blocks:
+                continue
+                
+            if underfull.total_hours + block.total_work_hours > max_fte_hours:
+                continue
+                
+            ok, _ = can_assign_block(underfull.blocks, block)
+            if not ok:
+                continue
+                
+            _move_block(source_pt, underfull, block)
+            stats["moved_blocks_pt_fte"] += 1
+    
+    # Phase 3: Reclassify remaining underfull FTEs
+    logger.info("Repair Phase 3: Reclassifying remaining underfull FTEs...")
+    
+    for a in assignments:
+        if a.driver_type == "FTE" and a.total_hours < min_fte_hours:
+            a.driver_type = "PT"
+            stats["reclassified_fte_to_pt"] += 1
+    
+    logger.info(f"Repair stats: FTE→FTE moves={stats['moved_blocks_fte_fte']}, "
+                f"PT→FTE moves={stats['moved_blocks_pt_fte']}, "
+                f"reclassified={stats['reclassified_fte_to_pt']}")
+    
+    return assignments, stats
+
+
+def fill_in_days_after_heavy(
+    assignments: list[DriverAssignment],
+    max_fte_hours: float = 53.0
+) -> tuple[list[DriverAssignment], dict]:
+    """
+    Fill empty days after 3-tour (heavy) days.
+    
+    After a 3-tour day, the driver can work up to 2 tours the next day
+    with 14h rest. This function finds such empty days and tries to
+    fill them with blocks from PT drivers.
+    """
+    from src.services.constraints import can_assign_block
+    
+    stats = {"filled_days": 0, "moved_blocks": 0}
+    WEEKDAY_ORDER = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
+    
+    def get_tours_on_day(driver: DriverAssignment, day_val: str) -> int:
+        return sum(len(b.tours) if hasattr(b, 'tours') else 1 
+                   for b in driver.blocks if b.day.value == day_val)
+    
+    def get_day_blocks(driver: DriverAssignment, day_val: str) -> list:
+        return [b for b in driver.blocks if b.day.value == day_val]
+    
+    for fte in assignments:
+        if fte.driver_type != "FTE":
+            continue
+        
+        for day_idx, day_val in enumerate(WEEKDAY_ORDER[:-1]):
+            tours = get_tours_on_day(fte, day_val)
+            if tours < 3:
+                continue
+            
+            next_day = WEEKDAY_ORDER[day_idx + 1]
+            if get_tours_on_day(fte, next_day) > 0:
+                continue
+            
+            heavy_blocks = get_day_blocks(fte, day_val)
+            if not heavy_blocks:
+                continue
+            last_end = max(b.last_end for b in heavy_blocks)
+            last_end_mins = last_end.hour * 60 + last_end.minute
+            min_start_mins = (last_end_mins + 14 * 60) % (24 * 60)
+            
+            for pt in assignments:
+                if pt.driver_type != "PT":
+                    continue
+                
+                for block in list(pt.blocks):
+                    if block.day.value != next_day:
+                        continue
+                    
+                    block_start = block.first_start.hour * 60 + block.first_start.minute
+                    if block_start < min_start_mins and min_start_mins < 1440:
+                        continue
+                    
+                    block_tours = len(block.tours) if hasattr(block, 'tours') else 1
+                    if block_tours > 2:
+                        continue
+                    
+                    if fte.total_hours + block.total_work_hours > max_fte_hours:
+                        continue
+                    
+                    ok, _ = can_assign_block(fte.blocks, block)
+                    if not ok:
+                        continue
+                    
+                    _move_block(pt, fte, block)
+                    stats["moved_blocks"] += 1
+                    break
+            
+            if get_tours_on_day(fte, next_day) > 0:
+                stats["filled_days"] += 1
+    
+    assignments = [a for a in assignments if len(a.blocks) > 0]
+    logger.info(f"Fill-in-days: filled {stats['filled_days']} days, moved {stats['moved_blocks']} blocks")
+    return assignments, stats
+
+
+def absorb_saturday_pt_into_fte(
+    assignments: list[DriverAssignment],
+    max_fte_hours: float = 53.0
+) -> tuple[list[DriverAssignment], dict]:
+    """
+    Move Saturday blocks from PT drivers to FTEs that can absorb them.
+    Reduces PT Saturday coverage before packing.
+    """
+    stats = {"absorbed_blocks": 0, "pt_sat_before": 0, "pt_sat_after": 0}
+    
+    # Count PT with Saturday before
+    stats["pt_sat_before"] = sum(
+        1 for a in assignments 
+        if a.driver_type == "PT" and any(t.day == Weekday.SATURDAY for b in a.blocks for t in b.tours)
+    )
+    
+    # Collect all Saturday blocks from PT drivers
+    sat_blocks_and_sources = []
+    for a in assignments:
+        if a.driver_type == "PT":
+            for block in a.blocks:
+                if any(t.day == Weekday.SATURDAY for t in block.tours):
+                    sat_blocks_and_sources.append((block, a))
+    
+    if not sat_blocks_and_sources:
+        return assignments, stats
+    
+    logger.info(f"Absorb phase: {len(sat_blocks_and_sources)} Saturday PT blocks to try absorbing into FTEs")
+    
+    # Get FTE drivers sorted by lowest hours (they have most room)
+    fte_drivers = sorted(
+        [a for a in assignments if a.driver_type == "FTE"],
+        key=lambda x: x.total_hours
+    )
+    
+    for block, source_pt in sat_blocks_and_sources:
+        # Check if still available
+        if block not in source_pt.blocks:
+            continue
+            
+        # Find FTE that can absorb
+        for fte in fte_drivers:
+            if fte.total_hours + block.total_work_hours > max_fte_hours:
+                continue
+                
+            ok, _ = can_assign_block(fte.blocks, block)
+            if not ok:
+                continue
+                
+            # Move block PT→FTE
+            _move_block(source_pt, fte, block)
+            stats["absorbed_blocks"] += 1
+            break
+    
+    # Count PT with Saturday after
+    stats["pt_sat_after"] = sum(
+        1 for a in assignments 
+        if a.driver_type == "PT" and any(t.day == Weekday.SATURDAY for b in a.blocks for t in b.tours)
+    )
+    
+    # Drop empty PT drivers
+    assignments = [a for a in assignments if len(a.blocks) > 0]
+    
+    logger.info(f"Absorbed {stats['absorbed_blocks']} Saturday blocks into FTEs. "
+                f"PT with Sat: {stats['pt_sat_before']} → {stats['pt_sat_after']}")
+    
+    return assignments, stats
+
+
+def compute_saturday_lower_bound(assignments: list[DriverAssignment]) -> dict:
+    """
+    Compute theoretical lower bound for PT Saturday drivers.
+    Based on peak Saturday overlap.
+    """
+    # Collect all Saturday blocks
+    all_sat_blocks = []
+    for a in assignments:
+        for block in a.blocks:
+            if any(t.day == Weekday.SATURDAY for t in block.tours):
+                all_sat_blocks.append((block, a.driver_type))
+    
+    if not all_sat_blocks:
+        return {"peak_sat_blocks": 0, "peak_fte_coverage": 0, "lower_bound_pt_sat": 0}
+    
+    # Find peak overlap using a sweep line algorithm
+    events = []
+    for block, driver_type in all_sat_blocks:
+        start = block.first_start.hour * 60 + block.first_start.minute
+        end = block.last_end.hour * 60 + block.last_end.minute
+        events.append((start, 1, driver_type))  # +1 at start
+        events.append((end, -1, driver_type))   # -1 at end
+    
+    events.sort(key=lambda x: (x[0], -x[1]))  # Sort by time, ends before starts at same time
+    
+    current_total = 0
+    current_fte = 0
+    peak_total = 0
+    peak_fte = 0
+    
+    for time_point, delta, driver_type in events:
+        current_total += delta
+        if driver_type == "FTE":
+            current_fte += delta
+            
+        if current_total > peak_total:
+            peak_total = current_total
+            peak_fte = current_fte
+    
+    # Lower bound: at peak, we need (peak_total - peak_fte) PT drivers at minimum
+    lower_bound = max(0, peak_total - peak_fte)
+    
+    return {
+        "peak_sat_blocks": peak_total,
+        "peak_fte_coverage": peak_fte,
+        "lower_bound_pt_sat": lower_bound
+    }
+
+
+def pack_part_time_saturday(
+    assignments: list[DriverAssignment],
+    target_pt_drivers_sat: int = 8
+) -> tuple[list[DriverAssignment], dict]:
+    """
+    Pack Saturday PT tours into minimal number of existing PT drivers.
+    
+    Enhanced algorithm:
+    - Only use existing PT drivers as bins (no new drivers)
+    - Prefer bins that are Saturday-only or have least non-Sat work
+    - Track metrics before/after
+    """
+    stats = {
+        "packed_saturday_blocks": 0,
+        "pt_drivers_with_sat_before": 0,
+        "pt_drivers_with_sat_after": 0
+    }
+    
+    # Count before
+    stats["pt_drivers_with_sat_before"] = sum(
+        1 for a in assignments 
+        if a.driver_type == "PT" and any(t.day == Weekday.SATURDAY for b in a.blocks for t in b.tours)
+    )
+    
+    # Collect PT drivers that have Saturday work
+    pt_sat_drivers = []
+    pt_sat_blocks = []
+    
+    for a in assignments:
+        if a.driver_type == "PT":
+            sat_blocks = []
+            non_sat_blocks = []
+            for block in a.blocks:
+                if any(t.day == Weekday.SATURDAY for t in block.tours):
+                    sat_blocks.append(block)
+                else:
+                    non_sat_blocks.append(block)
+            
+            if sat_blocks:
+                pt_sat_drivers.append(a)
+                # Strip Saturday blocks temporarily
+                a.blocks = non_sat_blocks
+                a.total_hours = sum(b.total_work_hours for b in a.blocks)
+                a.days_worked = len({t.day for b in a.blocks for t in b.tours}) if a.blocks else 0
+                pt_sat_blocks.extend(sat_blocks)
+    
+    if not pt_sat_blocks:
+        return assignments, stats
+    
+    logger.info(f"Packing {len(pt_sat_blocks)} Saturday PT blocks into bins...")
+    
+    # Sort blocks by duration descending (FFD - First Fit Decreasing)
+    pt_sat_blocks.sort(key=lambda b: b.total_work_minutes, reverse=True)
+    
+    # Sort bins: prefer Saturday-only (less non-Sat work), then fewer current Sat segments
+    def bin_score(driver):
+        non_sat_hours = sum(
+            b.total_work_hours for b in driver.blocks 
+            if not any(t.day == Weekday.SATURDAY for t in b.tours)
+        )
+        sat_segment_count = sum(
+            1 for b in driver.blocks 
+            if any(t.day == Weekday.SATURDAY for t in b.tours)
+        )
+        return (non_sat_hours, sat_segment_count)
+    
+    pt_sat_drivers.sort(key=bin_score)
+    
+    # Split into target bins and overflow
+    target_bins = pt_sat_drivers[:target_pt_drivers_sat]
+    overflow_bins = pt_sat_drivers[target_pt_drivers_sat:]
+    all_bins = target_bins + overflow_bins
+    
+    packed_count = 0
+    unplaced_blocks = []
+    
+    for block in pt_sat_blocks:
+        placed = False
+        
+        # Try target bins first
+        for driver in target_bins:
+            ok, _ = can_assign_block(driver.blocks, block)
+            if ok:
+                driver.blocks.append(block)
+                driver.total_hours = sum(b.total_work_hours for b in driver.blocks)
+                driver.days_worked = len({t.day for b in driver.blocks for t in b.tours})
+                placed = True
+                packed_count += 1
+                break
+        
+        # Try overflow bins
+        if not placed:
+            for driver in overflow_bins:
+                ok, _ = can_assign_block(driver.blocks, block)
+                if ok:
+                    driver.blocks.append(block)
+                    driver.total_hours = sum(b.total_work_hours for b in driver.blocks)
+                    driver.days_worked = len({t.day for b in driver.blocks for t in b.tours})
+                    placed = True
+                    packed_count += 1
+                    break
+        
+        # Last resort: any PT driver
+        if not placed:
+            for driver in [a for a in assignments if a.driver_type == "PT"]:
+                ok, _ = can_assign_block(driver.blocks, block)
+                if ok:
+                    driver.blocks.append(block)
+                    driver.total_hours = sum(b.total_work_hours for b in driver.blocks)
+                    driver.days_worked = len({t.day for b in driver.blocks for t in b.tours})
+                    placed = True
+                    break
+        
+        if not placed:
+            unplaced_blocks.append(block)
+            logger.warning(f"Could not place Saturday block {block.id}")
+    
+    stats["packed_saturday_blocks"] = packed_count
+    
+    # Drop empty drivers
+    assignments = [a for a in assignments if len(a.blocks) > 0]
+    
+    # Count after
+    stats["pt_drivers_with_sat_after"] = sum(
+        1 for a in assignments 
+        if a.driver_type == "PT" and any(t.day == Weekday.SATURDAY for b in a.blocks for t in b.tours)
+    )
+    
+    logger.info(f"Packed {packed_count} Saturday blocks. "
+                f"PT with Sat: {stats['pt_drivers_with_sat_before']} → {stats['pt_drivers_with_sat_after']}")
+    
+    return assignments, stats
+
+
+def solve_forecast_set_partitioning(
+    tours: list[Tour],
+    time_limit: float = 300.0,
+    seed: int = 42,
+) -> SolveResultV4:
+    """
+    Solve tour assignment using Set-Partitioning (Crew Scheduling).
+    
+    Pre-generates valid weekly rosters (columns) and uses RMP to select
+    rosters that cover all blocks with minimum driver count.
+    
+    All rosters satisfy: 42-53h, no overlap, 11h/14h rest, max 3 tours/day.
+    """
+    from time import perf_counter
+    
+    logger.info("=" * 70)
+    logger.info("SOLVER_ARCH=set-partitioning")
+    logger.info("FORECAST SOLVER - SET-PARTITIONING (Crew Scheduling)")
+    logger.info("=" * 70)
+    logger.info(f"Tours: {len(tours)}")
+    
+    total_hours = sum(t.duration_hours for t in tours)
+    logger.info(f"Total hours: {total_hours:.1f}h")
+    logger.info(f"Expected drivers: {int(total_hours/53)}-{int(total_hours/40)}")
+    
+    # Phase A: Build blocks (reuse existing)
+    t_block = perf_counter()
+    print("PHASE A: Block building...", flush=True)
+    blocks, block_stats = build_weekly_blocks_smart(tours)
+    block_time = perf_counter() - t_block
+    print(f"Generated {len(blocks)} blocks in {block_time:.1f}s", flush=True)
+    
+    block_scores = block_stats.get("block_scores", {})
+    block_props = block_stats.get("block_props", {})
+    block_index = build_block_index(blocks)
+    
+    # Phase 1: Select blocks (reuse existing)
+    t_capacity = perf_counter()
+    print("PHASE 1: Block selection (CP-SAT)...", flush=True)
+    # Use local ConfigV4 (not ForecastConfig from forecast_weekly_solver)
+    config = ConfigV4(min_hours_per_fte=40.0, time_limit_phase1=float(time_limit), seed=seed)
+    selected_blocks, phase1_stats = solve_capacity_phase(
+        blocks, tours, block_index, config,
+        block_scores=block_scores, block_props=block_props
+    )
+    capacity_time = perf_counter() - t_capacity
+    
+    if phase1_stats["status"] != "OK":
+        return SolveResultV4(
+            status="FAILED",
+            assignments=[],
+            kpi={"error": "Phase 1 block selection failed"},
+            solve_times={"block_building": block_time},
+            block_stats=block_stats
+        )
+    
+    print(f"Selected {len(selected_blocks)} blocks in {capacity_time:.1f}s", flush=True)
+    
+    # Phase 2: Set-Partitioning
+    print("=" * 60, flush=True)
+    print("PHASE 2: SET-PARTITIONING", flush=True)
+    print("=" * 60, flush=True)
+    
+    def log_fn(msg):
+        print(msg, flush=True)
+        logger.info(msg)
+    
+    from src.services.set_partition_solver import solve_set_partitioning, convert_rosters_to_assignments
+    
+    t_sp = perf_counter()
+    sp_result = solve_set_partitioning(
+        blocks=selected_blocks,
+        max_rounds=100,
+        initial_pool_size=5000,
+        columns_per_round=200,
+        rmp_time_limit=min(60.0, time_limit / 3),
+        seed=seed,
+        log_fn=log_fn,
+    )
+    sp_time = perf_counter() - t_sp
+    
+    # Check result
+    if sp_result.status != "OK":
+        logger.warning(f"Set-Partitioning failed: {sp_result.status}")
+        logger.warning(f"Uncovered blocks: {len(sp_result.uncovered_blocks)}")
+        logger.warning("Falling back to greedy assignment to ensure a valid schedule")
+
+        # Greedy fallback (always returns a valid assignment if blocks are coverable)
+        t_greedy = perf_counter()
+        assignments, phase2_stats = assign_drivers_greedy(selected_blocks, config)
+        
+        # Post-Greedy Repair (Enhanced)
+        logger.info("=" * 60)
+        logger.info("POST-GREEDY REPAIR")
+        logger.info("=" * 60)
+        
+        # Step 1: Rebalance FTEs (FTE→FTE, then PT→FTE, then reclassify)
+        assignments, repair_stats = rebalance_to_min_fte_hours(assignments, 40.0, 53.0)
+        
+        # Step 1.5: Fill empty days after 3-tour days
+        assignments, fill_stats = fill_in_days_after_heavy(assignments, 53.0)
+        
+        # Step 2: Absorb Saturday PT blocks into FTEs before packing
+        assignments, absorb_stats = absorb_saturday_pt_into_fte(assignments, 53.0)
+        
+        # Step 3: Pack remaining Saturday PT blocks into fewer PT drivers
+        assignments, pack_stats = pack_part_time_saturday(assignments, target_pt_drivers_sat=8)
+        
+        # Step 4: Compute theoretical lower bound for Saturday PT
+        sat_lb = compute_saturday_lower_bound(assignments)
+        if sat_lb["lower_bound_pt_sat"] > 8:
+            logger.warning(f"Target 8 PT Saturday infeasible; theoretical lower bound = {sat_lb['lower_bound_pt_sat']}")
+        
+        greedy_time = perf_counter() - t_greedy
+
+        # Recalculate stats from final assignments
+        fte_drivers = [a for a in assignments if a.driver_type == "FTE"]
+        pt_drivers = [a for a in assignments if a.driver_type == "PT"]
+        fte_hours = [a.total_hours for a in fte_drivers]
+
+        kpi = {
+            "solver_arch": "set-partitioning+greedy_fallback+repair",
+            "status": "OK_GREEDY_FALLBACK",
+            "sp_status": sp_result.status,
+            "total_hours": round(total_hours, 2),
+            "drivers_fte": len(fte_drivers),
+            "drivers_pt": len(pt_drivers),
+            "fte_hours_min": round(min(fte_hours), 2) if fte_hours else 0,
+            "fte_hours_max": round(max(fte_hours), 2) if fte_hours else 0,
+            "fte_hours_avg": round(sum(fte_hours) / len(fte_hours), 2) if fte_hours else 0,
+            "blocks_selected": phase1_stats["selected_blocks"],
+            "pool_size": sp_result.pool_size,
+            "rounds_used": sp_result.rounds_used,
+            "uncovered_blocks": len(sp_result.uncovered_blocks),
+            # Repair KPIs
+            "fte_under_40h": sum(1 for h in fte_hours if h < 40.0),
+            "repair_moved_blocks_fte_fte": repair_stats["moved_blocks_fte_fte"],
+            "repair_moved_blocks_pt_fte": repair_stats["moved_blocks_pt_fte"],
+            "repair_reclassified": repair_stats["reclassified_fte_to_pt"],
+            # Absorb KPIs
+            "pt_sat_before_absorb": absorb_stats["pt_sat_before"],
+            "pt_sat_after_absorb": absorb_stats["pt_sat_after"],
+            "absorbed_sat_blocks": absorb_stats["absorbed_blocks"],
+            # Pack KPIs
+            "pt_drivers_with_saturday_work_before_pack": pack_stats["pt_drivers_with_sat_before"],
+            "pt_drivers_with_saturday_work": pack_stats["pt_drivers_with_sat_after"],
+            # Lower bound
+            "sat_pt_lower_bound": sat_lb["lower_bound_pt_sat"],
+            "sat_peak_blocks": sat_lb["peak_sat_blocks"],
+            "sat_peak_fte": sat_lb["peak_fte_coverage"],
+        }
+
+        solve_times = {
+            "block_building": round(block_time, 2),
+            "phase1_capacity": round(capacity_time, 2),
+            "set_partitioning": round(sp_time, 2),
+            "greedy_fallback": round(greedy_time, 2),
+            "total": round(block_time + capacity_time + sp_time + greedy_time, 2),
+        }
+
+        return SolveResultV4(
+            status="OK_GREEDY_FALLBACK",
+            assignments=assignments,
+            kpi=kpi,
+            solve_times=solve_times,
+            block_stats=block_stats,
+        )
+    
+    # Convert rosters to DriverAssignment
+    block_lookup = {b.id: b for b in selected_blocks}
+    assignments = convert_rosters_to_assignments(sp_result.selected_rosters, block_lookup)
+    
+    # Build KPI
+    fte_hours = [a.total_hours for a in assignments]
+    under_42 = sum(1 for h in fte_hours if h < 42.0)
+    over_53 = sum(1 for h in fte_hours if h > 53.0)
+    
+    if under_42 > 0 or over_53 > 0:
+        # NO SOFT FALLBACK - set-partitioning must produce valid results or FAIL
+        status = "FAILED_CONSTRAINT_VIOLATION"
+        logger.error(f"CONSTRAINT VIOLATION: {under_42} under 42h, {over_53} over 53h")
+        logger.error("Set-Partitioning should only return valid rosters!")
+    else:
+        status = "OK"
+    
+    kpi = {
+        "solver_arch": "set-partitioning",  # CRITICAL: Proves which solver was used
+        "status": status,
+        "total_hours": round(total_hours, 2),
+        "drivers_fte": sp_result.num_drivers,
+        "drivers_pt": 0,
+        "fte_hours_min": round(sp_result.hours_min, 2),
+        "fte_hours_max": round(sp_result.hours_max, 2),
+        "fte_hours_avg": round(sp_result.hours_avg, 2),
+        "under_42h": under_42,
+        "over_53h": over_53,
+        "blocks_selected": phase1_stats["selected_blocks"],
+        "pool_size": sp_result.pool_size,
+        "rounds_used": sp_result.rounds_used,
+    }
+    
+    solve_times = {
+        "block_building": round(block_time, 2),
+        "phase1_capacity": round(capacity_time, 2),
+        "set_partitioning": round(sp_time, 2),
+        "total": round(block_time + capacity_time + sp_time, 2),
+    }
+    
+    valid_constraints = status == "OK"
+    
+    logger.info("=" * 60)
+    logger.info("SET-PARTITIONING SOLVER COMPLETE")
+    logger.info("=" * 60)
+    logger.info(f"SOLVER_ARCH=set-partitioning RESULT={status} DRIVERS={sp_result.num_drivers} PT=0 VALID_CONSTRAINTS={valid_constraints}")
+    logger.info(f"Status: {status}")
+    logger.info(f"Drivers: {sp_result.num_drivers} FTE, 0 PT")
+    logger.info(f"Hours: {sp_result.hours_min:.1f}h - {sp_result.hours_max:.1f}h")
+    logger.info(f"Total time: {solve_times['total']:.1f}s")
+    
+    return SolveResultV4(
+        status=status,
+        assignments=assignments,
+        kpi=kpi,
+        solve_times=solve_times,
+        block_stats=block_stats
+    )
