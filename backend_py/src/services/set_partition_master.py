@@ -65,7 +65,7 @@ def solve_relaxed_rmp(
     log_fn("RELAXED RMP (Diagnostic)")
     log_fn("=" * 60)
     log_fn(f"Columns in pool: {len(columns)}")
-    log_fn(f"Blocks to cover: {len(all_block_ids)}")
+    log_fn(f"Total blocks (Target): {len(all_block_ids)}")
     
     if not columns:
         log_fn("ERROR: Empty column pool!")
@@ -249,7 +249,7 @@ def solve_rmp(
     log_fn("RESTRICTED MASTER PROBLEM (RMP)")
     log_fn("=" * 60)
     log_fn(f"Columns in pool: {len(columns)}")
-    log_fn(f"Blocks to cover: {len(all_block_ids)}")
+    log_fn(f"Total blocks (Target): {len(all_block_ids)}")
     log_fn(f"Time limit: {time_limit}s")
     
     if not columns:
@@ -305,21 +305,32 @@ def solve_rmp(
             model.Add(0 == 1)  # This makes the model infeasible
             continue
         
-        # Exactly one column must cover this block: Σ y[i] == 1
+        # Cover this block exactly once: Σ y[i] == 1
+        # Strict Set Partitioning to force no overlaps and lower driver count
         model.Add(sum(y[i] for i in col_indices) == 1)
     
     # =========================================================================
-    # OBJECTIVE: Minimize drivers with PT penalty
-    # FTE columns cost 1.0, PT columns cost 3.0 (penalize PT usage)
+    # OBJECTIVE: Minimize drivers with PT penalty + Overtime penalty (>53h)
+    # FTE columns cost 1.0, PT columns cost 3.0
+    # Overtime (>53h) adds 0.5 per hour to discourage overuse unless needed
     # =========================================================================
-    PT_PENALTY = 3  # PT drivers are 3x more expensive than FTE
+    PT_PENALTY = 3.0
+    OVERTIME_THRESHOLD = 53.0
+    OVERTIME_COST_PER_HOUR = 0.5
     
     costs = []
     for i, col in enumerate(columns):
+        # Base cost
+        cost = 1.0
         if hasattr(col, 'roster_type') and col.roster_type == "PT":
-            costs.append(PT_PENALTY * y[i])
-        else:
-            costs.append(y[i])
+            cost = PT_PENALTY
+        
+        # Overtime penalty
+        if col.total_hours > OVERTIME_THRESHOLD:
+            excess = col.total_hours - OVERTIME_THRESHOLD
+            cost += excess * OVERTIME_COST_PER_HOUR
+            
+        costs.append(cost * y[i])
     
     model.Minimize(sum(costs))
     
@@ -367,7 +378,7 @@ def solve_rmp(
     if uncovered:
         log_fn(f"WARNING: {len(uncovered)} blocks still uncovered after solve!")
     else:
-        log_fn(f"✓ All {len(all_block_ids)} blocks covered exactly once")
+        log_fn(f"[OK] All {len(all_block_ids)} blocks covered exactly once")
     
     # Hours stats
     if selected:

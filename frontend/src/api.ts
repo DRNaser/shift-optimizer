@@ -22,10 +22,12 @@ export interface TourInput {
 export interface ScheduleRequest {
     week_start: string;
     tours: TourInput[];
-    solver_type: 'greedy' | 'cpsat' | 'cpsat+lns' | 'cpsat-global' | 'set-partitioning';
+    solver_type: 'greedy' | 'cpsat' | 'cpsat+lns' | 'cpsat-global' | 'set-partitioning' | 'heuristic';
     time_limit_seconds: number;
     seed?: number;
     lns_iterations?: number;
+    target_ftes?: number;
+    fte_overflow_cap?: number;
 }
 
 export interface TourOutput {
@@ -149,12 +151,29 @@ export async function createSchedule(request: ScheduleRequest): Promise<Schedule
  * @returns EventSource instance (call .close() to disconnect)
  */
 export function connectLogStream(onMessage: (msg: string) => void): EventSource {
+    console.log('[SSE] Connecting to log stream...');
     const es = new EventSource(`${API_BASE}/logs/stream`);
-    es.onmessage = (event) => {
-        onMessage(event.data);
+    es.onopen = () => {
+        console.log('[SSE] Connected!');
     };
-    es.onerror = () => {
-        console.error('Log stream error');
+    es.onmessage = (event) => {
+        console.log('[SSE] Raw data:', event.data);
+        try {
+            // Try to parse as JSON (backend sends {level, message, ts})
+            const data = JSON.parse(event.data);
+            console.log('[SSE] Parsed:', data);
+            if (data.message) {
+                onMessage(data.message);
+            }
+        } catch {
+            // If not JSON, use raw data (e.g., keepalive)
+            if (event.data && !event.data.startsWith(':')) {
+                onMessage(event.data);
+            }
+        }
+    };
+    es.onerror = (err) => {
+        console.error('[SSE] Error:', err);
     };
     return es;
 }

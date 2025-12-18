@@ -186,13 +186,17 @@ class RosterColumnGenerator:
         
         candidates = sorted(candidates, key=sort_key)
         
+        # Determine target duration for this roster (dynamic packing)
+        # Aim for 48h - 56h to maximize efficiency and reach ~150 drivers
+        target_minutes = self.rng.randint(int(48 * 60), MAX_WEEK_MINUTES)
+
         # Greedily add blocks
         for cand in candidates:
-            if current_minutes >= MIN_WEEK_MINUTES:
-                break  # Already at or above 42h
+            if current_minutes >= target_minutes:
+                break
             
             if current_minutes + cand.work_min > MAX_WEEK_MINUTES:
-                continue  # Would exceed 53h
+                continue
             
             can_add, reason = can_add_block_to_roster(current_blocks, cand, current_minutes)
             if can_add:

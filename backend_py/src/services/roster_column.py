@@ -20,8 +20,8 @@ import logging
 logger = logging.getLogger("RosterColumn")
 
 # Constants
-MIN_WEEK_HOURS = 40.0
-MAX_WEEK_HOURS = 53.0
+MIN_WEEK_HOURS = 42.0
+MAX_WEEK_HOURS = 56.0
 MIN_REST_MINUTES = 660  # 11h
 HEAVY_REST_MINUTES = 840  # 14h
 DAY_MINUTES = 1440  # 24h

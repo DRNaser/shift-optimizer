@@ -13,7 +13,7 @@ import { UnassignedList } from './components/UnassignedList';
 import { SolverProof } from './components/SolverProof';
 import { LeftoverTours } from './components/LeftoverTours';
 
-type SolverType = 'greedy' | 'cpsat' | 'cpsat+lns' | 'cpsat-global' | 'set-partitioning';
+type SolverType = 'greedy' | 'cpsat' | 'cpsat+lns' | 'cpsat-global' | 'set-partitioning' | 'heuristic';
 type AppView = 'setup' | 'running' | 'results';
 type ResultsTab = 'schedule' | 'proof' | 'leftover';
 
@@ -26,9 +26,12 @@ export default function App() {
   const [fileName, setFileName] = useState('');
 
   // Config
+  // Config
   const [solverType, setSolverType] = useState<SolverType>('cpsat');
   const [timeLimit, setTimeLimit] = useState(30);
   const [seed, setSeed] = useState(42);
+  const [targetFtes, setTargetFtes] = useState(140);
+  const [overflowCap, setOverflowCap] = useState(10);
 
   // Execution
   const [logs, setLogs] = useState<string[]>([]);
@@ -60,11 +63,26 @@ export default function App() {
     setResult(null);
 
     // Connect to log stream
+    const MAX_LOG_LINES = 5000;
     const es = connectLogStream((msg) => {
-      setLogs((prev) => [...prev, msg]);
+      setLogs((prev) => {
+        const updated = [...prev, msg];
+        // Ring buffer: keep only last MAX_LOG_LINES
+        return updated.length > MAX_LOG_LINES ? updated.slice(-MAX_LOG_LINES) : updated;
+      });
     });
-    es.onopen = () => setIsConnected(true);
-    es.onerror = () => setIsConnected(false);
+    // Note: onopen/onerror handlers are set in connectLogStream with debug logging
+    // Just track connection state here without overwriting
+    const originalOnOpen = es.onopen;
+    const originalOnError = es.onerror;
+    es.onopen = (e) => {
+      if (originalOnOpen) (originalOnOpen as (e: Event) => void)(e);
+      setIsConnected(true);
+    };
+    es.onerror = (e) => {
+      if (originalOnError) (originalOnError as (e: Event) => void)(e);
+      setIsConnected(false);
+    };
 
     try {
       const request: ScheduleRequest = {
@@ -74,6 +92,8 @@ export default function App() {
         time_limit_seconds: timeLimit,
         seed,
         lns_iterations: solverType === 'cpsat+lns' ? 100 : undefined,
+        target_ftes: solverType === 'heuristic' ? targetFtes : undefined,
+        fte_overflow_cap: solverType === 'heuristic' ? overflowCap : undefined,
       };
 
       const response = await createSchedule(request);
@@ -136,12 +156,36 @@ export default function App() {
                   onChange={(e) => setSolverType(e.target.value as SolverType)}
                 >
                   <option value="greedy">Greedy (Fast)</option>
+                  <option value="heuristic">Heuristic (Target FTE)</option>
                   <option value="cpsat">CP-SAT (Optimal)</option>
                   <option value="cpsat+lns">CP-SAT + LNS (Best)</option>
                   <option value="cpsat-global">CP-SAT Global FTE (No PT)</option>
                   <option value="set-partitioning">Set-Partitioning (Crew)</option>
                 </select>
               </div>
+
+              {solverType === 'heuristic' && (
+                <>
+                  <div className="form-group">
+                    <label className="form-label">Target FTEs</label>
+                    <input
+                      type="number"
+                      className="form-input"
+                      value={targetFtes}
+                      onChange={(e) => setTargetFtes(Number(e.target.value))}
+                    />
+                  </div>
+                  <div className="form-group">
+                    <label className="form-label">Overflow Cap</label>
+                    <input
+                      type="number"
+                      className="form-input"
+                      value={overflowCap}
+                      onChange={(e) => setOverflowCap(Number(e.target.value))}
+                    />
+                  </div>
+                </>
+              )}
               <div className="form-group">
                 <label className="form-label">Time Limit (seconds)</label>
                 <input

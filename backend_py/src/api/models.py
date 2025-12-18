@@ -70,10 +70,12 @@ class ScheduleRequest(BaseModel):
     week_start: str  # YYYY-MM-DD
     prefer_larger_blocks: bool = True
     seed: Optional[int] = None
-    solver_type: Literal["greedy", "cpsat", "cpsat+lns", "cpsat-global", "set-partitioning"] = "cpsat"
+    solver_type: Literal["greedy", "cpsat", "cpsat+lns", "cpsat-global", "set-partitioning", "heuristic"] = "cpsat"
     time_limit_seconds: int = 60
     lns_iterations: int = 10
     locked_block_ids: Optional[list[str]] = None
+    target_ftes: Optional[int] = None
+    fte_overflow_cap: Optional[int] = None
 
 
 # =============================================================================

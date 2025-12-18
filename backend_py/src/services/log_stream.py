@@ -13,6 +13,8 @@ Usage:
 import queue
 import time
 import threading
+import logging
+import json
 from dataclasses import dataclass
 from typing import Generator
 from enum import Enum
@@ -23,6 +25,37 @@ class LogLevel(str, Enum):
     WARN = "WARN"
     ERROR = "ERROR"
     SUCCESS = "SUCCESS"
+
+
+class SSELogHandler(logging.Handler):
+    """
+    Custom logging handler that emits logs to the SSE stream.
+    
+    Attach this handler to any logger to have it feed the SSE stream.
+    """
+    def emit(self, record: logging.LogRecord):
+        try:
+            msg = self.format(record)
+            level = record.levelname
+            emit_log(msg, level)
+        except Exception:
+            pass  # Never break logging
+
+
+def attach_sse_handler(logger_name: str):
+    """Attach SSE handler to a logger by name."""
+    log = logging.getLogger(logger_name)
+    handler = SSELogHandler()
+    handler.setFormatter(logging.Formatter('%(message)s'))
+    handler.setLevel(logging.DEBUG)  # Capture all log levels
+    # Avoid duplicates
+    for h in log.handlers[:]:
+        if isinstance(h, SSELogHandler):
+            log.removeHandler(h)
+    log.addHandler(handler)
+    # Ensure logger level is low enough to capture logs
+    if log.level == logging.NOTSET or log.level > logging.DEBUG:
+        log.setLevel(logging.DEBUG)
 
 
 @dataclass
@@ -81,8 +114,8 @@ def get_log_generator() -> Generator[str, None, None]:
             # Block for up to 1 second waiting for log
             entry = _log_queue.get(timeout=1.0)
             
-            # Format as SSE event
-            data = f'{{"level":"{entry.level}","message":"{entry.message}","ts":{entry.timestamp}}}'
+            # Format as SSE event - use json.dumps for proper escaping
+            data = json.dumps({"level": entry.level, "message": entry.message, "ts": entry.timestamp})
             yield f"data: {data}\n\n"
             
         except queue.Empty:

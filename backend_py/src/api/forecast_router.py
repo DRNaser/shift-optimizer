@@ -7,6 +7,7 @@ Adapts frontend requests to v4 solver
 import uuid
 import logging
 import traceback
+import asyncio
 from datetime import time as dt_time
 from fastapi import APIRouter, HTTPException, Form, Response
 from fastapi.responses import StreamingResponse
@@ -18,7 +19,7 @@ from src.api.models import (
 )
 from src.domain.models import Tour, Weekday
 from src.services.forecast_solver_v4 import solve_forecast_v4, ConfigV4
-from src.services.log_stream import emit_log, get_log_generator, clear_logs
+from src.services.log_stream import emit_log, get_log_generator, clear_logs, attach_sse_handler
 
 # Setup logger
 logger = logging.getLogger("ForecastRouter")
@@ -27,10 +28,24 @@ router = APIRouter(prefix="/api/v1", tags=["forecast"])
 
 
 # =============================================================================
-# HEALTH
-# =============================================================================
 
-@router.get("/health", response_model=HealthResponse)
+async def heartbeat_task(stop_event: asyncio.Event):
+    """Emit heartbeat log every 5 seconds to keep UI connection alive."""
+    while not stop_event.is_set():
+        try:
+            await asyncio.sleep(5)
+            if not stop_event.is_set():
+                # Just a subtle keepalive log, or we can rely on the :keepalive ping from generator
+                # But user asked for a visible log so UI doesn't look silent
+                pass 
+                # actually regular keepalive is handled by the generator yielding :keepalive
+                # The user specifically asked for "a backend heartbeat log ... so the UI never goes silent"
+                # This implies visible logs or ensuring traffic.
+                # User requested visible heartbeat log
+                emit_log("... optimizing ...", "INFO") 
+        except asyncio.CancelledError:
+            break
+
 async def health_check():
     """Health check endpoint."""
     return HealthResponse(
@@ -204,6 +219,12 @@ async def create_schedule(request: ScheduleRequest):
     """
     # Clear previous logs for new solve session
     clear_logs()
+    
+    # Attach SSE handler to all solver loggers so frontend receives logs
+    attach_sse_handler("ForecastSolverV4")
+    attach_sse_handler("ForecastRouter")
+    attach_sse_handler("SetPartitionSolver")
+    
     emit_log("═" * 40, "INFO")
     
     # ... (existing logging code) ...
@@ -228,9 +249,21 @@ async def create_schedule(request: ScheduleRequest):
     logger.info(f"Successfully converted {len(tours)} tours")
     
     # Build config from request
+    # Determine internal solver mode
+    mode = "HEURISTIC" # Default
+    if request.solver_type == "greedy":
+        mode = "GREEDY"
+    elif request.solver_type == "cpsat":
+        mode = "CPSAT"
+    elif request.solver_type == "heuristic":
+        mode = "HEURISTIC"
+        
     config = ConfigV4(
         time_limit_phase1=float(request.time_limit_seconds),
         seed=request.seed or 42,
+        solver_mode=mode,
+        target_ftes=request.target_ftes or 150,
+        fte_overflow_cap=request.fte_overflow_cap or 10,
     )
     emit_log(f"Config: time_limit={config.time_limit_phase1}s, seed={config.seed}", "INFO")
     emit_log(f"Solver type: {request.solver_type}", "INFO")
@@ -238,30 +271,43 @@ async def create_schedule(request: ScheduleRequest):
     logger.info(f"Solver type: {request.solver_type}")
     
     # Run solver
+    stop_heartbeat = asyncio.Event()
+    _hb_task = asyncio.create_task(heartbeat_task(stop_heartbeat))
     try:
         emit_log("Starting solver...", "INFO")
         logger.info("Starting solver...")
         
+        loop = asyncio.get_running_loop()
+
         # Use FTE-only global CP-SAT for cpsat-global solver type
         if request.solver_type == "cpsat-global":
             emit_log("Using GLOBAL CP-SAT FTE-ONLY solver", "INFO")
             from src.services.forecast_solver_v4 import solve_forecast_fte_only
-            result = solve_forecast_fte_only(
-                tours,
-                time_limit_feasible=float(request.time_limit_seconds),  # Use full time
-                time_limit_optimize=float(request.time_limit_seconds),
-                seed=request.seed or 42,
+            result = await loop.run_in_executor(
+                None,
+                lambda: solve_forecast_fte_only(
+                    tours,
+                    time_limit_feasible=float(request.time_limit_seconds),  # Use full time
+                    time_limit_optimize=float(request.time_limit_seconds),
+                    seed=request.seed or 42,
+                )
             )
         elif request.solver_type == "set-partitioning":
             emit_log("Using SET-PARTITIONING (Crew Scheduling) solver", "INFO")
             from src.services.forecast_solver_v4 import solve_forecast_set_partitioning
-            result = solve_forecast_set_partitioning(
-                tours,
-                time_limit=float(request.time_limit_seconds),
-                seed=request.seed or 42,
+            result = await loop.run_in_executor(
+                None,
+                lambda: solve_forecast_set_partitioning(
+                    tours,
+                    time_limit=float(request.time_limit_seconds),
+                    seed=request.seed or 42,
+                )
             )
         else:
-            result = solve_forecast_v4(tours, config)
+            result = await loop.run_in_executor(
+                None,
+                lambda: solve_forecast_v4(tours, config)
+            )
         
         emit_log(f"✓ Solver completed! Status: {result.status}", "SUCCESS")
         emit_log(f"Drivers FTE: {result.kpi.get('drivers_fte', 0)}, PT: {result.kpi.get('drivers_pt', 0)}", "INFO")
@@ -296,7 +342,11 @@ async def create_schedule(request: ScheduleRequest):
             print(f"LNS Config: iterations={lns_config.max_iterations}, seed={lns_config.seed}, time_limit={lns_config.lns_time_limit}s", flush=True)
             
             try:
-                refined_assignments = refine_assignments_v4(result.assignments, lns_config)
+                loop = asyncio.get_running_loop()
+                refined_assignments = await loop.run_in_executor(
+                    None,
+                    lambda: refine_assignments_v4(result.assignments, lns_config)
+                )
                 print(f"LNS refinement COMPLETE: {len(refined_assignments)} assignments", flush=True)
                 
                 # Update result with refined assignments
@@ -309,7 +359,9 @@ async def create_schedule(request: ScheduleRequest):
                 print(f"LNS TRACEBACK:\n{traceback.format_exc()}", flush=True)
                 raise
             
+        stop_heartbeat.set()
     except Exception as e:
+        stop_heartbeat.set()
         logger.error(f"SOLVER ERROR: {str(e)}")
         logger.error(traceback.format_exc())
         raise HTTPException(status_code=500, detail=f"Solver error: {str(e)}")

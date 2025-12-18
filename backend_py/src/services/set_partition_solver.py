@@ -50,7 +50,7 @@ def solve_set_partitioning(
     max_rounds: int = 100,
     initial_pool_size: int = 5000,
     columns_per_round: int = 200,
-    rmp_time_limit: float = 60.0,
+    rmp_time_limit: float = 15.0,
     seed: int = 42,
     log_fn=None,
 ) -> SetPartitionResult:
@@ -155,7 +155,7 @@ def solve_set_partitioning(
     best_under_count = len(all_block_ids)  # Start with worst case
     best_over_count = len(all_block_ids)
     rounds_without_progress = 0
-    max_stale_rounds = 5  # Stop after N rounds w/o improvement
+    max_stale_rounds = 10  # Stop after N rounds w/o improvement
     
     # Adaptive coverage quota
     min_coverage_quota = 5  # Each block should be in at least 5 columns
@@ -179,7 +179,7 @@ def solve_set_partitioning(
         # Check result
         if rmp_result["status"] in ("OPTIMAL", "FEASIBLE"):
             if not rmp_result["uncovered_blocks"]:
-                log_fn(f"\n✓✓✓ FULL COVERAGE ACHIEVED with {rmp_result['num_drivers']} drivers ✓✓✓")
+                log_fn(f"\n[OK] FULL COVERAGE ACHIEVED with {rmp_result['num_drivers']} drivers")
                 
                 selected = rmp_result["selected_rosters"]
                 hours = [r.total_hours for r in selected]
@@ -209,7 +209,7 @@ def solve_set_partitioning(
         relaxed = solve_relaxed_rmp(
             columns=columns,
             all_block_ids=all_block_ids,
-            time_limit=min(rmp_time_limit, 30.0),
+            time_limit=10.0,  # Strict diagnostic limit
             log_fn=log_fn,
         )
         
@@ -280,7 +280,7 @@ def solve_set_partitioning(
         )
         generation_time += time.time() - gen_start
         
-        log_fn(f"Generated {len(new_cols)} new columns (pool: {before_pool} → {len(generator.pool)})")
+        log_fn(f"Generated {len(new_cols)} new columns (pool: {before_pool} -> {len(generator.pool)})")
         
         # Fallback: try swap builder if no new columns
         if len(generator.pool) == before_pool:
@@ -322,6 +322,9 @@ def solve_set_partitioning(
     seeded = generator.seed_from_greedy(greedy_assignments)
     log_fn(f"Seeded {seeded} columns from greedy solution")
     
+    # NOTE: RMP retry disabled - goes straight to greedy fallback in caller
+    # (The 120s RMP retry rarely succeeds and wastes time)
+    
     # Retry RMP with seeded pool
     log_fn("\n" + "=" * 60)
     log_fn("RETRYING RMP WITH GREEDY-SEEDED POOL")
@@ -329,37 +332,37 @@ def solve_set_partitioning(
     
     columns = list(generator.pool.values())
     
-    rmp_start = time.time()
+    rmp_retry_start = time.time()
     final_rmp_result = solve_rmp(
         columns=columns,
         all_block_ids=all_block_ids,
-        time_limit=rmp_time_limit * 2,  # Give more time for final attempt
+        time_limit=rmp_time_limit,
         log_fn=log_fn,
     )
-    rmp_total_time += time.time() - rmp_start
+    rmp_total_time += time.time() - rmp_retry_start
     
-    # Check final result
-    if final_rmp_result["status"] in ("OPTIMAL", "FEASIBLE") and not final_rmp_result["uncovered_blocks"]:
-        log_fn("\n✓✓✓ GREEDY-SEEDED RMP SUCCESS ✓✓✓")
-        
-        selected = final_rmp_result["selected_rosters"]
-        hours = [r.total_hours for r in selected]
-        
-        return SetPartitionResult(
-            status="OK_GREEDY_SEEDED",
-            selected_rosters=selected,
-            num_drivers=len(selected),
-            total_hours=sum(hours),
-            hours_min=min(hours) if hours else 0,
-            hours_max=max(hours) if hours else 0,
-            hours_avg=sum(hours) / len(hours) if hours else 0,
-            uncovered_blocks=[],
-            pool_size=len(generator.pool),
-            rounds_used=round_num,
-            total_time=time.time() - start_time,
-            rmp_time=rmp_total_time,
-            generation_time=generation_time,
-        )
+    if final_rmp_result["status"] in ("OPTIMAL", "FEASIBLE"):
+        if not final_rmp_result["uncovered_blocks"]:
+            log_fn(f"\n[OK] FULL COVERAGE ACHIEVED (after seeding) with {final_rmp_result['num_drivers']} drivers")
+            
+            selected = final_rmp_result["selected_rosters"]
+            hours = [r.total_hours for r in selected]
+            
+            return SetPartitionResult(
+                status="OK_SEEDED",
+                selected_rosters=selected,
+                num_drivers=len(selected),
+                total_hours=sum(hours),
+                hours_min=min(hours) if hours else 0,
+                hours_max=max(hours) if hours else 0,
+                hours_avg=sum(hours) / len(hours) if hours else 0,
+                uncovered_blocks=[],
+                pool_size=len(generator.pool),
+                rounds_used=max_rounds,
+                total_time=time.time() - start_time,
+                rmp_time=rmp_total_time,
+                generation_time=generation_time,
+            )
     
     # If still failed, return INFEASIBLE with greedy info
     log_fn("\n" + "=" * 60)
@@ -405,8 +408,11 @@ def convert_rosters_to_assignments(
     
     assignments = []
     
+    
     # Sort rosters by hours descending for deterministic ordering
     sorted_rosters = sorted(selected_rosters, key=lambda r: -r.total_hours)
+    
+    assigned_block_ids = set()
     fte_count = 0
     pt_count = 0
     
@@ -414,6 +420,22 @@ def convert_rosters_to_assignments(
         # Determine driver type from roster
         driver_type = getattr(roster, 'roster_type', 'FTE')
         
+        # Get Block objects - checking for deduplication
+        blocks = []
+        for block_id in roster.block_ids:
+            if block_id in block_lookup and block_id not in assigned_block_ids:
+                blocks.append(block_lookup[block_id])
+                assigned_block_ids.add(block_id)
+        
+        # If roster is empty after dedupe, skip it (can happen if fully subsumed)
+        if not blocks:
+            continue
+            
+        # Re-calculate hours based on actual assigned blocks
+        total_hours = sum(b.total_work_hours for b in blocks)
+        days_worked = len(set(b.day.value if hasattr(b.day, 'value') else str(b.day) for b in blocks))
+        
+        # Create ID
         if driver_type == "PT":
             pt_count += 1
             driver_id = f"PT{pt_count:03d}"
@@ -421,20 +443,11 @@ def convert_rosters_to_assignments(
             fte_count += 1
             driver_id = f"FTE{fte_count:03d}"
         
-        # Get Block objects
-        blocks = []
-        for block_id in roster.block_ids:
-            if block_id in block_lookup:
-                blocks.append(block_lookup[block_id])
-        
         # Sort blocks by (day, start)
-        blocks = sorted(blocks, key=lambda b: (
+        blocks.sort(key=lambda b: (
             b.day.value if hasattr(b.day, 'value') else str(b.day),
             b.first_start
         ))
-        
-        total_hours = roster.total_hours
-        days_worked = len(set(b.day.value if hasattr(b.day, 'value') else str(b.day) for b in blocks))
         
         assignments.append(DriverAssignment(
             driver_id=driver_id,

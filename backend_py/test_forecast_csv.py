@@ -9,7 +9,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 
 from src.domain.models import Tour, Weekday
-from src.services.forecast_solver_v4 import solve_forecast_v4, ConfigV4
+from src.services.forecast_solver_v4 import solve_forecast_v4, solve_forecast_set_partitioning, ConfigV4
 from datetime import time as dt_time
 
 # German day names to Weekday mapping
@@ -117,12 +117,9 @@ def main():
     print("RUNNING SOLVER...", flush=True)
     print("=" * 70, flush=True)
     
-    config = ConfigV4(
-        time_limit_phase1=60.0,  # 60 second time limit
-        seed=42,
-    )
-    
-    result = solve_forecast_v4(tours, config)
+    # Run Heuristic Solver
+    config = ConfigV4(target_ftes=150, solver_mode="HEURISTIC")
+    result = solve_forecast_v4(tours, config=config)
     
     # Print results
     print("\n" + "=" * 70, flush=True)
