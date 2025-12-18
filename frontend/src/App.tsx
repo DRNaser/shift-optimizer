@@ -30,7 +30,7 @@ export default function App() {
   const [solverType, setSolverType] = useState<SolverType>('cpsat');
   const [timeLimit, setTimeLimit] = useState(30);
   const [seed, setSeed] = useState(42);
-  const [targetFtes, setTargetFtes] = useState(140);
+  const [targetFtes, setTargetFtes] = useState(145);
   const [overflowCap, setOverflowCap] = useState(10);
 
   // Execution

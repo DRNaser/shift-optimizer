@@ -314,6 +314,8 @@ class HeuristicSolver:
             
             if not moved_any:
                 break
+        
+        logger.info(f"    Min-Hours Repair moved blocks in {iteration+1} iterations.")
 
     def _repair_overflow(self):
         """Assign remaining blocks to Overflow FTEs (+10) then PT.
@@ -461,59 +463,92 @@ class HeuristicSolver:
     # PHASE 3: IMPROVEMENT (SAFE KILL)
     # =========================================================================
     def _phase3_improvement(self):
-        """Kill drivers (PT First) with safety guards."""
-        self.stats.phase = "Phase 3: Improvement"
+        """Iterative Local Search (LNS) to improve quality."""
+        self.stats.phase = "Phase 3: Improvement (LNS)"
         start_t = time.time()
         budget = self.config.anytime_budget
+        logger.info(f"  2.5 Improvement Phase (LNS) - Budget: {budget:.1f}s")
         
+        import random
         iteration = 0
+        
         while time.time() - start_t < budget:
             iteration += 1
             
-            # Sort victims: PT < FTE_OVERFLOW < FTE, then Smallest Hours
-            def victim_key(did):
-                d = self.drivers[did]
-                type_rank = 0 if d["type"] == "PT" else (1 if d["type"] == "FTE_OVERFLOW" else 2)
-                return (type_rank, d["hours"])
+            # Select Targets: 1 PT + 2 FTE_Under + 2 Random
+            drivers_list = list(self.drivers.values())
+            if len(drivers_list) < 5: break
             
-            candidates = sorted(self.drivers.keys(), key=victim_key)
-            if not candidates: break
+            pts = [d for d in drivers_list if d["type"] == "PT"]
+            ftes_under = [d for d in drivers_list if d["type"] == "FTE" and d["hours"] < self.config.min_hours_per_fte]
+            others = [d for d in drivers_list if d["id"] not in [x["id"] for x in pts + ftes_under]]
             
-            victim_id = candidates[0]
-            victim = self.drivers[victim_id]
+            victims = []
+            if pts: victims.append(random.choice(pts))
+            if ftes_under: victims.extend(random.sample(ftes_under, min(len(ftes_under), 2)))
             
-            # Stop if we are targeting healthy FTEs
-            # If FTE is < 30h, it's NOT healthy, try to kill it.
-            # If FTE is > 38h, leave it.
-            if victim["type"] == "FTE" and victim["hours"] > 38:
-                break
+            needed = 5 - len(victims)
+            if needed > 0 and others:
+                victims.extend(random.sample(others, min(len(others), needed)))
+            
+            if not victims: continue
+            
+            # DESTROY: Unassign
+            released_blocks = []
+            victim_ids = [d["id"] for d in victims]
+            
+            # Backup state? No, greedy approach.
+            for vid in victim_ids:
+                if vid not in self.drivers: continue
+                driver = self.drivers[vid]
+                released_blocks.extend(list(driver["blocks"]))
+                # Reset driver
+                driver["blocks"] = []
+                driver["hours"] = 0.0
+                driver["active_days"] = set()
+                driver["day_blocks"] = defaultdict(list)
                 
-            # Try redistribute
-            success = self._try_redistribute_driver(victim_id)
-            if success:
-                logger.debug(f"Killed {victim_id} ({victim['type']}, {victim['hours']}h)")
-                self._remove_driver(victim_id)
-            else:
-                # If cannot kill victim, we must remove it from candidates or try next?
-                # The 'candidates' list is rebuilt every loop. 
-                # If we fail to kill 'victim_id', we will infinite loop trying to kill it again.
-                # FIX: Try next candidate in the sorted list!
+            # Remove PTs from drivers list (will reopen if needed)
+            for vid in victim_ids:
+                if vid in self.drivers and self.drivers[vid]["type"] != "FTE":
+                     self._remove_driver(vid)
+
+            # REPAIR: Assign Greedily (Randomized Order)
+            released_blocks.sort(key=lambda b: -b.total_work_minutes) # Hardest first
+            
+            for block in released_blocks:
+                best_did = None
+                best_score = float('inf')
                 
-                # Check 2nd, 3rd... candidates
-                killed_something = False
-                for alt_id in candidates[1:10]: # Try top 10 smallest
-                    alt_victim = self.drivers[alt_id]
-                    if alt_victim["type"] == "FTE" and alt_victim["hours"] > 38:
-                        break # Stop trying
-                        
-                    if self._try_redistribute_driver(alt_id):
-                        logger.debug(f"Killed {alt_id} ({alt_victim['type']}, {alt_victim['hours']}h)")
-                        self._remove_driver(alt_id)
-                        killed_something = True
-                        break
+                candidates = list(self.drivers.values())
+                random.shuffle(candidates)
                 
-                if not killed_something:
-                     break
+                for d in candidates:
+                    if self._can_take_block(d, block):
+                         # Ad-hoc score
+                         score = 0
+                         if d["type"] != "FTE": score += 2000 # Prefer FTE
+                         # Prefer existing days
+                         if block.day.value not in d["active_days"]: score += 100
+                         # Prefer filling slack
+                         slack = self.config.max_hours_per_fte - (d["hours"] + block.total_work_hours)
+                         score += slack
+                         
+                         if score < best_score:
+                             best_score = score
+                             best_did = d["id"]
+                
+                if best_did:
+                    self._assign_block(best_did, block)
+                else:
+                    # Forced to open new PT
+                    new_did = self._create_driver("PT")
+                    self._assign_block(new_did, block)
+            
+            if iteration % 50 == 0:
+                pt_now = len([d for d in self.drivers.values() if d["type"] == "PT"])
+                logger.info(f"    LNS Iter {iteration}: PT Count {pt_now}")
+
 
 
     def _try_redistribute_driver(self, victim_id: str) -> bool:

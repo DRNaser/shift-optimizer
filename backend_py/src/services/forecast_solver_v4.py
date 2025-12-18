@@ -68,9 +68,11 @@ class ConfigV4(NamedTuple):
     target_next_day_tours_after_3t: int = 1  # Prefer 1 tour after 3-tour day
     w_next_day_tours_excess: int = 200  # Penalty for 2nd tour after 3-tour day
 
+    planner_active: bool = False  # If True, use strict shift planning model (Phase 0)
+    
     # Heuristic Solver Configuration (Phase 2 Alternative)
     solver_mode: str = "HEURISTIC"  # "GREEDY", "CPSAT", "SETPART", "HEURISTIC"
-    target_ftes: int = 140  # Hard target for FTE count (Phase 1 Goal)
+    target_ftes: int = 145  # Hard target for FTE count (Phase 1 Goal)
     fte_overflow_cap: int = 10  # Soft limit for overflow
     fte_hours_target: float = 49.5  # Ideal hours for FTE packing
     anytime_budget: float = 30.0  # Seconds for improvement phases
