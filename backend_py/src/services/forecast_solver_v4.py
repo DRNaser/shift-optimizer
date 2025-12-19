@@ -52,7 +52,7 @@ class ConfigV4(NamedTuple):
     time_limit_phase2: float = 60.0
     seed: int = 42
     num_workers: int = 1  # Determinism: use 1 worker
-    max_blocks: int = 30000  # Hard limit to prevent model explosion
+    max_blocks: int = 50000  # Hard limit to prevent model explosion
     w_new_driver: float = 500.0  # Penalty for activating any new FTE (REDUCED to prefer FTE)
     w_pt_new: float = 10000.0  # Additional penalty for new PT drivers (INCREASED to minimize PT)
     w_pt_weekday: float = 5000.0  # PT on Mon-Fri very expensive
@@ -78,6 +78,8 @@ class ConfigV4(NamedTuple):
     anytime_budget: float = 30.0  # Seconds for improvement phases
 
     # Global CP-SAT Phase 2B control
+    extended_hours: bool = False  # If True, max_hours_per_fte = 56.0
+    
     enable_global_cpsat: bool = False  # Disabled by default (times out on large problems)
     global_cpsat_block_threshold: int = 200  # Only use CP-SAT if blocks < this
 
@@ -132,6 +134,176 @@ class SolveResultV4:
         }
 
 
+
+# =============================================================================
+# DIAGNOSTICS
+# =============================================================================
+
+def solve_day_min_diagnostic(day_tours: list[Tour], day_label: str, config: ConfigV4) -> int:
+    """
+    Calculate Max Concurrent Tours (simple geometric lower bound).
+    """
+    if not day_tours: return 0
+    
+    events = []
+    for t in day_tours:
+        start = t.start_time.hour * 60 + t.start_time.minute
+        end = t.end_time.hour * 60 + t.end_time.minute
+        events.append((start, 1))
+        events.append((end, -1))
+    
+    events.sort()
+    max_concurrent = 0
+    current = 0
+    for _, change in events:
+        current += change
+        max_concurrent = max(max_concurrent, current)
+        
+    return max_concurrent
+
+
+def solve_day_min_blocks(day_blocks: list[Block], day_tours: list[Tour], time_limit: float = 30.0) -> tuple[int, dict]:
+    """
+    TRUE Day-Min-Solve: Find minimum number of blocks to cover all tours for a single day.
+    
+    This is the REAL lower bound for how many blocks (=drivers) are needed on this day.
+    Uses CP-SAT with actual generated blocks.
+    
+    Returns:
+        (min_blocks, stats) where stats includes block mix
+    """
+    if not day_tours:
+        return 0, {"status": "EMPTY"}
+    
+    if not day_blocks:
+        return len(day_tours), {"status": "NO_MULTI", "note": "No multi-tour blocks, need 1 block per tour"}
+    
+    model = cp_model.CpModel()
+    
+    # Variables: use[b] = 1 if block b is selected
+    use = {}
+    for i, b in enumerate(day_blocks):
+        use[i] = model.NewBoolVar(f"use_{i}")
+    
+    # Build tour -> block index
+    tour_to_blocks = defaultdict(list)
+    for i, b in enumerate(day_blocks):
+        for t in b.tours:
+            tour_to_blocks[t.id].append(i)
+    
+    # Coverage: each tour must be covered by exactly one block
+    for t in day_tours:
+        block_indices = tour_to_blocks.get(t.id, [])
+        if not block_indices:
+            # Tour has no covering block - infeasible
+            return -1, {"status": "INFEASIBLE", "uncovered_tour": t.id}
+        model.AddExactlyOne([use[i] for i in block_indices])
+    
+    # Objective: minimize total blocks
+    total_blocks = sum(use[i] for i in range(len(day_blocks)))
+    model.Minimize(total_blocks)
+    
+    # Solve
+    solver = cp_model.CpSolver()
+    solver.parameters.max_time_in_seconds = time_limit
+    solver.parameters.num_workers = 8
+    
+    status = solver.Solve(model)
+    
+    if status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
+        return -1, {"status": "FAILED", "cp_status": status}
+    
+    # Extract solution
+    selected = [day_blocks[i] for i in range(len(day_blocks)) if solver.Value(use[i]) == 1]
+    
+    stats = {
+        "status": "OPTIMAL" if status == cp_model.OPTIMAL else "FEASIBLE",
+        "min_blocks": len(selected),
+        "blocks_1er": sum(1 for b in selected if len(b.tours) == 1),
+        "blocks_2er": sum(1 for b in selected if len(b.tours) == 2),
+        "blocks_3er": sum(1 for b in selected if len(b.tours) == 3),
+        "avg_tours_per_block": len(day_tours) / len(selected) if selected else 0
+    }
+    
+    return len(selected), stats
+
+
+def prune_blocks_tour_aware(blocks: list[Block], tours: list[Tour], config: ConfigV4) -> list[Block]:
+    """
+    Prune blocks defensively:
+    1. For every tour, keep Top-K 3ers, Top-K 2ers, Top-K 1ers.
+    2. Union all kept blocks.
+    3. If still > max_blocks, apply global pruning (but prioritize keeping the union).
+    """
+    # K-Values (Tuned for stability)
+    K3 = 6  # Keep top 6 3-tour options per tour
+    K2 = 4  # Keep top 4 2-tour options
+    K1 = 2  # Keep top 2 1-tour options
+    
+    print(f"  Tour-aware Pruning: K3={K3}, K2={K2}, K1={K1} per tour...", flush=True)
+    
+    # Index blocks by tour
+    blocks_by_tour = defaultdict(list)
+    block_map = {b.id: b for b in blocks}
+    
+    for b in blocks:
+        for t in b.tours:
+            blocks_by_tour[t.id].append(b)
+            
+    kept_ids = set()
+    
+    for tour in tours:
+        # Sort options for this tour by "quality" (larger is better, then implicit score?)
+        # Since we don't have scores here easily, use size (minutes) as proxy for "goodness".
+        # Actually, larger blocks are harder to place, but "better" for objective.
+        # We want to keep *feasible* options.
+        # Let's keep largest options first.
+        options = blocks_by_tour[tour.id]
+        
+        # Split by type
+        opts_3 = [b for b in options if len(b.tours) == 3]
+        opts_2 = [b for b in options if len(b.tours) == 2]
+        opts_1 = [b for b in options if len(b.tours) == 1]
+        
+        # Sort desc by size (efficiency)
+        opts_3.sort(key=lambda b: -b.total_work_minutes)
+        opts_2.sort(key=lambda b: -b.total_work_minutes)
+        # 1ers are all same size essentially? Just keep random/first.
+        
+        # Keep top K
+        for b in opts_3[:K3]: kept_ids.add(b.id)
+        for b in opts_2[:K2]: kept_ids.add(b.id)
+        for b in opts_1[:K1]: kept_ids.add(b.id)
+        
+    # Convert back to list
+    kept_blocks = [block_map[bid] for bid in kept_ids if bid in block_map]
+    print(f"  Retained {len(kept_blocks)} blocks via Tour-Proximity (from {len(blocks)})", flush=True)
+    
+    # If we still have space below max_blocks, fill with others?
+    # Or if we have TOO many, do we cut?
+    # Generally, tour-wise union is smaller than full sets.
+    # If < max_blocks, we might want to Add global top-scorers that are not yet included?
+    # For now, let's just use the kept set + global fill if space allows.
+    
+    if len(kept_blocks) < config.max_blocks:
+        # Fill with remaining blocks sorted by size/score?
+        # Actually, simple set difference.
+        needed = config.max_blocks - len(kept_blocks)
+        if needed > 0:
+            others = [b for b in blocks if b.id not in kept_ids]
+            # Heuristic sort for others?
+            others.sort(key=lambda b: -b.total_work_minutes)
+            kept_blocks.extend(others[:needed])
+            print(f"  Filled {min(len(others), needed)} additional blocks to reach cap.", flush=True)
+    
+    elif len(kept_blocks) > config.max_blocks:
+        print(f"  WARNING: Union kept {len(kept_blocks)} > {config.max_blocks}. Capping...", flush=True)
+        # We must cut. Use global sort.
+        kept_blocks.sort(key=lambda b: -b.total_work_minutes)
+        kept_blocks = kept_blocks[:config.max_blocks]
+        
+    return kept_blocks
+
 # =============================================================================
 # PHASE 1: CAPACITY PLANNING (use_block model)
 # =============================================================================
@@ -160,8 +332,406 @@ def solve_capacity_phase(
     print(f"{'='*60}", flush=True)
     print(f"Blocks: {len(blocks)}, Tours: {len(tours)}", flush=True)
     
+    # ==== DAY-MIN-SOLVE: Find TRUE lower bound per peak day ====
+    # This tells us if 140 FTE is even mathematically achievable
+    print("\n--- DAY-MIN-SOLVE (TRUE Lower Bounds) ---", flush=True)
+    tours_by_day = defaultdict(list)
+    for t in tours:
+        tours_by_day[t.day.value].append(t)
+    
+    blocks_by_day_for_min = defaultdict(list)
+    for b in blocks:
+        blocks_by_day_for_min[b.day.value].append(b)
+    
+    day_min_results = {}
+    for day_val in ["Fri", "Mon", "Sat"]:
+        day_tours = tours_by_day.get(day_val, [])
+        day_blocks = blocks_by_day_for_min.get(day_val, [])
+        if day_tours:
+            min_blocks, stats = solve_day_min_blocks(day_blocks, day_tours, time_limit=10.0)
+            day_min_results[day_val] = min_blocks
+            status_str = stats.get("status", "UNKNOWN")
+            print(f"  {day_val}: min_blocks={min_blocks} ({status_str}), "
+                  f"1er={stats.get('blocks_1er', 0)}, 2er={stats.get('blocks_2er', 0)}, 3er={stats.get('blocks_3er', 0)}, "
+                  f"avg={stats.get('avg_tours_per_block', 0):.2f} tours/block", flush=True)
+    
+    # Compute achievable FTE floor
+    max_day_min = max(day_min_results.values()) if day_min_results else 0
+    print(f"  => Peak day minimum: {max_day_min} blocks (theoretical FTE floor)", flush=True)
+    
+    # ==== ITERATIVE TIGHTENING ====
+    # Start high (above current Fri peak), then tighten
+    INITIAL_CAP = max(220, max_day_min + 10)  # Start above day-min
+    MIN_CAP = max(140, max_day_min)  # Can't go below day-min
+    CAP_STEP = 10      # Reduce by 10 each iteration (faster convergence)
+    TIME_PER_ITER = 45.0  # More time for FIXED_SEARCH to work
+    MAX_TOTAL_TIME = config.time_limit_phase1 * 5  # Extended budget for tightening
+    
+    current_cap = INITIAL_CAP
+    best_solution = None
+    best_stats = None
+    best_cap = INITIAL_CAP
+    
+    t_total_start = perf_counter()
+    iteration = 0
+    
+    while current_cap >= MIN_CAP and (perf_counter() - t_total_start) < MAX_TOTAL_TIME:
+        iteration += 1
+        print(f"\n--- TIGHTENING ITER {iteration}: DAY_CAP={current_cap} ---", flush=True)
+        
+        result = _solve_capacity_single_cap(
+            blocks, tours, block_index, config,
+            block_scores=block_scores,
+            block_props=block_props,
+            day_cap_override=current_cap,
+            time_limit=TIME_PER_ITER
+        )
+        
+        if result is None:
+            print(f"  INFEASIBLE at cap={current_cap}. Stopping tightening.", flush=True)
+            break
+        
+        selected, stats = result
+        print(f"  FEASIBLE: {len(selected)} blocks, max_day={max(stats.get('blocks_by_day', {}).values()) if stats.get('blocks_by_day') else 0}", flush=True)
+        
+        # Store as best
+        best_solution = selected
+        best_stats = stats
+        best_cap = current_cap
+        
+        # Tighten
+        current_cap -= CAP_STEP
+    
+    # Report tightening results
+    total_elapsed = perf_counter() - t_total_start
+    print(f"\n=== TIGHTENING COMPLETE ===", flush=True)
+    print(f"  Best CAP achieved: {best_cap} (started at {INITIAL_CAP}, target was {MIN_CAP})", flush=True)
+    print(f"  Iterations: {iteration}", flush=True)
+    print(f"  Time: {total_elapsed:.1f}s", flush=True)
+    
+    if best_solution is None:
+        logger.error("[FAILED] No feasible solution found even at initial cap")
+        return [], {"status": "FAILED", "time": total_elapsed}
+    
+    # Run final diagnostics on the best solution
+    _run_phase1_diagnostics(best_solution, tours, block_index, config, best_stats, total_elapsed)
+    
+    # === PHASE 1B: LNS REOPTIMIZATION (Friday) ===
+    try:
+        fri_lb = day_min_results.get("Fri")
+        lb_peak = max(day_min_results.values()) if day_min_results else 0
+        fri_cur = sum(1 for b in best_solution if b.day.value == "Fri")
+        if fri_lb and fri_cur > fri_lb + 5:
+            print(f"\n--- LNS Friday Reopt: {fri_cur} -> target~{fri_lb} ---", flush=True)
+            improved = _lns_reopt_friday(
+                current_solution=best_solution,
+                all_blocks=blocks,
+                tours=tours,
+                block_index=block_index,
+                config=config,
+                block_scores=block_scores,
+                block_props=block_props,
+                fri_lb=fri_lb,
+                lb_peak=lb_peak,
+            )
+            if improved:
+                print(f"  LNS improved blocks: {len(best_solution)} -> {len(improved)}", flush=True)
+                best_solution = improved
+            else:
+                print("  LNS: no improvement", flush=True)
+    except Exception as e:
+        print(f"[LNS] skipped due to error: {e}", flush=True)
+
+    # ==== POST-COMPRESSION: Swap 3x1er into 1x3er ====
+    best_solution, compressions = compress_selected_blocks(best_solution, blocks, block_index, tours)
+    if compressions > 0:
+        print(f"  POST-COMPRESSION: Replaced {compressions} block sets (savings: ~{compressions*2} blocks)", flush=True)
+        # Update stats
+        best_stats["blocks_1er"] = sum(1 for b in best_solution if len(b.tours) == 1)
+        best_stats["blocks_2er"] = sum(1 for b in best_solution if len(b.tours) == 2)
+        best_stats["blocks_3er"] = sum(1 for b in best_solution if len(b.tours) == 3)
+        best_stats["selected_blocks"] = len(best_solution)
+    
+    return best_solution, best_stats
+
+
+def compress_selected_blocks(selected_blocks: list[Block], all_blocks: list[Block], block_index: dict, all_tours: list[Tour]) -> tuple[list[Block], int]:
+    """
+    GENERALIZED COMPRESSION: Replace multiple blocks with one multi-tour block.
+    
+    For each candidate block c (2er/3er) in pool:
+        victims = {selected_block covering tour t for t in c.tours}
+        If len(victims) >= 2 → replace victims with c (saves len(victims)-1 blocks)
+    
+    Handles:
+        - (2er+1er) → 3er  (saves 1 block)
+        - (1er+1er) → 2er  (saves 1 block)
+        - (3×1er) → 3er    (saves 2 blocks)
+        - (1er+2er) → 3er  (saves 1 block)
+    """
+    
+    # Map tour ID to currently selected block
+    tour_to_block = {}
+    for b in selected_blocks:
+        for t in b.tours:
+            tour_to_block[t.id] = b
+    
+    selected_ids = {b.id for b in selected_blocks}
+    new_selected = list(selected_blocks)
+    compressions = 0
+    blocks_saved = 0
+    
+    # Sort candidates: 3ers first (bigger savings), then by day
+    candidates = [b for b in all_blocks if len(b.tours) >= 2 and b.id not in selected_ids]
+    candidates.sort(key=lambda b: (-len(b.tours), b.day.value))
+    
+    # Create block map for quick lookup
+    block_map = {b.id: b for b in new_selected}
+    
+    for candidate in candidates:
+        # Find "victim" block IDs that would be replaced
+        victim_ids = set()
+        all_tours_covered = True
+        
+        for t in candidate.tours:
+            if t.id not in tour_to_block:
+                all_tours_covered = False
+                break
+            victim_ids.add(tour_to_block[t.id].id)  # Use ID, not object
+        
+        if not all_tours_covered:
+            continue
+            
+        # Check if we save blocks (len(victims) > 1)
+        if len(victim_ids) < 2:
+            continue
+            
+        # Check victims are still in our selection (not already replaced)
+        if not all(vid in selected_ids for vid in victim_ids):
+            continue
+        
+        # CRITICAL: Ensure candidate covers EXACTLY the same tours as victims
+        # (not more, not less)
+        victim_tour_ids = set()
+        for vid in victim_ids:
+            victim = block_map.get(vid)
+            if victim:
+                for t in victim.tours:
+                    victim_tour_ids.add(t.id)
+        
+        candidate_tour_ids = {t.id for t in candidate.tours}
+        
+        # Candidate must cover exactly the victim tours
+        if candidate_tour_ids != victim_tour_ids:
+            continue
+        
+        # Execute replacement
+        for vid in victim_ids:
+            victim = block_map.get(vid)
+            if victim and victim in new_selected:
+                new_selected.remove(victim)
+                selected_ids.discard(vid)
+                del block_map[vid]
+                # Update tour mapping
+                for t in victim.tours:
+                    if t.id in tour_to_block and tour_to_block[t.id].id == vid:
+                        del tour_to_block[t.id]
+        
+        # Add candidate
+        new_selected.append(candidate)
+        selected_ids.add(candidate.id)
+        block_map[candidate.id] = candidate
+        for t in candidate.tours:
+            tour_to_block[t.id] = candidate
+        
+        saved = len(victim_ids) - 1
+        blocks_saved += saved
+        compressions += 1
+    
+    if compressions > 0:
+        print(f"  COMPRESSION: {compressions} moves, saved {blocks_saved} blocks", flush=True)
+    
+    return new_selected, compressions
+
+
+def _lns_reopt_friday(
+    current_solution: list[Block],
+    all_blocks: list[Block],
+    tours: list[Tour],
+    block_index: dict,
+    config: ConfigV4,
+    block_scores: dict,
+    block_props: dict,
+    fri_lb: int,
+    lb_peak: int
+) -> list[Block] | None:
+    """
+    LNS (Large Neighborhood Search) reoptimization for Friday.
+    
+    Strategy:
+    1. Keep non-Friday blocks fixed
+    2. Re-solve Friday with progressively tighter cap
+    3. Return improved solution or None
+    """
+    from ortools.sat.python import cp_model
+    
+    # Extract Friday tours and blocks
+    fri_tours = [t for t in tours if t.day.value == "Fri"]
+    fri_blocks = [b for b in all_blocks if b.day.value == "Fri"]
+    non_fri_blocks = [b for b in current_solution if b.day.value != "Fri"]
+    
+    if not fri_tours or not fri_blocks:
+        return None
+    
+    # Get current Friday block count
+    fri_current = sum(1 for b in current_solution if b.day.value == "Fri")
+    
+    # Try tightening Friday cap
+    for fri_cap in range(fri_current - 5, max(fri_lb - 1, fri_current - 30), -5):
+        if fri_cap < fri_lb:
+            break
+            
+        print(f"    LNS attempt: Fri cap={fri_cap}", flush=True)
+        
+        model = cp_model.CpModel()
+        
+        # Variables: use[b] = 1 if block b is selected
+        use = {}
+        for i, b in enumerate(fri_blocks):
+            use[i] = model.NewBoolVar(f"use_{i}")
+        
+        # Build tour -> block index
+        tour_to_blocks = defaultdict(list)
+        for i, b in enumerate(fri_blocks):
+            for t in b.tours:
+                tour_to_blocks[t.id].append(i)
+        
+        # Coverage: each Friday tour must be covered
+        for t in fri_tours:
+            block_indices = tour_to_blocks.get(t.id, [])
+            if not block_indices:
+                return None  # Can't cover a tour
+            model.AddExactlyOne([use[i] for i in block_indices])
+        
+        # Cap constraint
+        total_blocks = sum(use[i] for i in range(len(fri_blocks)))
+        model.Add(total_blocks <= fri_cap)
+        
+        # Objective: minimize blocks, prefer multi-tour
+        block_cost = []
+        for i, b in enumerate(fri_blocks):
+            n = len(b.tours)
+            cost = 100 if n == 1 else (50 if n == 2 else 10)
+            block_cost.append(cost * use[i])
+        model.Minimize(sum(block_cost))
+        
+        # Solve
+        solver = cp_model.CpSolver()
+        solver.parameters.max_time_in_seconds = 15.0
+        solver.parameters.num_workers = 8
+        
+        status = solver.Solve(model)
+        
+        if status in (cp_model.OPTIMAL, cp_model.FEASIBLE):
+            fri_selected = [fri_blocks[i] for i in range(len(fri_blocks)) if solver.Value(use[i]) == 1]
+            new_solution = non_fri_blocks + fri_selected
+            
+            if len(new_solution) < len(current_solution):
+                return new_solution
+    
+    return None
+
+
+def _run_phase1_diagnostics(selected: list[Block], tours: list[Tour], block_index: dict, config: ConfigV4, stats: dict, elapsed: float):
+    """Run and print Phase 1 diagnostics."""
+    import math
+    
+    print(f"\n{'='*20} DIAGNOSTICS {'='*20}", flush=True)
+    
+    # 1. Selected Blocks per Day (Split)
+    day_stats = defaultdict(lambda: {"1er": 0, "2er": 0, "3er": 0, "total": 0, "tours": 0})
+    for b in selected:
+        d = b.day.value
+        n = len(b.tours)
+        k = f"{n}er" if n <=3 else "3er"
+        day_stats[d][k] += 1
+        day_stats[d]["total"] += 1
+        day_stats[d]["tours"] += n
+        
+    sorted_days = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+    print("SELECTED BLOCKS BY DAY:", flush=True)
+    for d in sorted_days:
+        if d in day_stats:
+            s = day_stats[d]
+            avg_tours = s["tours"] / s["total"] if s["total"] else 0
+            print(f"  {d}: {s['total']} blocks ({s['1er']} 1er, {s['2er']} 2er, {s['3er']} 3er) | avg={avg_tours:.2f} tours/block", flush=True)
+
+    # 2. Forced 1ers & Missed Opportunities
+    forced_1er_tours = []
+    missed_3er_tours = []
+    
+    tour_assignment = {} 
+    for b in selected:
+        n = len(b.tours)
+        for t in b.tours:
+            tour_assignment[t.id] = n
+            
+    for tour in tours:
+        tid = tour.id
+        pool_blocks = block_index.get(tid, [])
+        pool_options = {len(b.tours) for b in pool_blocks}
+        has_multi = any(n > 1 for n in pool_options)
+        has_3er = (3 in pool_options)
+        picked_n = tour_assignment.get(tid, 0)
+        
+        if picked_n == 1:
+            if not has_multi:
+                forced_1er_tours.append(tid)
+            elif has_3er:
+                missed_3er_tours.append(tid)
+
+    print(f"FORCED 1er TOURS: {len(forced_1er_tours)} (No multi-block option)", flush=True)
+    print(f"MISSED 3er OPPS: {len(missed_3er_tours)} (Chose 1er despite 3er existing)", flush=True)
+
+    # 3. Day Min Lower Bound + Gap
+    print("GAP TO THEORETICAL MINIMUM:", flush=True)
+    for d in sorted_days:
+        if d not in day_stats: continue
+        day_tours = [t for t in tours if t.day.value == d]
+        if not day_tours: continue
+        
+        # LB via max concurrent (geometric)
+        lb_concurrent = solve_day_min_diagnostic(day_tours, d, config)
+        # LB via packing (tours/3)
+        lb_packing = math.ceil(len(day_tours) / 3)
+        lb = max(lb_concurrent, lb_packing)
+        
+        actual = day_stats[d]["total"]
+        gap = actual - lb
+        print(f"  {d}: Actual={actual} vs LB={lb} (Gap={gap})", flush=True)
+
+    print(f"{'='*53}", flush=True)
+    
+    # Update stats with diagnostics
+    stats["time"] = round(elapsed, 2)
+    stats["forced_1er_count"] = len(forced_1er_tours)
+    stats["missed_3er_count"] = len(missed_3er_tours)
+
+
+def _solve_capacity_single_cap(
+    blocks: list[Block],
+    tours: list[Tour],
+    block_index: dict[str, list[Block]],
+    config: ConfigV4,
+    block_scores: dict[str, float] = None,
+    block_props: dict[str, dict] = None,
+    day_cap_override: int = None,
+    time_limit: float = None
+) -> tuple[list[Block], dict] | None:
+    """
+    Single-cap solve for Phase 1. Returns None if INFEASIBLE.
+    """
     t0 = perf_counter()
-    print("PHASE 1A: CP-SAT model build start...", flush=True)
     
     model = cp_model.CpModel()
     
@@ -197,69 +767,358 @@ def solve_capacity_phase(
     print("Coverage constraints added.", flush=True)
     
     # Objective: Use POLICY-DERIVED scores if available
-    # Higher policy score = more desirable block = LOWER cost
-    # We invert: cost = MAX_SCORE - score
+    # Higher policy score = more desirable block
     block_cost = []
-    MAX_SCORE = 1000  # Upper bound for score inversion
     
+    # [DEBUG] Log score application range to detect bugs
+    if block_scores:
+        vals = list(block_scores.values())
+        if vals:
+            p_over_1000 = (sum(1 for v in vals if v > 1000) / len(vals)) * 100
+            print(f"  SCORE DEBUG: min={min(vals):.1f} max={max(vals):.1f} %>1000={p_over_1000:.1f}%", flush=True)
+
+    # Score normalization helpers
+    s_min = min(block_scores.values()) if block_scores else 0
+    s_max = max(block_scores.values()) if block_scores else 1
+    
+    def norm_score(s):
+        if s_max <= s_min: return 0
+        return int(1000 * (s - s_min) / (s_max - s_min))
+    
+    # ==== V4 OPTIMIZATION: Day-aware objective ====
+    # Group blocks by day for max_day and cap constraints
+    from collections import defaultdict
+    blocks_by_day = defaultdict(list)
     for b, block in enumerate(blocks):
-        if block_scores and block.id in block_scores:
-            # Policy-driven: invert score to cost
-            score = block_scores[block.id]
-            cost = int(MAX_SCORE - score)
-        else:
-            # Fallback: static costs
-            n = len(block.tours)
-            if n == 1:
-                cost = 300
-            elif n == 2:
-                cost = 50
-            elif n == 3:
-                cost = 10
-            else:
-                cost = 5
-        block_cost.append(use[b] * cost)
+        blocks_by_day[block.day.value].append(b)
     
-    model.Minimize(sum(block_cost))
+    days = list(blocks_by_day.keys())
+    
+    # Calculate early/late pressure per day (for dynamic rest-trap penalty)
+    early_pressure = {}  # % of tours starting <= 08:00
+    late_pressure = {}   # % of tours ending >= 20:00
+    for day_val, day_blocks in blocks_by_day.items():
+        early_count = sum(1 for b in day_blocks if blocks[b].first_start.hour < 8)
+        late_count = sum(1 for b in day_blocks if blocks[b].last_end.hour >= 20)
+        total = len(day_blocks) if day_blocks else 1
+        early_pressure[day_val] = early_count / total
+        late_pressure[day_val] = late_count / total
+    
+    # Day ordering for trap calculation (using Weekday enum values)
+    day_order = {"Mon": 0, "Tue": 1, "Wed": 2, "Thu": 3, "Fri": 4, "Sat": 5, "Sun": 6}
+    # Inverse map for next-day lookup
+    idx_to_day = {v: k for k, v in day_order.items()}
+
+    trap_pressure = {}
+    for day_val in days:
+        if day_val not in day_order:
+             trap_pressure[day_val] = 0.0
+             continue
+             
+        day_idx = day_order[day_val]
+        # Pressure = Late(Today) * Early(Tomorrow)
+        next_day_val = idx_to_day.get((day_idx + 1) % 7, "Mon")
+        trap_pressure[day_val] = late_pressure.get(day_val, 0) * early_pressure.get(next_day_val, 0)
+    
+    print(f"  TRAP PRESSURE: {', '.join(f'{d[:3]}={trap_pressure.get(d, 0):.2f}' for d in days)}", flush=True)
+    
+    # ==== V4 Chainability Analysis (Pre-calculation) ====
+    # For every block, how many "compatible" blocks exist on the next day?
+    # Compatible = start_time >= block.end_time + min_rest (11h or 14h)
+    
+    from bisect import bisect_left
+    
+    # 1. Sort blocks by day and start time (already roughly sorted, but ensure)
+    # Actually we just need next-day start times.
+    day_starts = defaultdict(list)
+    for b in blocks:
+        # We need start minute of the day
+        start_min = b.first_start.hour * 60 + b.first_start.minute
+        day_starts[b.day.value].append(start_min)
+        
+    for d in day_starts:
+        day_starts[d].sort()
+        
+    # 2. Compute compatibility score per block
+    # Lower compatibility = Higher Penalty
+    chain_penalty_map = {}
+    compat_counts = {}  # For histogram
+    
+    TARGET_COMPAT = 50  # INCREASED: We want at least 50 good options next day (stricter)
+    W_CHAIN = 100       # INCREASED: Penalty per missing option
+    
+    count_low_compat = 0
+    
+    for b in blocks:
+        # Determine next day
+        current_day_idx = day_order.get(b.day.value, 0)
+        next_day_val = idx_to_day.get((current_day_idx + 1) % 7)
+        
+        # Determine rest requirement
+        # If 3-tour: 14h rest (840 min). Else 11h (660 min).
+        # But wait, 3-tour rule says "14h rest OR max 2 tours next day".
+        # It's a complex rule. The chainability metric is a heuristic.
+        # Let's assume standard 11h rest for connectivity potential.
+        rest_min = 14 * 60 if len(b.tours) >= 3 else 11 * 60
+        
+        # End time in minutes from start of day
+        # (This assumes shifts don't span midnight for start/end logic roughly)
+        # Actually verify: block.last_end is time object.
+        end_min = b.last_end.hour * 60 + b.last_end.minute
+        
+        # Earliest valid start next day
+        # If we end at 20:00 (1200), +11h = 31:00 = 07:00 next day.
+        # Logic: end_min + rest_min - 24*60
+        # If result < 0, it means we can start at 00:00 next day (no constraint effectively overlapping day start).
+        
+        min_next_start = end_min + rest_min - (24 * 60)
+        # CLAMP: If negative, means block can connect to anything starting at 00:00+
+        min_next_start = max(0, min_next_start)
+        
+        if next_day_val not in day_starts or not day_starts[next_day_val]:
+            # No blocks next day (e.g. Sunday -> Monday if empty context, or Saturday->Sunday)
+            # If Sunday, maybe no penalty needed (end of week).
+            if b.day.value == "Sun" or b.day.value == "Sat":
+                chain_penalty_map[b.id] = 0
+                compat_counts["10+"] = compat_counts.get("10+", 0) + 1  # Sat/Sun end of week
+            else:
+                # Scary! No options.
+                chain_penalty_map[b.id] = W_CHAIN * TARGET_COMPAT
+                compat_counts["0"] = compat_counts.get("0", 0) + 1
+            continue
+            
+        # Count options >= min_next_start
+        options = day_starts[next_day_val]
+        # binary search: find index of first valid start
+        idx = bisect_left(options, min_next_start)
+        count = len(options) - idx
+        
+        # Track histogram
+        if count == 0: compat_counts["0"] = compat_counts.get("0", 0) + 1
+        elif count <= 4: compat_counts[str(count)] = compat_counts.get(str(count), 0) + 1
+        elif count <= 9: compat_counts["5-9"] = compat_counts.get("5-9", 0) + 1
+        else: compat_counts["10+"] = compat_counts.get("10+", 0) + 1
+        
+        if count < TARGET_COMPAT:
+            penalty = (TARGET_COMPAT - count) * W_CHAIN
+            # Boost penalty for 1er blocks that dead-end? 
+            # No, if a 1er dead-ends it's just as bad as a 3er dead-ending.
+            # Actually 3ers dead-ending is worse (waste of efficiency).
+            if len(b.tours) >= 3:
+                penalty *= 2
+            
+            chain_penalty_map[b.id] = penalty
+            count_low_compat += 1
+        else:
+            chain_penalty_map[b.id] = 0
+            
+    print(f"  CHAINABILITY: {count_low_compat} blocks have low next-day options (<{TARGET_COMPAT}). Applied penalties.", flush=True)
+    print(f"  COMPAT HISTOGRAM: {compat_counts}", flush=True)
+
+    # Day count variable + soft cap
+    # Use override if provided, else calculate from config
+    if day_cap_override is not None:
+        DAY_CAP = day_cap_override
+    else:
+        TARGET_FTE = config.target_ftes if hasattr(config, 'target_ftes') else 145
+        DAY_CAP = TARGET_FTE + config.fte_overflow_cap
+    
+    day_count = {}
+    day_slack = {}
+    PEAK_DAYS = {"Fri", "Mon"}  # These get HARD cap
+    
+    for day_val in days:
+        day_count[day_val] = model.NewIntVar(0, 5000, f"day_count_{day_val}")
+        model.Add(day_count[day_val] == sum(use[b] for b in blocks_by_day[day_val]))
+        day_slack[day_val] = model.NewIntVar(0, 500, f"day_slack_{day_val}")
+        
+        if day_val in PEAK_DAYS:
+            # HARD CONSTRAINT for peak days: No slack!
+            model.Add(day_count[day_val] <= DAY_CAP)
+            print(f"    {day_val}: HARD cap at {DAY_CAP}", flush=True)
+        else:
+            # SOFT cap for other days (slack penalized in objective)
+            model.Add(day_count[day_val] <= DAY_CAP + day_slack[day_val])
+    
+    # Max day variable (bottleneck variable)
+    max_day = model.NewIntVar(0, 5000, "max_day")
+    # ==== REALITY CHECK: FORCED SINGLES ====
+    # Identify tours that ONLY appear in 1er blocks (no multi-block option generated/survived capping)
+    tour_block_sizes = defaultdict(set)
+    for b in blocks:
+        n = len(b.tours)
+        for t in b.tours:
+            tour_block_sizes[t.id].add(n)
+            
+    forced_1er_count = sum(1 for sizes in tour_block_sizes.values() if sizes == {1})
+    forced_1er_pct = (forced_1er_count / len(tours)) * 100 if tours else 0
+    print(f"  REALITY CHECK: {forced_1er_count} tours ({forced_1er_pct:.1f}%) FORCED to be 1er (no multi option found)", flush=True)
+
+    for day_val in days:
+        model.Add(max_day >= day_count[day_val])
+    
+    # ==== Block costs with trap penalties ====
+    TRAP_PENALTY = 500  # Penalty for ignoring trap pressure
+    
+    # Cost Constants - AGGRESSIVE TUNING
+    BASE_1 = 100000  # MASSIVELY increased to discourage singles
+    BASE_2 = 20000   # Increased gap between 2er and 3er
+    BASE_3 = 0
+    SCORE_TIEBREAK = 10 
+
+    # Debug: count available types
+    avail_1er = sum(1 for b in blocks if len(b.tours) == 1)
+    avail_2er = sum(1 for b in blocks if len(b.tours) == 2)
+    avail_3er = sum(1 for b in blocks if len(b.tours) == 3)
+    print(f"  AVAILABLE BLOCKS: 1er={avail_1er}, 2er={avail_2er}, 3er={avail_3er}", flush=True)
+
+    for b, block in enumerate(blocks):
+        n = len(block.tours)
+        
+        # 1. Base Cost
+        cost = BASE_1 if n == 1 else BASE_2 if n == 2 else BASE_3
+        
+        # 2. Score Tie-break (Subtract score)
+        s_raw = block_scores.get(block.id, s_min) if block_scores else 0
+        s_norm = norm_score(s_raw)
+        cost = cost - (SCORE_TIEBREAK * s_norm)
+        
+        # ==== Dynamic trap penalty ====
+        # Penalize late 3-tour blocks on high-trap days
+        is_3tour = (n == 3)
+        is_late = block.last_end.hour >= 20
+        day_trap = trap_pressure.get(block.day.value, 0)
+        
+        if is_3tour and is_late and day_trap > 0.01:
+            # Scale penalty by trap intensity
+            cost += int(TRAP_PENALTY * day_trap * 10) 
+            
+        # ==== Chainability Penalty ====
+        c_pen = chain_penalty_map.get(block.id, 0)
+        if c_pen > 0:
+            cost += int(c_pen) 
+        
+        # Ensure non-negative? Actually negative is fine relative to others, 
+        # but CP-SAT prefers positive integers often for clarity. 
+        # But here we are minimizing sum. If 3ers are negative, it will grab as many as possible.
+        # Let's keep it strictly positive relative to 1ers/2ers.
+        # 3er range: 0 - 10000 = -10000
+        # 2er range: 8000 - 10000 = -2000
+        # 1er range: 30000 - 10000 = 20000
+        # This keeps hierarchy intact.
+        
+        block_cost.append(use[b] * int(cost))
+    
+    # ==== V4 Objective ====
+    # Priority: min max_day >> min total_blocks >> min cost
+    
+    # Greedy Warmstart
+    print("  Adding greedy hint...", flush=True)
+    greedy_selected_ids = set()
+    covered_tours = set()
+    
+    # Sort blocks: 3er first, then score
+    def greedy_sort_key(blk):
+        n = len(blk.tours)
+        s = block_scores.get(blk.id, 0) if block_scores else 0
+        return (-n, -s) 
+        
+    sorted_blocks = sorted(blocks, key=greedy_sort_key)
+    
+    for blk in sorted_blocks:
+        t_ids = [t.id for t in blk.tours]
+        if not any(tid in covered_tours for tid in t_ids):
+            greedy_selected_ids.add(blk.id)
+            covered_tours.update(t_ids)
+            
+    hint_count = 0
+    for b, block in enumerate(blocks):
+        if block.id in greedy_selected_ids:
+            model.AddHint(use[b], 1)
+            hint_count += 1
+        else:
+            model.AddHint(use[b], 0)
+    print(f"  Greedy hint added: {hint_count} blocks", flush=True)
+
+    # ==== DECISION STRATEGY: Guide search to prefer 3ers ====
+    vars_3er = [use[b] for b, blk in enumerate(blocks) if len(blk.tours) == 3]
+    vars_2er = [use[b] for b, blk in enumerate(blocks) if len(blk.tours) == 2]
+    vars_1er = [use[b] for b, blk in enumerate(blocks) if len(blk.tours) == 1]
+    
+    if vars_3er:
+        model.AddDecisionStrategy(vars_3er, cp_model.CHOOSE_FIRST, cp_model.SELECT_MAX_VALUE)
+    if vars_2er:
+        model.AddDecisionStrategy(vars_2er, cp_model.CHOOSE_FIRST, cp_model.SELECT_MAX_VALUE)
+    if vars_1er:
+        model.AddDecisionStrategy(vars_1er, cp_model.CHOOSE_FIRST, cp_model.SELECT_MIN_VALUE)
+    print(f"  DECISION STRATEGY: 3er->True, 2er->True, 1er->False", flush=True)
+
+    # ==== OBJECTIVE: Block-count first, then max_day ====
+    W_COUNT = 10_000_000   # HIGHEST: minimize total blocks
+    W_MAXDAY = 100_000     # Secondary: minimize peak day
+    W_SLACK = 50_000_000   # Penalize slack heavily
+    
+    total_blocks = sum(use[b] for b in range(len(blocks)))
+    total_slack = sum(day_slack[d] for d in days)
+    
+    objective = (
+        W_MAXDAY * max_day +
+        W_COUNT * total_blocks +
+        W_SLACK * total_slack +
+        sum(block_cost)  
+    )
+    
+    model.Minimize(objective)
+    print(f"  V4 OBJECTIVE (Block-Min): {W_COUNT}*count + {W_MAXDAY}*max + {W_SLACK}*slack", flush=True)
+    print(f"  DAY CAP: {DAY_CAP} (HARD for Fri/Mon)", flush=True)
     
     print(f"PHASE 1A: CP-SAT model build done in {perf_counter() - t0:.2f}s", flush=True)
     
     # Solve
     t1 = perf_counter()
-    print(f"PHASE 1B: CP-SAT solve start (time limit: {config.time_limit_phase1}s)...", flush=True)
+    solve_time = time_limit if time_limit else config.time_limit_phase1
     solver = cp_model.CpSolver()
-    solver.parameters.max_time_in_seconds = config.time_limit_phase1
+    solver.parameters.max_time_in_seconds = solve_time
     solver.parameters.num_workers = config.num_workers
     solver.parameters.random_seed = config.seed
+    solver.parameters.search_branching = cp_model.FIXED_SEARCH  # Respect decision strategy
     
     status = solver.Solve(model)
     elapsed = perf_counter() - t0
-    print(f"PHASE 1B: CP-SAT solve done status={status} in {perf_counter() - t1:.2f}s", flush=True)
+    
+    # Diagnostic: Print status and objective details
+    status_names = {0: "UNKNOWN", 1: "MODEL_INVALID", 2: "FEASIBLE", 3: "INFEASIBLE", 4: "OPTIMAL"}
+    status_name = status_names.get(status, f"CODE_{status}")
+    logger.info(f"[CP-SAT] Status: {status_name}, ObjectiveValue: {solver.ObjectiveValue()}")
+    logger.info(f"[CP-SAT] Solve time: {perf_counter() - t1:.2f}s")
+    
+    print(f"PHASE 1B: CP-SAT solve done status={status_name} in {perf_counter() - t1:.2f}s", flush=True)
     
     if status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
-        logger.error("[FAILED] No solution found")
-        return [], {"status": "FAILED", "time": elapsed}
+        return None  # INFEASIBLE - caller will handle
     
     # Extract selected blocks
     selected = [blocks[b] for b in range(len(blocks)) if solver.Value(use[b]) == 1]
     
     # Stats
-    by_type = {"1er": 0, "2er": 0, "3er": 0}
+    sel_1er = sum(1 for b in selected if len(b.tours) == 1)
+    sel_2er = sum(1 for b in selected if len(b.tours) == 2)
+    sel_3er = sum(1 for b in selected if len(b.tours) == 3)
+    print(f"  SELECTED BLOCKS: 1er={sel_1er}, 2er={sel_2er}, 3er={sel_3er}", flush=True)
+    
+    by_type = {"1er": sel_1er, "2er": sel_2er, "3er": sel_3er}
     split_2er_count = 0
     template_match_count = 0
     
+    # Fix: Don't double count! sel_1er etc are already calculated.
+    # Just loop for split/template stats.
     for block in selected:
         n = len(block.tours)
-        if n == 1:
-            by_type["1er"] += 1
-        elif n == 2:
-            by_type["2er"] += 1
-            # Check split flag
-            if block_props and block.id in block_props:
-                if block_props[block.id].get("is_split", False):
-                    split_2er_count += 1
-        elif n == 3:
-            by_type["3er"] += 1
+        
+        # Check split flag
+        if n == 2 and block_props and block.id in block_props:
+            if block_props[block.id].get("is_split", False):
+                split_2er_count += 1
         
         # Template match
         if block_props and block.id in block_props:
@@ -299,6 +1158,76 @@ def solve_capacity_phase(
     print(f"Template matches: {template_match_count}")
     print(f"Total hours: {total_hours:.1f}h")
     print(f"Time: {elapsed:.2f}s")
+    
+    # ==== DIAGNOSTICS: Forced 1ers & Missed Opportunities ====
+    print(f"\n{'='*20} DIAGNOSTICS {'='*20}", flush=True)
+    
+    # 1. Selected Blocks per Day (Split)
+    day_stats = defaultdict(lambda: {"1er": 0, "2er": 0, "3er": 0, "total": 0})
+    for b in selected:
+        d = b.day.value
+        n = len(b.tours)
+        k = f"{n}er" if n <=3 else "3er"
+        day_stats[d][k] += 1
+        day_stats[d]["total"] += 1
+        
+    logger.info("SELECTED BLOCKS BY DAY:")
+    sorted_days = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+    for d in sorted_days:
+        if d in day_stats:
+            s = day_stats[d]
+            print(f"  {d}: {s['total']} blocks ({s['1er']} 1er, {s['2er']} 2er, {s['3er']} 3er)", flush=True)
+
+    # 2. Forced 1ers (Tours that had NO non-1er option in the *input* pool)
+    # We need to check 'block_index' for this.
+    forced_1er_tours = []
+    missed_3er_tours = [] # Tours assigned 1er, but efficient 3er option existed
+    
+    # Selected tour IDs map to the block type they ended up in
+    tour_assignment = {} 
+    for b in selected:
+        n = len(b.tours)
+        for t in b.tours:
+            tour_assignment[t.id] = n
+            
+    # Check pool for every tour
+    for tour in tours:
+        tid = tour.id
+        # What options did we have in the POOL?
+        pool_blocks = block_index.get(tid, [])
+        pool_options = {len(b.tours) for b in pool_blocks}
+        
+        # Did we have >1 options?
+        has_multi = any(n > 1 for n in pool_options)
+        has_3er = (3 in pool_options)
+        
+        # What did we pick?
+        picked_n = tour_assignment.get(tid, 0)
+        
+        if picked_n == 1:
+            if not has_multi:
+                forced_1er_tours.append(tid)
+            elif has_multi:
+                # We CHOSE 1er despite multi option
+                if has_3er:
+                    missed_3er_tours.append(tid)
+
+    print(f"FORCED 1er TOURS: {len(forced_1er_tours)} (No multi-block option available in pool)", flush=True)
+    print(f"MISSED 3er OPPS: {len(missed_3er_tours)} (Assigned 1er, but 3er option existed)", flush=True)
+    if missed_3er_tours:
+        print(f"  Example missed opps: {missed_3er_tours[:10]}...", flush=True)
+
+    # 3. Day Min Lower Bound
+    print("DAY MIN LOWER BOUND (Max Concurrent Tours):", flush=True)
+    for d in sorted_days:
+        day_tours = [t for t in tours if t.day.value == d]
+        if not day_tours: continue
+        lb = solve_day_min_diagnostic(day_tours, d, config)
+        actual = day_stats[d]["total"]
+        gap = actual - lb
+        print(f"  {d}: LB={lb} vs Actual={actual} (Gap={gap})", flush=True)
+
+    print(f"{'='*53}", flush=True)
     
     return selected, stats
 
@@ -608,9 +1537,13 @@ def solve_forecast_v4(
     original_count = len(blocks)
     if config.max_blocks and len(blocks) > config.max_blocks:
         print(f"Pruning blocks: {len(blocks)} > max_blocks={config.max_blocks}", flush=True)
-        # Sort by score (descending) then by id (ascending) for determinism
-        blocks = sorted(blocks, key=lambda b: (-block_scores.get(b.id, 0), b.id))
-        blocks = blocks[:config.max_blocks]
+        
+        # V4 NEW: Tour-Aware Pruning
+        blocks = prune_blocks_tour_aware(blocks, tours, config)
+        
+        # Sort by ID for determinism after pruning
+        blocks.sort(key=lambda b: b.id)
+        
         print(f"Pruned from {original_count} to {len(blocks)} blocks", flush=True)
         # Rebuild index after pruning
         block_index = build_block_index(blocks)
@@ -652,40 +1585,15 @@ def solve_forecast_v4(
         assignments, phase2_stats = solver.solve()
         
     elif config.enable_global_cpsat and len(selected_blocks) <= config.global_cpsat_block_threshold:
-        try:
-            from src.services.cpsat_assigner import assign_drivers_cpsat
-            
-            logger.info("=" * 60)
-            logger.info(f"PHASE 2B: CP-SAT Assignment Optimizer ({len(selected_blocks)} blocks)")
-            logger.info("=" * 60)
-            
-            cpsat_assignments, cpsat_stats = assign_drivers_cpsat(
-                selected_blocks,
-                config,
-                warm_start=greedy_assignments,
-                time_limit=300.0  # 5 minutes for complex problems
-            )
-            
-            # Use CP-SAT result if successful
-            if cpsat_stats.get("status") in ("OPTIMAL", "FEASIBLE"):
-                logger.info("CP-SAT assignment successful!")
-                logger.info(f"Result: {cpsat_stats['drivers_fte']} FTE + {cpsat_stats['drivers_pt']} PT")
-                logger.info(f"Improvement: PT {phase2_stats['drivers_pt']} -> {cpsat_stats['drivers_pt']} (Delta {cpsat_stats['drivers_pt'] - phase2_stats['drivers_pt']})")
-                assignments = cpsat_assignments
-                # Update stats with CP-SAT results
-                phase2_stats.update(cpsat_stats)
-            else:
-                logger.warning(f"CP-SAT failed ({cpsat_stats.get('error')}), using greedy fallback")
-                assignments = greedy_assignments
-                
-        except Exception as e:
-            logger.error(f"CP-SAT assignment error: {e}", exc_info=True)
-            logger.warning("Using greedy fallback")
-            assignments = greedy_assignments
+        # Global CP-SAT Phase 2B is currently disabled by default (enable_global_cpsat=False)
+        # This branch requires a greedy pre-solve to warm-start, which we skip for now.
+        logger.warning("Global CP-SAT Phase 2B requested but not fully implemented - using greedy fallback")
+        logger.info(f"Skipping global CP-SAT Phase 2B (enabled={config.enable_global_cpsat}, blocks={len(selected_blocks)})")
+        assignments, phase2_stats = assign_drivers_greedy(selected_blocks, config)
     else:
         # Skip global CP-SAT (disabled or problem too large)
         logger.info(f"Skipping global CP-SAT Phase 2B (enabled={config.enable_global_cpsat}, blocks={len(selected_blocks)}, threshold={config.global_cpsat_block_threshold})")
-        assignments = greedy_assignments
+        assignments, phase2_stats = assign_drivers_greedy(selected_blocks, config)
     
     # Determine status
     fte_count = phase2_stats["drivers_fte"]
@@ -703,8 +1611,11 @@ def solve_forecast_v4(
         "status": status,
         "total_hours": round(total_hours, 2),
         "drivers_fte": fte_count,
+        "fte_used": phase2_stats.get("fte_used", fte_count),  # NEW: Actually working FTEs
+        "fte_zero": phase2_stats.get("fte_zero", 0),  # NEW: Empty FTE slots
         "drivers_pt": phase2_stats["drivers_pt"],
         "fte_hours_min": phase2_stats["fte_hours_min"],
+        "fte_hours_min_used": phase2_stats.get("fte_hours_min_used", phase2_stats["fte_hours_min"]),  # NEW
         "fte_hours_max": phase2_stats["fte_hours_max"],
         "fte_hours_avg": phase2_stats["fte_hours_avg"],
         "blocks_selected": phase1_stats["selected_blocks"],

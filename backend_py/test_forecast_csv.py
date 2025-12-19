@@ -118,7 +118,7 @@ def main():
     print("=" * 70, flush=True)
     
     # Run Heuristic Solver
-    config = ConfigV4(target_ftes=150, solver_mode="HEURISTIC")
+    config = ConfigV4(target_ftes=150, solver_mode="HEURISTIC", time_limit_phase1=20.0)
     result = solve_forecast_v4(tours, config=config)
     
     # Print results

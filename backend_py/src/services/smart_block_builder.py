@@ -147,11 +147,11 @@ def build_weekly_blocks_smart(
     start_time = time_module.time()
     policy = load_policy()
     
-    print(f"[SmartBuilder] Starting with {len(tours)} tours", flush=True)
+    logger.info(f"[SmartBuilder] Starting with {len(tours)} tours")
     
     # Step 1: Generate ALL blocks
     gen_start = time_module.time()
-    print("[SmartBuilder] Step 1: Generating blocks...", flush=True)
+    logger.info("[SmartBuilder] Step 1: Generating blocks...")
     all_blocks = _generate_all_blocks(tours)
     gen_time = time_module.time() - gen_start
     
@@ -159,8 +159,8 @@ def build_weekly_blocks_smart(
     count_2er = sum(1 for b in all_blocks if len(b.tours) == 2)
     count_3er = sum(1 for b in all_blocks if len(b.tours) == 3)
     
-    print(f"[SmartBuilder] Generated {len(all_blocks)} blocks in {gen_time:.2f}s", flush=True)
-    print(f"[SmartBuilder]   1er={count_1er}, 2er={count_2er}, 3er={count_3er}", flush=True)
+    logger.info(f"[SmartBuilder] Generated {len(all_blocks)} blocks in {gen_time:.2f}s")
+    logger.info(f"[SmartBuilder]   1er={count_1er}, 2er={count_2er}, 3er={count_3er}")
     
     # Step 2: Score blocks using policy
     print("[SmartBuilder] Step 2: Scoring blocks with policy...", flush=True)
@@ -177,7 +177,21 @@ def build_weekly_blocks_smart(
     final_blocks, cap_stats = _smart_cap_with_1er_guarantee(
         deduped, tours, k_per_tour, global_top_n
     )
-    print(f"[SmartBuilder] After capping: {len(final_blocks)} blocks", flush=True)
+    logger.info(f"[SmartBuilder] After capping: {len(final_blocks)} blocks")
+    
+    # ==== POOL HEALTH CHECK (after capping) ====
+    from collections import Counter
+    cap_1er = sum(1 for b in final_blocks if len(b.tours) == 1)
+    cap_2er = sum(1 for b in final_blocks if len(b.tours) == 2)
+    cap_3er = sum(1 for b in final_blocks if len(b.tours) == 3)
+    logger.info(f"[POOL AFTER CAP] total={len(final_blocks)} mix: 1er={cap_1er}, 2er={cap_2er}, 3er={cap_3er}")
+    
+    per_day = defaultdict(Counter)
+    for b in final_blocks:
+        n = len(b.tours)
+        per_day[b.day.value][f"{n}er"] += 1
+    for d in sorted(per_day.keys()):
+        logger.info(f"[POOL AFTER CAP] {d[:3]}: {dict(per_day[d])}")
     
     # Step 5: Sanity checks
     _sanity_check(final_blocks, tours)
@@ -365,23 +379,48 @@ def _dedupe_blocks(scored: list[ScoredBlock]) -> list[ScoredBlock]:
 def _smart_cap_with_1er_guarantee(
     scored: list[ScoredBlock], tours: list[Tour], k: int, global_n: int
 ) -> tuple[list[Block], dict]:
-    # 1. Lock ALL 1er
-    blocks_1er = [sb for sb in scored if len(sb.block.tours) == 1]
-    locked_ids = {sb.block.id for sb in blocks_1er}
+    """
+    STRATIFIED CAPPING: Keep minimum blocks per type per tour.
+    This ensures 3er blocks survive capping even if their scores are lower.
+    """
+    # Stratified quotas per tour
+    K1_1ER = 1   # Always 1 single per tour (coverage guarantee)
+    K2_2ER = 6   # Top 6 pairs per tour
+    K3_3ER = 8   # Top 8 triples per tour (PRIORITY: these compress headcount)
     
-    # 2. Lock top-K multi per tour
-    blocks_multi = [sb for sb in scored if len(sb.block.tours) >= 2]
-    tour_to_blocks = defaultdict(list)
-    for sb in blocks_multi:
-        for t in sb.block.tours:
-            tour_to_blocks[t.id].append(sb)
-            
-    for t_id in tour_to_blocks:
-        tour_to_blocks[t_id].sort(key=lambda sb: sb.score, reverse=True)
-        for sb in tour_to_blocks[t_id][:k]:
+    locked_ids = set()
+    
+    # 1. Lock ALL 1er (coverage guarantee)
+    blocks_1er = [sb for sb in scored if len(sb.block.tours) == 1]
+    for sb in blocks_1er:
+        locked_ids.add(sb.block.id)
+    
+    # 2. Stratified multi-block locking per tour
+    # Build per-tour lists separated by block type
+    tour_to_2er = defaultdict(list)
+    tour_to_3er = defaultdict(list)
+    
+    for sb in scored:
+        n = len(sb.block.tours)
+        if n == 2:
+            for t in sb.block.tours:
+                tour_to_2er[t.id].append(sb)
+        elif n == 3:
+            for t in sb.block.tours:
+                tour_to_3er[t.id].append(sb)
+    
+    # Sort each list by score (descending) and lock top-K per type
+    for t_id in tour_to_3er:
+        tour_to_3er[t_id].sort(key=lambda sb: sb.score, reverse=True)
+        for sb in tour_to_3er[t_id][:K3_3ER]:
+            locked_ids.add(sb.block.id)
+    
+    for t_id in tour_to_2er:
+        tour_to_2er[t_id].sort(key=lambda sb: sb.score, reverse=True)
+        for sb in tour_to_2er[t_id][:K2_2ER]:
             locked_ids.add(sb.block.id)
             
-    # 3. Global top-N
+    # 3. Global top-N (fill remaining quota with highest-scoring blocks)
     rest = [sb for sb in scored if sb.block.id not in locked_ids]
     rest.sort(key=lambda sb: sb.score, reverse=True)
     
