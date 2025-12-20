@@ -175,7 +175,7 @@ class Driver(BaseModel):
     
     # Constraint limits (can be driver-specific, defaults from HARD_CONSTRAINTS)
     max_weekly_hours: float = Field(default=55.0, ge=0, le=168)
-    max_daily_span_hours: float = Field(default=14.5, ge=0, le=24)
+    max_daily_span_hours: float = Field(default=16.5, ge=0, le=24)
     max_tours_per_day: int = Field(default=3, ge=1, le=10)
     min_rest_hours: float = Field(default=11.0, ge=0, le=24)
     

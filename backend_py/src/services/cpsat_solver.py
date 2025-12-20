@@ -49,7 +49,7 @@ from src.services.scheduler import BaselineScheduler
 class CPSATConfig(NamedTuple):
     """Configuration for CP-SAT solver."""
     time_limit_seconds: float = 30.0
-    num_workers: int = 4  # Fixed for determinism
+    num_workers: int = 1  # S0.1: Fixed for determinism (was 4)
     seed: int = 42  # Fixed seed for reproducibility (was None)
     optimize: bool = True
     prefer_larger_blocks: bool = True
@@ -300,7 +300,8 @@ class CPSATSchedulerModel:
             if len(options) == 0:
                 infeasible += 1
                 self.infeasible_tour_ids.add(tour.id)
-                top = sorted(blockers.keys(), key=lambda r: -blockers[r])[:3]
+                # S0.1: Stable tie-break for determinism
+                top = sorted(blockers.keys(), key=lambda r: (-blockers[r], r))[:3]
                 report = TourReport(tour.id, tour.day.value, 0, False, False, top)
                 
             elif len(options) == 1:
@@ -331,7 +332,8 @@ class CPSATSchedulerModel:
         print(f"  Tours: {len(self.tours)} | Coverable: {coverable} | Infeasible: {infeasible} | Forced: {forced}")
         print(f"  Coverage Rate: {self.pre_solve_report.coverage_rate:.1%}")
         if blocking:
-            top5 = sorted(blocking.items(), key=lambda x: -x[1])[:5]
+            # S0.1: Stable tie-break for determinism
+            top5 = sorted(blocking.items(), key=lambda x: (-x[1], x[0]))[:5]
             print(f"  Top Blockers: {dict(top5)}")
         print("=" * 60)
     
@@ -375,11 +377,14 @@ class CPSATSchedulerModel:
     # GREEDY HINTS
     # =========================================================================
     
-    def _add_greedy_hints(self) -> None:
+    def _add_greedy_hints(self, week_start: 'date' = None) -> None:
         """Add hints from greedy solution."""
         try:
             greedy = BaselineScheduler(self.tours, self.drivers)
-            plan = greedy.schedule(date.today())
+            # S0.1: Use deterministic date, not date.today() which breaks reproducibility
+            from datetime import date
+            hint_date = week_start if week_start else date(2025, 1, 6)  # Fixed deterministic date
+            plan = greedy.schedule(hint_date)
             
             for a in plan.assignments:
                 # Match block by tour set
@@ -622,10 +627,10 @@ class CPSATSchedulerModel:
         """Solve with automatic fallback."""
         solver = cp_model.CpSolver()
         solver.parameters.max_time_in_seconds = self.config.time_limit_seconds
-        solver.parameters.num_workers = self.config.num_workers
+        solver.parameters.num_search_workers = 1  # S0.1: Determinism (always 1)
         solver.parameters.random_seed = self.config.seed
         
-        print(f"\nSOLVING (seed={self.config.seed}, workers={self.config.num_workers})...")
+        print(f"\nSOLVING (seed={self.config.seed}, workers=1)...")
         status = solver.Solve(self.model)
         
         status_map = {
@@ -647,7 +652,7 @@ class CPSATSchedulerModel:
             
             solver = cp_model.CpSolver()
             solver.parameters.max_time_in_seconds = self.config.time_limit_seconds
-            solver.parameters.num_workers = self.config.num_workers
+            solver.parameters.num_search_workers = 1  # S0.1: Determinism (always 1)
             solver.parameters.random_seed = self.config.seed
             
             status = solver.Solve(self.model)

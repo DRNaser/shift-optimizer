@@ -163,9 +163,12 @@ class HeuristicSolver:
         assigned_peak: set[str] = set()
 
         # Sort FTEs by emptiest first (we want to lift low-hour drivers early)
-        fte_ids = [did for did, d in self.drivers.items() if d["type"] == "FTE"]
+        # S0.1: Sort FTE IDs deterministically
+        fte_ids = sorted([did for did, d in self.drivers.items() if d["type"] == "FTE"])
 
-        for day, day_blocks in blocks_by_day.items():
+        # S0.1: Iterate days in sorted order for determinism
+        for day in sorted(blocks_by_day.keys()):
+            day_blocks = blocks_by_day[day]
             # Prefer 3-tour blocks first, then bigger work, then earlier start
             def peak_key(b: Block):
                 # Robust block size rank: 1..3 based on tours
@@ -219,7 +222,8 @@ class HeuristicSolver:
             best_did = None
             best_score = float('inf')
             
-            for did, d in self.drivers.items():
+            for did in sorted(self.drivers.keys()):  # S0.1: Deterministic iteration
+                d = self.drivers[did]
                 if d["type"] != "FTE":
                     continue
                 if not self._can_take_block(d, block):
@@ -248,7 +252,8 @@ class HeuristicSolver:
             best_did = None
             best_score = float('inf')
             
-            for did, d in self.drivers.items():
+            for did in sorted(self.drivers.keys()):  # S0.1: Deterministic iteration
+                d = self.drivers[did]
                 if d["type"] != "FTE":
                     continue
                 
@@ -333,10 +338,11 @@ class HeuristicSolver:
         for block in self.unassigned:
             inserted = False
             
-            # Candidates: FTEs only
-            candidates = [d for d in self.drivers.values() if d["type"] == "FTE"]
-            # Sort by hours (emptiest first = more likely to have slack)
-            candidates.sort(key=lambda d: d["hours"])
+            # Candidates: FTEs only (S0.1: deterministic order via sorted)
+            candidates = sorted([d for d in self.drivers.values() if d["type"] == "FTE"], 
+                               key=lambda d: d["id"])
+            # S0.1: Sort by hours with id tie-break for determinism
+            candidates.sort(key=lambda d: (d["hours"], d["id"]))
             
             attempts = 0
             for d in candidates:

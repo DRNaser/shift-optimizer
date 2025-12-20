@@ -20,6 +20,7 @@ from src.api.models import (
 from src.domain.models import Tour, Weekday
 from src.services.forecast_solver_v4 import solve_forecast_v4, ConfigV4
 from src.services.log_stream import emit_log, get_log_generator, clear_logs, attach_sse_handler
+from src.services.portfolio_controller import solve_forecast_portfolio
 
 # Setup logger
 logger = logging.getLogger("ForecastRouter")
@@ -258,16 +259,27 @@ async def create_schedule(request: ScheduleRequest):
     elif request.solver_type == "heuristic":
         mode = "HEURISTIC"
         
+    # Logic for extended hours
+    max_h = 56.0 if request.extended_hours else 53.0
+    # Keep target at 49.5 to allow buffer for absorption (don't pack too tight early)
+    fte_target_h = 49.5 
+
     config = ConfigV4(
         time_limit_phase1=float(request.time_limit_seconds),
         seed=request.seed or 42,
         solver_mode=mode,
         target_ftes=request.target_ftes or 150,
         fte_overflow_cap=request.fte_overflow_cap or 10,
+        anytime_budget=float(request.time_limit_seconds),
+        extended_hours=request.extended_hours,
+        max_hours_per_fte=max_h,
+        fte_hours_target=fte_target_h,
     )
     emit_log(f"Config: time_limit={config.time_limit_phase1}s, seed={config.seed}", "INFO")
+    emit_log(f"Extended Hours: {request.extended_hours} (Max: {config.max_hours_per_fte}h)", "INFO" if request.extended_hours else "WARNING")
     emit_log(f"Solver type: {request.solver_type}", "INFO")
     logger.info(f"Config: time_limit={config.time_limit_phase1}s, seed={config.seed}")
+    logger.info(f"Extended Hours: {request.extended_hours} -> Max: {config.max_hours_per_fte}")
     logger.info(f"Solver type: {request.solver_type}")
     
     # Run solver
@@ -300,6 +312,16 @@ async def create_schedule(request: ScheduleRequest):
                 lambda: solve_forecast_set_partitioning(
                     tours,
                     time_limit=float(request.time_limit_seconds),
+                    seed=request.seed or 42,
+                )
+            )
+        elif request.solver_type == "portfolio":
+            emit_log("Using PORTFOLIO OPTIMIZATION (Auto-Select)", "INFO")
+            result = await loop.run_in_executor(
+                None,
+                lambda: solve_forecast_portfolio(
+                    tours,
+                    time_budget=float(request.time_limit_seconds),
                     seed=request.seed or 42,
                 )
             )

@@ -34,7 +34,7 @@ class DriverInput(BaseModel):
     name: str
     qualifications: list[str] = Field(default_factory=list)
     max_weekly_hours: float = Field(default=55.0, ge=0, le=168)
-    max_daily_span_hours: float = Field(default=14.5, ge=0, le=24)
+    max_daily_span_hours: float = Field(default=16.5, ge=0, le=24)
     max_tours_per_day: int = Field(default=3, ge=1, le=10)
     min_rest_hours: float = Field(default=11.0, ge=0, le=24)
     # Simplified availability: list of available days
@@ -47,7 +47,7 @@ class DriverInput(BaseModel):
 class ScheduleRequest(BaseModel):
     """Request to create a schedule."""
     tours: list[TourInput]
-    drivers: list[DriverInput]
+    drivers: list[DriverInput] = Field(default_factory=list, description="Optional - virtual drivers created if empty")
     week_start: str = Field(..., pattern=r"^\d{4}-\d{2}-\d{2}$", description="YYYY-MM-DD")
     prefer_larger_blocks: bool = Field(default=True)
     seed: int | None = Field(default=None, description="Seed for reproducibility")
@@ -60,6 +60,10 @@ class ScheduleRequest(BaseModel):
         ge=1.0,
         le=300.0,
         description="Time limit for CP-SAT solver (seconds)"
+    )
+    extended_hours: bool = Field(
+        default=False,
+        description="If True, allows up to 56h/week. If False, caps at 53h/week."
     )
     lns_iterations: int = Field(
         default=10,
@@ -123,6 +127,7 @@ class StatsOutput(BaseModel):
     block_counts: dict[str, int]
     assignment_rate: float
     average_driver_utilization: float
+    average_work_hours: float = Field(default=0.0, description="Average work hours per driver")
 
 
 class ValidationOutput(BaseModel):

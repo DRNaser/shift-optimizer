@@ -14,14 +14,14 @@ from enum import Enum
 # =============================================================================
 
 class WeekdayFE(str, Enum):
-    """Frontend weekday format."""
-    MONDAY = "MONDAY"
-    TUESDAY = "TUESDAY"
-    WEDNESDAY = "WEDNESDAY"
-    THURSDAY = "THURSDAY"
-    FRIDAY = "FRIDAY"
-    SATURDAY = "SATURDAY"
-    SUNDAY = "SUNDAY"
+    """Frontend weekday format - matches backend domain.Weekday values."""
+    MONDAY = "Mon"
+    TUESDAY = "Tue"
+    WEDNESDAY = "Wed"
+    THURSDAY = "Thu"
+    FRIDAY = "Fri"
+    SATURDAY = "Sat"
+    SUNDAY = "Sun"
 
 
 WEEKDAY_MAP = {
@@ -66,16 +66,18 @@ class DriverInputFE(BaseModel):
 class ScheduleRequest(BaseModel):
     """Request from frontend."""
     tours: list[TourInputFE]
-    drivers: list[DriverInputFE] = []  # Optional in v4
+    drivers: Optional[list[DriverInputFE]] = Field(default_factory=list)  # Truly optional
     week_start: str  # YYYY-MM-DD
     prefer_larger_blocks: bool = True
     seed: Optional[int] = None
-    solver_type: Literal["greedy", "cpsat", "cpsat+lns", "cpsat-global", "set-partitioning", "heuristic"] = "cpsat"
+    solver_type: Literal["greedy", "cpsat", "cpsat+lns", "cpsat-global", "set-partitioning", "heuristic", "portfolio"] = "portfolio"
     time_limit_seconds: int = 60
     lns_iterations: int = 10
     locked_block_ids: Optional[list[str]] = None
     target_ftes: Optional[int] = None
     fte_overflow_cap: Optional[int] = None
+    extended_hours: bool = False
+
 
 
 # =============================================================================

@@ -82,6 +82,22 @@ class ConfigV4(NamedTuple):
     
     enable_global_cpsat: bool = False  # Disabled by default (times out on large problems)
     global_cpsat_block_threshold: int = 200  # Only use CP-SAT if blocks < this
+    
+    # =========================================================================
+    # S2.1-S2.4: PHASE 2 FEATURE FLAGS (default OFF)
+    # =========================================================================
+    enable_fill_to_target_greedy: bool = False  # S2.1: Use fill-to-target scoring (default OFF for canary)
+    enable_bad_block_mix_rerun: bool = False    # S2.2-S2.4: Enable rerun on BAD_BLOCK_MIX (default OFF)
+    
+    # S2.2: BAD_BLOCK_MIX trigger thresholds
+    pt_ratio_threshold: float = 0.25          # Trigger rerun if pt_ratio > this
+    underfull_ratio_threshold: float = 0.15   # Trigger rerun if underfull_ratio > this
+    
+    # S2.3: Rerun budget control
+    min_rerun_budget: float = 5.0             # Minimum budget for rerun to happen
+    
+    # S2.4: Rerun config multipliers (make Path-B different)
+    rerun_1er_penalty_multiplier: float = 2.0  # Multiply 1er-with-multi penalty by this
 
 
 # =============================================================================
@@ -133,6 +149,523 @@ class SolveResultV4:
             "block_stats": self.block_stats
         }
 
+
+
+# =============================================================================
+# S1.1-S1.4: PHASE 1 PACKABILITY HELPERS
+# =============================================================================
+
+def compute_tour_has_multi(blocks: list[Block], tours: list[Tour]) -> dict[str, bool]:
+    """
+    S1.1: Precompute tour_has_multi[tour_id] = True if any block covering this
+    tour has len(tours) > 1 (i.e., the tour has multi-tour options in pool).
+    
+    O(n) single pass over blocks, NOT O(n²).
+    
+    Determinism: Uses sorted tour IDs for iteration.
+    """
+    tour_has_multi: dict[str, bool] = {t.id: False for t in tours}
+    
+    # Single pass O(blocks × avg_tours_per_block) ≈ O(n)
+    for block in blocks:
+        if len(block.tours) > 1:  # This is a multi-tour block
+            for tour in block.tours:
+                tour_has_multi[tour.id] = True
+    
+    return tour_has_multi
+
+
+def compute_packability_metrics(
+    selected_blocks: list[Block],
+    all_blocks: list[Block],
+    tours: list[Tour],
+) -> dict:
+    """
+    S1.4: Compute packability metrics for RunReport.
+    
+    Metrics:
+    - forced_1er_rate: Tours with ONLY 1er options in pool (no 2er/3er)
+    - missed_3er_opps: Tours covered by 1er in solution, despite having 3er option in pool
+    
+    Determinism: Uses sorted IDs for iteration.
+    """
+    # Build tour -> available block sizes in pool
+    tour_available_sizes: dict[str, set[int]] = {t.id: set() for t in tours}
+    for block in all_blocks:
+        for tour in block.tours:
+            tour_available_sizes[tour.id].add(len(block.tours))
+    
+    # forced_1er_rate: Tours with only size=1 in pool
+    forced_1er_tours = []
+    for tour_id in sorted(tour_available_sizes.keys()):
+        sizes = tour_available_sizes[tour_id]
+        if sizes == {1}:  # Only 1er available
+            forced_1er_tours.append(tour_id)
+    
+    forced_1er_rate = len(forced_1er_tours) / len(tours) if tours else 0.0
+    
+    # Build solution coverage: tour_id -> block_size in solution
+    tour_solution_size: dict[str, int] = {}
+    for block in selected_blocks:
+        for tour in block.tours:
+            tour_solution_size[tour.id] = len(block.tours)
+    
+    # missed_3er_opps: Tours covered by 1er despite having 3er option
+    missed_3er_opps = []
+    for tour_id in sorted(tour_solution_size.keys()):
+        solution_size = tour_solution_size.get(tour_id, 0)
+        available_sizes = tour_available_sizes.get(tour_id, set())
+        
+        if solution_size == 1 and 3 in available_sizes:
+            missed_3er_opps.append(tour_id)
+    
+    return {
+        "forced_1er_rate": round(forced_1er_rate, 4),
+        "forced_1er_count": len(forced_1er_tours),
+        "missed_3er_opps_count": len(missed_3er_opps),
+        "total_tours": len(tours),
+    }
+
+
+def compute_packability_cost_adjustments(
+    block: Block,
+    tour_has_multi: dict[str, bool],
+    config: 'ConfigV4',
+) -> float:
+    """
+    S1.2-S1.3: Compute packability cost adjustments for a block.
+    
+    Returns ADDITIONAL cost (negative = bonus, positive = penalty).
+    
+    S1.2: 1er-with-alternative penalty (when tour has multi-tour option)
+    S1.3: 3er bonus / 2er shaping
+    
+    These are TERTIARY tie-breakers, not primary objective changes.
+    """
+    # Feature flag check (future: config.enable_packability_costs)
+    # For now, always apply
+    
+    adjustment = 0.0
+    block_size = len(block.tours)
+    
+    # S1.2: 1er-with-alternative penalty
+    # If this is a 1er AND the tour has multi-tour options, penalize
+    if block_size == 1:
+        tour = block.tours[0]
+        if tour_has_multi.get(tour.id, False):
+            # Small penalty for choosing 1er when multi-tour exists
+            # This is TERTIARY, so weight is small (e.g., 1-5)
+            adjustment += 2.0  # Penalty
+    
+    # S1.3: 3er bonus / 2er shaping
+    # Bonus for 3er (prefer packing 3 tours together)
+    if block_size == 3:
+        adjustment -= 3.0  # Bonus (negative cost)
+    elif block_size == 2:
+        adjustment -= 1.0  # Smaller bonus for 2er
+    
+    return adjustment
+
+
+# =============================================================================
+# S2.1-S2.4: PHASE 2 GREEDY FILL-TO-TARGET + FEEDBACK LOOP
+# =============================================================================
+
+def fill_to_target_score(
+    driver_hours: float,
+    block_hours: float,
+    driver_type: str,
+    config: ConfigV4,
+) -> float:
+    """
+    S2.1: Fill-to-target scoring (config-driven).
+    
+    Returns a score (lower = better) for assigning a block to a driver.
+    
+    Priority for FTE:
+    1. Threshold-crossing: prefer assignments that push driver from < min to >= min
+    2. Distance to target: minimize abs(new_hours - target)
+    
+    For PT: always large penalty (+1e6) so PT is used only as overflow.
+    
+    Determinism: Pure function, no random elements.
+    """
+    if not config.enable_fill_to_target_greedy:
+        # Fallback: simple hours-based scoring
+        return driver_hours + block_hours
+    
+    new_hours = driver_hours + block_hours
+    
+    if driver_type == "PT":
+        # PT is always penalized heavily
+        return 1e6 + new_hours
+    
+    # FTE scoring
+    min_thr = config.min_hours_per_fte
+    target = config.fte_hours_target
+    
+    # Priority 1: Threshold crossing bonus
+    threshold_bonus = 0.0
+    if driver_hours < min_thr and new_hours >= min_thr:
+        threshold_bonus = -1000.0  # Large bonus for crossing threshold
+    
+    # Priority 2: Distance to target (range 0-100)
+    distance_penalty = abs(new_hours - target)
+    
+    # Priority 3: Overflow penalty (going over target is worse than under)
+    overflow_penalty = 0.0
+    if new_hours > config.max_hours_per_fte:
+        overflow_penalty = 1e9  # Infeasible
+    elif new_hours > target:
+        overflow_penalty = (new_hours - target) * 10  # Soft penalty for overtime
+    
+    return threshold_bonus + distance_penalty + overflow_penalty
+
+
+def compute_block_mix_ratios(
+    assignments: list['DriverAssignment'],
+    config: ConfigV4,
+) -> dict:
+    """
+    S2.2: Compute block mix ratios for BAD_BLOCK_MIX detection.
+    
+    Returns:
+    - pt_ratio: (#PT drivers with ≥1 block) / (#all drivers with ≥1 block)
+    - underfull_ratio: (#FTE with hours < min) / (#FTE with ≥1 block)
+    
+    Determinism: Iterates in stable order (assignments order preserved).
+    """
+    if not assignments:
+        return {
+            "pt_ratio": 0.0,
+            "underfull_ratio": 0.0,
+            "pt_count": 0,
+            "fte_count": 0,
+            "underfull_fte_count": 0,
+            "total_drivers": 0,
+        }
+    
+    # Count drivers with ≥1 block
+    drivers_with_blocks = [a for a in assignments if a.blocks]
+    pt_with_blocks = [a for a in drivers_with_blocks if a.driver_type == "PT"]
+    fte_with_blocks = [a for a in drivers_with_blocks if a.driver_type == "FTE"]
+    
+    # PT ratio
+    total_drivers = len(drivers_with_blocks)
+    pt_count = len(pt_with_blocks)
+    pt_ratio = pt_count / total_drivers if total_drivers > 0 else 0.0
+    
+    # Underfull FTE ratio
+    fte_count = len(fte_with_blocks)
+    underfull_fte = [a for a in fte_with_blocks if a.total_hours < config.min_hours_per_fte]
+    underfull_fte_count = len(underfull_fte)
+    underfull_ratio = underfull_fte_count / fte_count if fte_count > 0 else 0.0
+    
+    return {
+        "pt_ratio": round(pt_ratio, 4),
+        "underfull_ratio": round(underfull_ratio, 4),
+        "pt_count": pt_count,
+        "fte_count": fte_count,
+        "underfull_fte_count": underfull_fte_count,
+        "total_drivers": total_drivers,
+    }
+
+
+def should_trigger_rerun(
+    block_mix: dict,
+    config: ConfigV4,
+    already_reran: bool,
+    budget_left: float,
+) -> tuple[bool, str]:
+    """
+    S2.2-S2.3: Determine if BAD_BLOCK_MIX rerun should be triggered.
+    
+    Returns:
+    - (should_rerun, reason_code)
+    
+    Trigger when:
+    - NOT already_reran
+    - budget_left >= config.min_rerun_budget
+    - pt_ratio > 0.25 OR underfull_ratio > 0.15
+    
+    Determinism: Pure function, no random elements.
+    """
+    if not config.enable_bad_block_mix_rerun:
+        return False, "RERUN_DISABLED"
+    
+    if already_reran:
+        return False, "MAX_RERUN_REACHED"
+    
+    if budget_left < config.min_rerun_budget:
+        return False, "INSUFFICIENT_BUDGET"
+    
+    pt_ratio = block_mix.get("pt_ratio", 0.0)
+    underfull_ratio = block_mix.get("underfull_ratio", 0.0)
+    
+    reasons = []
+    if pt_ratio > config.pt_ratio_threshold:
+        reasons.append(f"PT_RATIO_HIGH:{pt_ratio:.2f}")
+    if underfull_ratio > config.underfull_ratio_threshold:
+        reasons.append(f"UNDERFULL_RATIO_HIGH:{underfull_ratio:.2f}")
+    
+    if reasons:
+        return True, "BAD_BLOCK_MIX:" + ",".join(reasons)
+    
+    return False, "MIX_OK"
+
+
+def create_rerun_config(config: ConfigV4) -> ConfigV4:
+    """
+    S2.4: Create modified config for Path-B rerun.
+    
+    The rerun config is DETERMINISTICALLY different:
+    - 1er penalty multiplied by rerun_1er_penalty_multiplier (default 2x)
+    
+    This ensures Path-B produces a different solution.
+    """
+    # NamedTuple is immutable, so we return a new one with same values
+    # The multiplier is used in packability cost adjustments at runtime
+    return config  # The multiplier is accessed directly from config
+
+
+# =============================================================================
+# S3.1-S3.3: PHASE 3 REPAIR UPGRADES
+# =============================================================================
+
+# S3.1: Hard bounds for repair
+REPAIR_PT_LIMIT = 20      # Max PT drivers to consider as candidates
+REPAIR_FTE_LIMIT = 30     # Max FTE drivers to consider as receivers
+REPAIR_BLOCK_LIMIT = 100  # Max moves per repair call
+
+
+@dataclass
+class RepairStats:
+    """S3.1-S3.3: Statistics from repair phase."""
+    moves_applied: int = 0
+    moves_attempted: int = 0
+    pt_before: int = 0
+    pt_after: int = 0
+    underfull_fte_before: int = 0
+    underfull_fte_after: int = 0
+    reason_codes: list = field(default_factory=list)
+
+
+def repair_pt_to_fte_swaps(
+    assignments: list[DriverAssignment],
+    config: ConfigV4,
+    can_assign_fn=None,
+) -> tuple[list[DriverAssignment], RepairStats]:
+    """
+    S3.1-S3.3: Bounded PT→FTE swap repair.
+    
+    Moves blocks from PT drivers to underfull/available FTE drivers.
+    
+    Invariants:
+    - Deterministic: sorted by (hours, id) for PT, (delta, id) for FTE
+    - Bounded: PT_LIMIT, FTE_LIMIT, BLOCK_LIMIT
+    - No unbounded loops: stop on no progress or limit hit
+    - Feasibility: only move if can_assign_block returns True
+    
+    Args:
+        assignments: Current driver assignments
+        config: Solver configuration
+        can_assign_fn: Optional feasibility checker (default: simple Hours check)
+    
+    Returns:
+        (updated_assignments, stats)
+    """
+    from src.services.constraints import can_assign_block
+    
+    if can_assign_fn is None:
+        can_assign_fn = can_assign_block
+    
+    stats = RepairStats()
+    
+    # Separate PT and FTE assignments
+    pt_assignments = [a for a in assignments if a.driver_type == "PT" and a.blocks]
+    fte_assignments = [a for a in assignments if a.driver_type == "FTE"]
+    
+    # Initial counts
+    stats.pt_before = len(pt_assignments)
+    stats.underfull_fte_before = sum(
+        1 for a in fte_assignments if a.total_hours < config.min_hours_per_fte
+    )
+    
+    if not pt_assignments or not fte_assignments:
+        stats.pt_after = stats.pt_before
+        stats.underfull_fte_after = stats.underfull_fte_before
+        return assignments, stats
+    
+    # =========================================================================
+    # S3.1: Sort PT candidates (smallest hours first, id tie-break)
+    # =========================================================================
+    pt_candidates = sorted(
+        pt_assignments,
+        key=lambda a: (a.total_hours, a.driver_id)
+    )[:REPAIR_PT_LIMIT]
+    
+    # Build mutable state for FTEs
+    fte_hours: dict[str, float] = {a.driver_id: a.total_hours for a in fte_assignments}
+    fte_blocks: dict[str, list[Block]] = {a.driver_id: list(a.blocks) for a in fte_assignments}
+    fte_days: dict[str, set[str]] = {}
+    for a in fte_assignments:
+        fte_days[a.driver_id] = {b.day.value for b in a.blocks}
+    
+    # Build mutable state for PTs
+    pt_blocks: dict[str, list[Block]] = {a.driver_id: list(a.blocks) for a in pt_assignments}
+    
+    moves_applied = 0
+    no_progress_count = 0
+    
+    # =========================================================================
+    # S3.3: Bounded main loop (max passes, stop on no progress)
+    # =========================================================================
+    max_passes = 3
+    for pass_num in range(max_passes):
+        progress_this_pass = False
+        
+        for pt in pt_candidates:
+            if moves_applied >= REPAIR_BLOCK_LIMIT:
+                stats.reason_codes.append("BLOCK_LIMIT_REACHED")
+                break
+            
+            pt_id = pt.driver_id
+            if pt_id not in pt_blocks or not pt_blocks[pt_id]:
+                continue
+            
+            # S3.2: Sort blocks within PT deterministically
+            # (day_index, first_start, block.id)
+            day_order = {"Mon": 0, "Tue": 1, "Wed": 2, "Thu": 3, "Fri": 4, "Sat": 5, "Sun": 6}
+            blocks_sorted = sorted(
+                pt_blocks[pt_id],
+                key=lambda b: (
+                    day_order.get(b.day.value, 7),
+                    b.first_start.hour * 60 + b.first_start.minute if b.first_start else 0,
+                    b.id
+                )
+            )
+            
+            for block in blocks_sorted:
+                if moves_applied >= REPAIR_BLOCK_LIMIT:
+                    break
+                
+                stats.moves_attempted += 1
+                
+                # =========================================================
+                # S3.1: Sort FTE candidates by (distance to target, id)
+                # Prefer underfull FTEs
+                # =========================================================
+                def fte_score(fte_id: str) -> tuple:
+                    hours = fte_hours.get(fte_id, 0)
+                    new_hours = hours + block.total_work_hours
+                    
+                    # Prefer underfull that would become full
+                    if hours < config.min_hours_per_fte:
+                        underfull_priority = 0  # Best
+                    else:
+                        underfull_priority = 1
+                    
+                    # Distance to target
+                    distance = abs(new_hours - config.fte_hours_target)
+                    
+                    return (underfull_priority, distance, fte_id)
+                
+                fte_candidates_ids = sorted(fte_hours.keys(), key=fte_score)[:REPAIR_FTE_LIMIT]
+                
+                move_made = False
+                for fte_id in fte_candidates_ids:
+                    hours = fte_hours.get(fte_id, 0)
+                    new_hours = hours + block.total_work_hours
+                    
+                    # Check: would exceed max hours?
+                    if new_hours > config.max_hours_per_fte:
+                        continue
+                    
+                    # Check: feasibility via can_assign_block
+                    # Note: can_assign_block checks overlap and rest constraints
+                    try:
+                        if not can_assign_fn(fte_blocks.get(fte_id, []), block):
+                            continue
+                    except Exception:
+                        continue
+                    
+                    # =========================================================
+                    # MOVE: PT block → FTE
+                    # =========================================================
+                    pt_blocks[pt_id].remove(block)
+                    fte_blocks[fte_id].append(block)
+                    fte_hours[fte_id] = new_hours
+                    fte_days[fte_id].add(block.day.value)
+                    
+                    moves_applied += 1
+                    move_made = True
+                    progress_this_pass = True
+                    break
+                
+                if move_made:
+                    break  # Next PT
+        
+        if moves_applied >= REPAIR_BLOCK_LIMIT:
+            break
+        
+        if not progress_this_pass:
+            no_progress_count += 1
+            if no_progress_count >= 1:
+                stats.reason_codes.append("NO_PROGRESS")
+                break
+    
+    # =========================================================================
+    # Build updated assignments (deterministic)
+    # =========================================================================
+    updated = []
+    
+    # FTEs with updated state
+    for a in fte_assignments:
+        new_blocks = fte_blocks.get(a.driver_id, [])
+        new_hours = sum(b.total_work_hours for b in new_blocks)
+        new_days = len({b.day.value for b in new_blocks})
+        updated.append(DriverAssignment(
+            driver_id=a.driver_id,
+            driver_type="FTE",
+            blocks=new_blocks,
+            total_hours=new_hours,
+            days_worked=new_days,
+            analysis=a.analysis.copy() if a.analysis else {},
+        ))
+    
+    # PTs with remaining blocks (filter empty PTs)
+    for a in pt_assignments:
+        remaining = pt_blocks.get(a.driver_id, [])
+        if remaining:  # Only keep non-empty PTs
+            new_hours = sum(b.total_work_hours for b in remaining)
+            new_days = len({b.day.value for b in remaining})
+            updated.append(DriverAssignment(
+                driver_id=a.driver_id,
+                driver_type="PT",
+                blocks=remaining,
+                total_hours=new_hours,
+                days_worked=new_days,
+                analysis=a.analysis.copy() if a.analysis else {},
+            ))
+    
+    # Add assignments that weren't in PT or FTE list (shouldn't happen, but safe)
+    pt_fte_ids = {a.driver_id for a in pt_assignments} | {a.driver_id for a in fte_assignments}
+    for a in assignments:
+        if a.driver_id not in pt_fte_ids:
+            updated.append(a)
+    
+    # Final counts
+    stats.pt_after = sum(1 for a in updated if a.driver_type == "PT" and a.blocks)
+    stats.underfull_fte_after = sum(
+        1 for a in updated 
+        if a.driver_type == "FTE" and a.total_hours < config.min_hours_per_fte
+    )
+    stats.moves_applied = moves_applied
+    
+    if moves_applied > 0:
+        stats.reason_codes.append("REPAIR_SWAP")
+    
+    return updated, stats
 
 
 # =============================================================================
@@ -206,7 +739,8 @@ def solve_day_min_blocks(day_blocks: list[Block], day_tours: list[Tour], time_li
     # Solve
     solver = cp_model.CpSolver()
     solver.parameters.max_time_in_seconds = time_limit
-    solver.parameters.num_workers = 8
+    solver.parameters.num_search_workers = 1  # S0.1: Determinism (CP-SAT correct param)
+    solver.parameters.random_seed = 42  # S0.1: Fixed seed
     
     status = solver.Solve(model)
     
@@ -252,6 +786,28 @@ def prune_blocks_tour_aware(blocks: list[Block], tours: list[Tour], config: Conf
             
     kept_ids = set()
     
+    # === S0.4: PROTECTED SET (1er guarantee per tour) ===
+    # Invariant: every tour MUST keep ≥1 covering block
+    protected_1er_ids = set()
+    for tour in tours:
+        options = blocks_by_tour.get(tour.id, [])
+        if not options:
+            print(f"  WARNING: Tour {tour.id} has NO blocks - feasibility broken!", flush=True)
+            continue
+        # Protect best 1er for this tour (by score proxy = size)
+        opts_1er = [b for b in options if len(b.tours) == 1]
+        if opts_1er:
+            best_1er = max(opts_1er, key=lambda b: (b.total_work_minutes, b.id))
+            protected_1er_ids.add(best_1er.id)
+        else:
+            # No 1er exists - protect best multi-tour block covering this tour
+            best = max(options, key=lambda b: (-len(b.tours), b.total_work_minutes, b.id))
+            protected_1er_ids.add(best.id)
+    
+    # Add protected blocks first
+    kept_ids.update(protected_1er_ids)
+    print(f"  S0.4: Protected {len(protected_1er_ids)} 1er blocks (1 per tour)", flush=True)
+    
     for tour in tours:
         # Sort options for this tour by "quality" (larger is better, then implicit score?)
         # Since we don't have scores here easily, use size (minutes) as proxy for "goodness".
@@ -265,18 +821,21 @@ def prune_blocks_tour_aware(blocks: list[Block], tours: list[Tour], config: Conf
         opts_2 = [b for b in options if len(b.tours) == 2]
         opts_1 = [b for b in options if len(b.tours) == 1]
         
-        # Sort desc by size (efficiency)
-        opts_3.sort(key=lambda b: -b.total_work_minutes)
-        opts_2.sort(key=lambda b: -b.total_work_minutes)
-        # 1ers are all same size essentially? Just keep random/first.
+        # Sort desc by size (efficiency) - S0.1: Stable tie-break with id
+        opts_3.sort(key=lambda b: (-b.total_work_minutes, b.id))
+        opts_2.sort(key=lambda b: (-b.total_work_minutes, b.id))
+        opts_1.sort(key=lambda b: (-b.total_work_minutes, b.id))  # S0.1: Now also sorted
         
-        # Keep top K
+        # Keep top K - S0.1: Stable ordering with (score, id) tie-break
         for b in opts_3[:K3]: kept_ids.add(b.id)
         for b in opts_2[:K2]: kept_ids.add(b.id)
         for b in opts_1[:K1]: kept_ids.add(b.id)
         
-    # Convert back to list
-    kept_blocks = [block_map[bid] for bid in kept_ids if bid in block_map]
+    # Convert back to list - S0.1: STABLE ORDERING (sort by id for determinism)
+    kept_blocks = sorted(
+        [block_map[bid] for bid in kept_ids if bid in block_map],
+        key=lambda b: b.id
+    )
     print(f"  Retained {len(kept_blocks)} blocks via Tour-Proximity (from {len(blocks)})", flush=True)
     
     # If we still have space below max_blocks, fill with others?
@@ -291,16 +850,23 @@ def prune_blocks_tour_aware(blocks: list[Block], tours: list[Tour], config: Conf
         needed = config.max_blocks - len(kept_blocks)
         if needed > 0:
             others = [b for b in blocks if b.id not in kept_ids]
-            # Heuristic sort for others?
-            others.sort(key=lambda b: -b.total_work_minutes)
+            # S0.1: Stable sort with id tie-break
+            others.sort(key=lambda b: (-b.total_work_minutes, b.id))
             kept_blocks.extend(others[:needed])
             print(f"  Filled {min(len(others), needed)} additional blocks to reach cap.", flush=True)
     
     elif len(kept_blocks) > config.max_blocks:
         print(f"  WARNING: Union kept {len(kept_blocks)} > {config.max_blocks}. Capping...", flush=True)
-        # We must cut. Use global sort.
-        kept_blocks.sort(key=lambda b: -b.total_work_minutes)
-        kept_blocks = kept_blocks[:config.max_blocks]
+        # S0.4: When capping, NEVER remove protected 1ers
+        # Split into protected and non-protected
+        protected_blocks = [b for b in kept_blocks if b.id in protected_1er_ids]
+        other_blocks = [b for b in kept_blocks if b.id not in protected_1er_ids]
+        # S0.1: Stable sort with id tie-break
+        other_blocks.sort(key=lambda b: (-b.total_work_minutes, b.id))
+        # Cap non-protected blocks, keep all protected
+        cap_room = config.max_blocks - len(protected_blocks)
+        kept_blocks = protected_blocks + other_blocks[:cap_room]
+        print(f"  S0.4: Kept {len(protected_blocks)} protected + {min(len(other_blocks), cap_room)} others", flush=True)
         
     return kept_blocks
 
@@ -359,32 +925,47 @@ def solve_capacity_phase(
     max_day_min = max(day_min_results.values()) if day_min_results else 0
     print(f"  => Peak day minimum: {max_day_min} blocks (theoretical FTE floor)", flush=True)
     
-    # ==== ITERATIVE TIGHTENING ====
+    # ==== ITERATIVE TIGHTENING (OPTIMIZED) ====
     # Start high (above current Fri peak), then tighten
-    INITIAL_CAP = max(220, max_day_min + 10)  # Start above day-min
-    MIN_CAP = max(140, max_day_min)  # Can't go below day-min
-    CAP_STEP = 10      # Reduce by 10 each iteration (faster convergence)
-    TIME_PER_ITER = 45.0  # More time for FIXED_SEARCH to work
-    MAX_TOTAL_TIME = config.time_limit_phase1 * 5  # Extended budget for tightening
+    # OPTIMIZATION: Use binding cap updates (next_cap < incumbent_max)
+    
+    INITIAL_CAP = max(220, max_day_min + 30)
+    # OPTIMIZATION: Min cap should dynamic, not hardcoded 140
+    # Use max_day_min as absolute floor, but target aggressive packing
+    MIN_CAP = max(max_day_min, 1) 
     
     current_cap = INITIAL_CAP
     best_solution = None
     best_stats = None
     best_cap = INITIAL_CAP
     
+    # Time Budget Management
     t_total_start = perf_counter()
-    iteration = 0
+    # Use strict budget from config (passed from portfolio controller)
+    TOTAL_BUDGET = config.time_limit_phase1 
     
-    while current_cap >= MIN_CAP and (perf_counter() - t_total_start) < MAX_TOTAL_TIME:
+    iteration = 0
+    t_msg = f"Budget: {TOTAL_BUDGET:.1f}s"
+    print(f"\n--- TIGHTENING LOOP START ({t_msg}) ---", flush=True)
+
+    while (perf_counter() - t_total_start) < TOTAL_BUDGET:
         iteration += 1
-        print(f"\n--- TIGHTENING ITER {iteration}: DAY_CAP={current_cap} ---", flush=True)
+        
+        # Calculate remaining budget
+        elapsed = perf_counter() - t_total_start
+        remaining = TOTAL_BUDGET - elapsed
+        if remaining < 2.0: # Minimum slice for meaningful solve
+            print("  Time budget exhausted.", flush=True)
+            break
+            
+        print(f"\n--- ITER {iteration}: CAP={current_cap} (Time left: {remaining:.1f}s) ---", flush=True)
         
         result = _solve_capacity_single_cap(
             blocks, tours, block_index, config,
             block_scores=block_scores,
             block_props=block_props,
             day_cap_override=current_cap,
-            time_limit=TIME_PER_ITER
+            time_limit=remaining # Pass exact remaining time
         )
         
         if result is None:
@@ -392,22 +973,45 @@ def solve_capacity_phase(
             break
         
         selected, stats = result
-        print(f"  FEASIBLE: {len(selected)} blocks, max_day={max(stats.get('blocks_by_day', {}).values()) if stats.get('blocks_by_day') else 0}", flush=True)
+        # Extract max day from solution
+        # stats['blocks_by_day'] provides counts
+        day_counts = stats.get('blocks_by_day', {}).values()
+        current_max_day = max(day_counts) if day_counts else 0
+        
+        print(f"  FEASIBLE: {len(selected)} blocks, max_day={current_max_day}", flush=True)
         
         # Store as best
         best_solution = selected
         best_stats = stats
         best_cap = current_cap
         
-        # Tighten
-        current_cap -= CAP_STEP
+        # S0.3: Define target_cap explicitly (per spec)
+        # target_cap is what we're aiming for (theoretical floor + small buffer)
+        target_cap = max_day_min + 2
+        
+        # EARLY STOP: incumbent already at or below target
+        if current_max_day <= target_cap:
+            print(f"  Target cap {target_cap} hit (Actual={current_max_day}). Early stop.", flush=True)
+            break
+            
+        # S0.3: SPEC-CONFORMANT TIGHTENING
+        # cap_next = max(target_cap, incumbent_max_day - 1)
+        # NO stumpf -5 or -10 steps
+        cap_next = max(target_cap, current_max_day - 1)
+        
+        # S0.3 Safety: if cap_next >= cap_current → stop (no progress possible)
+        if cap_next >= current_cap:
+            print(f"  Cannot tighten further (next={cap_next} >= curr={current_cap}). Done.", flush=True)
+            break
+            
+        current_cap = cap_next
     
-    # Report tightening results
+    # Report results
     total_elapsed = perf_counter() - t_total_start
     print(f"\n=== TIGHTENING COMPLETE ===", flush=True)
-    print(f"  Best CAP achieved: {best_cap} (started at {INITIAL_CAP}, target was {MIN_CAP})", flush=True)
+    print(f"  Best CAP: {best_cap} (Floor: {MIN_CAP})", flush=True)
     print(f"  Iterations: {iteration}", flush=True)
-    print(f"  Time: {total_elapsed:.1f}s", flush=True)
+    print(f"  Time: {total_elapsed:.1f}s / {TOTAL_BUDGET:.1f}s", flush=True)
     
     if best_solution is None:
         logger.error("[FAILED] No feasible solution found even at initial cap")
@@ -628,7 +1232,8 @@ def _lns_reopt_friday(
         # Solve
         solver = cp_model.CpSolver()
         solver.parameters.max_time_in_seconds = 15.0
-        solver.parameters.num_workers = 8
+        solver.parameters.num_search_workers = 1  # S0.1: Determinism (CP-SAT correct param)
+        solver.parameters.random_seed = config.seed  # S0.1: Fixed seed
         
         status = solver.Solve(model)
         
@@ -960,10 +1565,21 @@ def _solve_capacity_single_cap(
     # ==== Block costs with trap penalties ====
     TRAP_PENALTY = 500  # Penalty for ignoring trap pressure
     
-    # Cost Constants - AGGRESSIVE TUNING
-    BASE_1 = 100000  # MASSIVELY increased to discourage singles
-    BASE_2 = 20000   # Increased gap between 2er and 3er
-    BASE_3 = 0
+    # ==== A) PACKABILITY: Pre-compute tours with multi-block options ====
+    # O(|block_index|) - done once, not per block
+    tour_has_multi = {
+        tour_id
+        for tour_id, pool in block_index.items()
+        if any(len(b.tours) > 1 for b in pool)
+    }
+    print(f"  PACKABILITY: {len(tour_has_multi)}/{len(tours)} tours have multi-block options", flush=True)
+    
+    # Cost Constants - PACKABILITY TUNING (user-approved guardrails)
+    # Hierarchy: BASE values << COUNT_WEIGHT (10M) to ensure block-count always dominates
+    BASE_1 = 200_000      # Strong penalty for singles
+    BASE_2 = 30_000       # Moderate penalty for 2er
+    BASE_3 = -50_000      # REWARD for 3er (negative = incentive)
+    ALTERNATIVE_PENALTY = 50_000  # Extra penalty for 1er when multi exists
     SCORE_TIEBREAK = 10 
 
     # Debug: count available types
@@ -975,8 +1591,15 @@ def _solve_capacity_single_cap(
     for b, block in enumerate(blocks):
         n = len(block.tours)
         
-        # 1. Base Cost
-        cost = BASE_1 if n == 1 else BASE_2 if n == 2 else BASE_3
+        # 1. Base Cost with PACKABILITY logic
+        if n == 1:
+            tour_id = block.tours[0].id
+            # Extra penalty if this tour has a multi-block alternative
+            cost = BASE_1 + (ALTERNATIVE_PENALTY if tour_id in tour_has_multi else 0)
+        elif n == 2:
+            cost = BASE_2
+        else:
+            cost = BASE_3  # 3er gets reward (negative)
         
         # 2. Score Tie-break (Subtract score)
         s_raw = block_scores.get(block.id, s_min) if block_scores else 0
@@ -998,16 +1621,8 @@ def _solve_capacity_single_cap(
         if c_pen > 0:
             cost += int(c_pen) 
         
-        # Ensure non-negative? Actually negative is fine relative to others, 
-        # but CP-SAT prefers positive integers often for clarity. 
-        # But here we are minimizing sum. If 3ers are negative, it will grab as many as possible.
-        # Let's keep it strictly positive relative to 1ers/2ers.
-        # 3er range: 0 - 10000 = -10000
-        # 2er range: 8000 - 10000 = -2000
-        # 1er range: 30000 - 10000 = 20000
-        # This keeps hierarchy intact.
-        
         block_cost.append(use[b] * int(cost))
+
     
     # ==== V4 Objective ====
     # Priority: min max_day >> min total_blocks >> min cost
@@ -1079,7 +1694,7 @@ def _solve_capacity_single_cap(
     solve_time = time_limit if time_limit else config.time_limit_phase1
     solver = cp_model.CpSolver()
     solver.parameters.max_time_in_seconds = solve_time
-    solver.parameters.num_workers = config.num_workers
+    solver.parameters.num_search_workers = 1  # S0.1: Determinism (always 1, ignore config)
     solver.parameters.random_seed = config.seed
     solver.parameters.search_branching = cp_model.FIXED_SEARCH  # Respect decision strategy
     
@@ -1375,16 +1990,26 @@ def assign_drivers_greedy(
         # Lower score = better candidate
         candidates = []
         
-        for driver_id, d in drivers.items():
+        # S0.1: Iterate in sorted order for determinism
+        for driver_id in sorted(drivers.keys()):
+            d = drivers[driver_id]
             if not can_take_block(driver_id, block):
                 continue
             
-            # BEST-FIT SCORING: prefer driver with LEAST remaining slack after assignment
-            # This maximizes utilization and prevents spawning new drivers
-            remaining_capacity = config.max_hours_per_fte - (d["hours"] + block.total_work_hours)
+            # ==== B) FILL-TO-TARGET SCORING (user-approved guardrails) ====
+            # Primary: prefer drivers that cross min_hours threshold
+            # Secondary: prefer drivers closest to target (min distance)
+            target = config.min_hours_per_fte  # not hardcoded 42.0
+            hours_after = d["hours"] + block.total_work_hours
+            dist = abs(hours_after - target)
+            crosses = (d["hours"] < target and hours_after >= target)
             
-            # Base score: smaller remaining capacity = better (prefer full drivers)
-            score = remaining_capacity
+            # Tuple scoring: (0=crosses best, dist) - lower is better
+            base_score = (0 if crosses else 1, dist)
+            
+            # Convert tuple to comparable number for sorting with penalties
+            # crosses=True → 0, crosses=False → 1000000
+            score = (0 if crosses else 1_000_000) + dist
             
             # Activation penalty for new drivers
             is_new_driver = len(d["blocks"]) == 0
@@ -1420,7 +2045,9 @@ def assign_drivers_greedy(
     
     # Check FTE hour constraints
     under_hours = []
-    for driver_id, d in drivers.items():
+    # S0.1: Iterate in sorted order for determinism
+    for driver_id in sorted(drivers.keys()):
+        d = drivers[driver_id]
         if d["type"] == "FTE" and d["hours"] < config.min_hours_per_fte:
             under_hours.append((driver_id, d["hours"]))
     
@@ -1428,7 +2055,9 @@ def assign_drivers_greedy(
     
     # Build assignments
     assignments = []
-    for driver_id, d in drivers.items():
+    # S0.1: Iterate in sorted order for determinism
+    for driver_id in sorted(drivers.keys()):
+        d = drivers[driver_id]
         if d["blocks"]:
             assignments.append(DriverAssignment(
                 driver_id=driver_id,

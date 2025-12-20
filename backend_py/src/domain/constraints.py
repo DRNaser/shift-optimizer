@@ -30,8 +30,7 @@ class HardConstraints:
     MAX_WEEKLY_HOURS: float = 55.0
     """Maximum working hours per driver per week."""
     
-    MAX_DAILY_SPAN_HOURS: float = 14.5
-    """Maximum span from first tour start to last tour end on any day."""
+    MAX_DAILY_SPAN_HOURS = 15.5  # Maximum span from first start to last end
     
     MIN_REST_HOURS: float = 11.0
     """Minimum rest time between end of last tour one day and start of first tour next day."""

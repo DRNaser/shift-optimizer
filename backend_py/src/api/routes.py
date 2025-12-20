@@ -211,6 +211,14 @@ async def create_weekly_schedule(request: ScheduleRequest):
                 details=item.details
             ))
         
+        # Compute average work hours per driver
+        driver_hours: dict[str, float] = {}
+        for assignment in plan.assignments:
+            driver_id = assignment.driver_id
+            hours = assignment.block.total_work_hours
+            driver_hours[driver_id] = driver_hours.get(driver_id, 0.0) + hours
+        avg_work_hours = sum(driver_hours.values()) / len(driver_hours) if driver_hours else 0.0
+        
         stats = StatsOutput(
             total_drivers=plan.stats.total_drivers,
             total_tours_input=plan.stats.total_tours_input,
@@ -218,7 +226,8 @@ async def create_weekly_schedule(request: ScheduleRequest):
             total_tours_unassigned=plan.stats.total_tours_unassigned,
             block_counts={k.value: v for k, v in plan.stats.block_counts.items()},
             assignment_rate=plan.stats.assignment_rate,
-            average_driver_utilization=plan.stats.average_driver_utilization
+            average_driver_utilization=plan.stats.average_driver_utilization,
+            average_work_hours=avg_work_hours
         )
         
         validation = ValidationOutput(

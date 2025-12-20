@@ -1,13 +1,13 @@
 [project]
 name = "shift-optimizer"
-version = "1.0.0"
+version = "2.0.0"
 description = "Deterministic weekly shift optimizer for Last-Mile-Delivery"
 requires-python = ">=3.11"
 dependencies = [
     "fastapi>=0.104.0",
     "uvicorn[standard]>=0.24.0",
     "pydantic>=2.5.0",
-    "ortools>=9.8",
+    "ortools==9.11.4210",  # Pinned for determinism
     "zstandard>=0.22.0",
     "blake3>=0.4.0",
 ]

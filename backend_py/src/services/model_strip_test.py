@@ -304,7 +304,7 @@ def solve_stage(model, time_limit, log_fn, stage_name):
     solver = cp_model.CpSolver()
     solver.parameters.max_time_in_seconds = time_limit
     solver.parameters.stop_after_first_solution = True  # CRITICAL!
-    solver.parameters.num_workers = 1
+    solver.parameters.num_search_workers = 1  # S0.1: Determinism
     solver.parameters.random_seed = 42
     
     start = time.time()

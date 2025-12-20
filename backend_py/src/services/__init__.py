@@ -16,4 +16,4 @@
 #   - Full driver-assignment model
 #   - For future use when real drivers/skills/availability needed
 
-from src.services.forecast_weekly_solver import solve_forecast_weekly, ForecastConfig
+from src.services.portfolio_controller import solve_forecast_portfolio

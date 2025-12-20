@@ -305,7 +305,7 @@ def solve_global_cpsat(
     
     solver = cp_model.CpSolver()
     solver.parameters.random_seed = config.seed
-    solver.parameters.num_workers = config.num_workers
+    solver.parameters.num_search_workers = 1  # S0.1: Determinism (always 1)
     solver.parameters.max_time_in_seconds = config.time_limit_feasible
     solver.parameters.stop_after_first_solution = True
     
@@ -330,7 +330,7 @@ def solve_global_cpsat(
     
     solver2 = cp_model.CpSolver()
     solver2.parameters.random_seed = config.seed
-    solver2.parameters.num_workers = config.num_workers
+    solver2.parameters.num_search_workers = 1  # S0.1: Determinism (always 1)
     solver2.parameters.max_time_in_seconds = config.time_limit_optimize
     solver2.parameters.stop_after_first_solution = False
     

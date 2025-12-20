@@ -1194,7 +1194,7 @@ def repair_assignments(
     
     solver.parameters.max_time_in_seconds = time_limit
     solver.parameters.search_branching = cp_model.FIXED_SEARCH
-    solver.parameters.num_workers = 1  # Determinism
+    solver.parameters.num_search_workers = 1  # S0.1: Determinism (CP-SAT correct param)
     
     status = solver.Solve(model)
     

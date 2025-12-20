@@ -43,8 +43,13 @@ SPLIT_GAP_IDEAL_MAX = 405   # 6h 45m - max of ideal split gap
 SPLIT_GAP_ACCEPTABLE_MAX = 480  # 8h - absolute max, heavy penalty above ideal
 
 # Capping
-K_PER_TOUR = 30          # Coverage guarantee
+# Tour-wise retention keeps critical 3er/2er combinations alive before any
+# global cap is applied. Global cap only fills beyond these guarantees.
 GLOBAL_TOP_N = 20_000    # Global limit
+K1_TOP_1ER = 3           # Top singles per tour (usually only 1 exists)
+K2_TOP_2ER = 30          # Top pairs per tour (INCREASED from 15)
+K3_TOP_3ER = 50          # Top triples per tour (INCREASED from 30)
+K_PER_TOUR = K3_TOP_3ER  # Backwards compatibility with legacy parameter name
 
 # Scoring - POLICY DRIVEN
 SCORE_TEMPLATE_MATCH = 500  # Huge bonus for exact template match
@@ -174,31 +179,56 @@ def build_weekly_blocks_smart(
     
     # Step 4: Smart capping (Guarantee 1er)
     print("[SmartBuilder] Step 4: Smart capping...", flush=True)
+    # Remove k_per_tour arg, not used anymore inside
     final_blocks, cap_stats = _smart_cap_with_1er_guarantee(
-        deduped, tours, k_per_tour, global_top_n
+        deduped, tours, global_top_n
     )
     logger.info(f"[SmartBuilder] After capping: {len(final_blocks)} blocks")
     
     # ==== POOL HEALTH CHECK (after capping) ====
     from collections import Counter
+    import statistics
+    
     cap_1er = sum(1 for b in final_blocks if len(b.tours) == 1)
     cap_2er = sum(1 for b in final_blocks if len(b.tours) == 2)
     cap_3er = sum(1 for b in final_blocks if len(b.tours) == 3)
     logger.info(f"[POOL AFTER CAP] total={len(final_blocks)} mix: 1er={cap_1er}, 2er={cap_2er}, 3er={cap_3er}")
     
-    per_day = defaultdict(Counter)
+    # Calculate degrees per block type
+    tour_deg_2er = defaultdict(int)
+    tour_deg_3er = defaultdict(int)
     for b in final_blocks:
         n = len(b.tours)
-        per_day[b.day.value][f"{n}er"] += 1
-    for d in sorted(per_day.keys()):
-        logger.info(f"[POOL AFTER CAP] {d[:3]}: {dict(per_day[d])}")
+        if n == 2:
+            for t in b.tours: tour_deg_2er[t.id] += 1
+        elif n == 3:
+            for t in b.tours: tour_deg_3er[t.id] += 1
+            
+    # Helper for stats
+    def get_stats(vals):
+        if not vals: return "min=0 p10=0 med=0 max=0"
+        vals.sort()
+        n = len(vals)
+        return (f"min={vals[0]} "
+                f"p10={vals[int(n*0.1)]} "
+                f"med={statistics.median(vals):.1f} "
+                f"max={vals[-1]}")
+                
+    deg2_vals = [tour_deg_2er[t.id] for t in tours]
+    deg3_vals = [tour_deg_3er[t.id] for t in tours]
     
-    # Step 5: Sanity checks
-    _sanity_check(final_blocks, tours)
+    logger.info(f"[POOL DEGREE 2er] {get_stats(deg2_vals)}")
+    logger.info(f"[POOL DEGREE 3er] {get_stats(deg3_vals)}")
+
+    # Step 5: Sanity checks (returns (ok, errors) instead of raising)
+    sanity_ok, sanity_errors = _sanity_check(final_blocks, tours)
+    if sanity_errors:
+        cap_stats["reason_codes"].extend(sanity_errors)
     
     elapsed = time_module.time() - start_time
     print("[SmartBuilder] Step 5: Computing stats...", flush=True)
     stats = _compute_stats(final_blocks, tours, elapsed, cap_stats, deduped) # Pass deduped for stats
+    stats["sanity_ok"] = sanity_ok
     
     print(f"[SmartBuilder] Final: {len(final_blocks)} blocks in {elapsed:.2f}s", flush=True)
     return final_blocks, stats
@@ -377,75 +407,198 @@ def _dedupe_blocks(scored: list[ScoredBlock]) -> list[ScoredBlock]:
 
 
 def _smart_cap_with_1er_guarantee(
-    scored: list[ScoredBlock], tours: list[Tour], k: int, global_n: int
+    scored: list[ScoredBlock], tours: list[Tour], global_n: int
 ) -> tuple[list[Block], dict]:
     """
-    STRATIFIED CAPPING: Keep minimum blocks per type per tour.
-    This ensures 3er blocks survive capping even if their scores are lower.
+    S0.4: Block Pool Stabilization (Feasibility-Safe + Deterministic).
+    
+    Invariants (MUST NEVER BREAK):
+    1. Every tour has ≥1 block (protected set)
+    2. Pool ≤ global_n (no explosion)
+    3. Determinism: sorted(..., key=...), tie-break on block.id
+    4. True dominance: only prune if SAME coverage set AND worse score
+    
+    Steps:
+    A) Protected set: best 1er per tour (or fallback if no 1er)
+    B) Tour richness + Dynamic K: scarce tours get 2*K_PER_TOUR
+    C) True dominance pruning: same cov_key, keep best score
+    D) Global cap with protected priority
     """
-    # Stratified quotas per tour
-    K1_1ER = 1   # Always 1 single per tour (coverage guarantee)
-    K2_2ER = 6   # Top 6 pairs per tour
-    K3_3ER = 8   # Top 8 triples per tour (PRIORITY: these compress headcount)
+    import statistics
+    from collections import defaultdict
     
-    locked_ids = set()
+    # =========================================================================
+    # A) PROTECTED SET: Ensure every tour has at least 1 block
+    # =========================================================================
+    protected_ids: set[str] = set()
+    reason_codes: list[str] = []
     
-    # 1. Lock ALL 1er (coverage guarantee)
-    blocks_1er = [sb for sb in scored if len(sb.block.tours) == 1]
-    for sb in blocks_1er:
-        locked_ids.add(sb.block.id)
-    
-    # 2. Stratified multi-block locking per tour
-    # Build per-tour lists separated by block type
-    tour_to_2er = defaultdict(list)
-    tour_to_3er = defaultdict(list)
-    
+    # Build tour -> blocks index (deterministic: sorted tours)
+    tour_to_blocks: dict[str, list[ScoredBlock]] = defaultdict(list)
     for sb in scored:
-        n = len(sb.block.tours)
-        if n == 2:
-            for t in sb.block.tours:
-                tour_to_2er[t.id].append(sb)
-        elif n == 3:
-            for t in sb.block.tours:
-                tour_to_3er[t.id].append(sb)
+        for t in sb.block.tours:
+            tour_to_blocks[t.id].append(sb)
     
-    # Sort each list by score (descending) and lock top-K per type
-    for t_id in tour_to_3er:
-        tour_to_3er[t_id].sort(key=lambda sb: sb.score, reverse=True)
-        for sb in tour_to_3er[t_id][:K3_3ER]:
-            locked_ids.add(sb.block.id)
-    
-    for t_id in tour_to_2er:
-        tour_to_2er[t_id].sort(key=lambda sb: sb.score, reverse=True)
-        for sb in tour_to_2er[t_id][:K2_2ER]:
-            locked_ids.add(sb.block.id)
-            
-    # 3. Global top-N (fill remaining quota with highest-scoring blocks)
-    rest = [sb for sb in scored if sb.block.id not in locked_ids]
-    rest.sort(key=lambda sb: sb.score, reverse=True)
-    
-    needed = max(0, global_n - len(locked_ids))
-    for sb in rest[:needed]:
-        locked_ids.add(sb.block.id)
+    # S0.4: For each tour (deterministic order), find best 1er or fallback
+    for tour in sorted(tours, key=lambda t: t.id):
+        tour_blocks = tour_to_blocks.get(tour.id, [])
         
-    final = [sb.block for sb in scored if sb.block.id in locked_ids]
+        # Find 1er blocks for this tour
+        ones = [sb for sb in tour_blocks if len(sb.block.tours) == 1]
+        
+        if ones:
+            # S0.4: Best 1er by (score desc, id asc) for determinism
+            best_1er = max(ones, key=lambda sb: (sb.score, -hash(sb.block.id)))
+            # Stable deterministic: use actual key not hash
+            ones_sorted = sorted(ones, key=lambda sb: (-sb.score, sb.block.id))
+            best_1er = ones_sorted[0]
+            protected_ids.add(best_1er.block.id)
+        else:
+            # No 1er: fallback to best covering block
+            if tour_blocks:
+                tour_blocks_sorted = sorted(tour_blocks, key=lambda sb: (-sb.score, sb.block.id))
+                fallback = tour_blocks_sorted[0]
+                protected_ids.add(fallback.block.id)
+                reason_codes.append(f"MISSING_1ER_FOR_TOUR:{tour.id}")
+            else:
+                reason_codes.append(f"NO_BLOCKS_FOR_TOUR:{tour.id}")
     
-    # Stats
-    split_2er = sum(1 for sb in scored if sb.block.id in locked_ids 
-                    and len(sb.block.tours)==2 and sb.is_split)
-    template_match = sum(1 for sb in scored if sb.block.id in locked_ids and sb.is_template)
+    # =========================================================================
+    # B) DYNAMIC K: Scarce tours get more slots
+    # =========================================================================
+    # B1: Compute tour_richness (number of blocks covering each tour, BEFORE dominance)
+    tour_richness: dict[str, int] = {}
+    for tour in tours:
+        tour_richness[tour.id] = len(tour_to_blocks.get(tour.id, []))
     
-    return final, {
-        "locked_1er": len(blocks_1er),
+    # B2: Compute median richness (stable)
+    richness_values = sorted(tour_richness.values())
+    if richness_values:
+        median_richness = statistics.median(richness_values)
+    else:
+        median_richness = 1.0
+    
+    # B3: Dynamic K per tour
+    def get_k_for_tour(tour_id: str) -> int:
+        richness = tour_richness.get(tour_id, 0)
+        if richness < median_richness / 2:
+            return 2 * K_PER_TOUR  # Scarce tour: double K
+        else:
+            return K_PER_TOUR
+    
+    # B4: Collect Top-K per tour (deterministic sort, stable tie-break)
+    kept_ids: set[str] = set()
+    
+    for tour in sorted(tours, key=lambda t: t.id):
+        tour_blocks = tour_to_blocks.get(tour.id, [])
+        k = get_k_for_tour(tour.id)
+        
+        # S0.4: Sort by (-score, -len(tours), block.id) for determinism
+        tour_blocks_sorted = sorted(
+            tour_blocks,
+            key=lambda sb: (-sb.score, -len(sb.block.tours), sb.block.id)
+        )
+        
+        for sb in tour_blocks_sorted[:k]:
+            kept_ids.add(sb.block.id)
+    
+    # Union with protected_ids
+    kept_ids = kept_ids | protected_ids
+    
+    # =========================================================================
+    # C) TRUE DOMINANCE PRUNING: Same coverage = same cov_key, best score wins
+    # =========================================================================
+    # C1: Build coverage key for each block
+    # cov_key = tuple(sorted(tour_ids)) - hashable & deterministic
+    cov_to_best: dict[tuple, ScoredBlock] = {}
+    
+    # Only consider blocks in kept_ids for dominance
+    kept_blocks = [sb for sb in scored if sb.block.id in kept_ids]
+    
+    for sb in kept_blocks:
+        cov_key = tuple(sorted(t.id for t in sb.block.tours))
+        
+        if cov_key in cov_to_best:
+            existing = cov_to_best[cov_key]
+            # S0.4: Keep best (higher score, deterministic tie-break on id)
+            if (sb.score, sb.block.id) > (existing.score, existing.block.id):
+                # Only replace if strictly better or same score with earlier ID
+                if sb.score > existing.score:
+                    cov_to_best[cov_key] = sb
+                elif sb.score == existing.score and sb.block.id < existing.block.id:
+                    cov_to_best[cov_key] = sb
+        else:
+            cov_to_best[cov_key] = sb
+    
+    # C2: Dominance-pruned IDs (only blocks that survived dominance)
+    dominance_kept_ids = {sb.block.id for sb in cov_to_best.values()}
+    
+    # C3: Ensure protected ALWAYS survive (even if dominated)
+    dominance_kept_ids = dominance_kept_ids | protected_ids
+    
+    # =========================================================================
+    # D) GLOBAL CAP: ≤ global_n, protected never removed
+    # =========================================================================
+    # D1: Separate protected vs non-protected
+    protected_blocks = [sb for sb in scored if sb.block.id in protected_ids]
+    non_protected = [sb for sb in scored if sb.block.id in dominance_kept_ids and sb.block.id not in protected_ids]
+    
+    # D2: Sort non-protected by score (deterministic)
+    non_protected_sorted = sorted(
+        non_protected,
+        key=lambda sb: (-sb.score, -len(sb.block.tours), sb.block.id)
+    )
+    
+    # D3: Cap
+    if len(protected_blocks) >= global_n:
+        # Edge case: too many protected (model error, but handle gracefully)
+        reason_codes.append("POOL_PROTECTED_EXCEEDS_CAP")
+        final_blocks = protected_blocks  # Keep all protected, can't trim
+    else:
+        remaining_slots = global_n - len(protected_blocks)
+        trimmed_non_protected = non_protected_sorted[:remaining_slots]
+        final_blocks = protected_blocks + trimmed_non_protected
+        if len(non_protected_sorted) > remaining_slots:
+            reason_codes.append("POOL_CAPPED")
+    
+    # =========================================================================
+    # BUILD RESULT
+    # =========================================================================
+    final_ids = {sb.block.id for sb in final_blocks}
+    result_blocks = [sb.block for sb in final_blocks]
+    
+    # S0.4: Stats for RunReport
+    locked_1er_unique = sum(1 for sb in final_blocks if len(sb.block.tours) == 1)
+    split_2er = sum(1 for sb in final_blocks if len(sb.block.tours) == 2 and sb.is_split)
+    template_match = sum(1 for sb in final_blocks if sb.is_template)
+    scarce_tours_count = sum(1 for tid, r in tour_richness.items() if r < median_richness / 2)
+    
+    cap_stats = {
+        "locked_1er": locked_1er_unique,
         "split_2er_count": split_2er,
-        "template_match_count": template_match
+        "template_match_count": template_match,
+        "final_total": len(result_blocks),
+        # S0.4 new stats
+        "protected_count": len(protected_ids),
+        "dominance_pruned": len(kept_ids) - len(dominance_kept_ids),
+        "scarce_tours_count": scarce_tours_count,
+        "median_richness": round(median_richness, 1),
+        "reason_codes": reason_codes,
     }
+    
+    return result_blocks, cap_stats
 
 
-def _sanity_check(blocks: list[Block], tours: list[Tour]):
+def _sanity_check(blocks: list[Block], tours: list[Tour]) -> tuple[bool, list[str]]:
+    """
+    Check block pool sanity. Returns (ok, error_codes) instead of raising.
+    Issue 5: No uncaught ValueError in production path.
+    """
+    errors = []
+    
     count_1er = sum(1 for b in blocks if len(b.tours) == 1)
     if len(tours) % 2 == 1 and count_1er == 0:
-        raise ValueError("PARITY ERROR: Odd tours but no 1er blocks!")
+        errors.append("PARITY_ERROR:ODD_TOURS_NO_1ER")
     
     tour_coverage = defaultdict(int)
     for b in blocks:
@@ -454,8 +607,16 @@ def _sanity_check(blocks: list[Block], tours: list[Tour]):
             
     missing = [t.id for t in tours if tour_coverage[t.id] == 0]
     if missing:
-        raise ValueError(f"COVERAGE ERROR: {len(missing)} tours missing blocks")
-    print(f"[Sanity] OK. 1er count: {count_1er}")
+        errors.append(f"COVERAGE_ERROR:{len(missing)}_TOURS_MISSING")
+        for tid in sorted(missing)[:5]:  # Log first 5
+            errors.append(f"MISSING_TOUR:{tid}")
+    
+    if not errors:
+        logger.info(f"[Sanity] OK. 1er count: {count_1er}")
+    else:
+        logger.warning(f"[Sanity] FAILED: {errors}")
+    
+    return (len(errors) == 0, errors)
 
 
 def _span_ok(tours: list[Tour]) -> bool:

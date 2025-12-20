@@ -146,7 +146,7 @@ def solve_relaxed_rmp(
     # =========================================================================
     solver = cp_model.CpSolver()
     solver.parameters.max_time_in_seconds = time_limit
-    solver.parameters.num_workers = 1  # Deterministic
+    solver.parameters.num_search_workers = 1  # S0.1: Determinism (CP-SAT correct param)
     solver.parameters.random_seed = 42
     
     log_fn(f"Solving relaxed RMP...")
@@ -339,7 +339,7 @@ def solve_rmp(
     # =========================================================================
     solver = cp_model.CpSolver()
     solver.parameters.max_time_in_seconds = time_limit
-    solver.parameters.num_workers = 1  # Deterministic
+    solver.parameters.num_search_workers = 1  # S0.1: Determinism (CP-SAT correct param)
     solver.parameters.random_seed = 42
     
     log_fn(f"Solving RMP...")
