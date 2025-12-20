@@ -16,7 +16,7 @@ import logging
 import os
 from dataclasses import dataclass, field
 from datetime import datetime
-from time import perf_counter
+from time import perf_counter, monotonic
 from typing import Optional, Callable
 
 from src.domain.models import Tour, Block, Weekday
@@ -36,6 +36,22 @@ from src.services.policy_engine import (
     should_fallback,
     get_fallback_path,
 )
+
+# Prometheus metrics (optional - graceful degradation if not available)
+try:
+    from src.api.prometheus_metrics import (
+        record_run_completed,
+        record_phase_timing,
+        record_path_selection,
+        record_fallback,
+        record_candidate_counts,
+    )
+    METRICS_ENABLED = True
+except ImportError:
+    METRICS_ENABLED = False
+
+# Alias to prevent shadowing issues inside functions
+PS = PathSelection
 
 logger = logging.getLogger("PortfolioController")
 
@@ -311,6 +327,13 @@ def run_portfolio(
     log("=" * 70)
     log(f"Tours: {len(tours)}, Time budget: {time_budget}s, Seed: {seed}")
     
+    # GLOBAL DEADLINE for budget enforcement
+    deadline = monotonic() + time_budget
+    
+    def remaining() -> float:
+        """Return remaining time budget in seconds."""
+        return max(0.0, deadline - monotonic())
+    
     # S0.2: Compute hard budget slices upfront
     budget_slices = BudgetSlice.from_total(time_budget)
     log(f"S0.2 Budget Slices: phase1={budget_slices.phase1:.1f}s, phase2={budget_slices.phase2:.1f}s, lns={budget_slices.lns:.1f}s")
@@ -339,11 +362,18 @@ def run_portfolio(
         log("PHASE 0: Block building...")
         t_block = perf_counter()
         
-        blocks, block_stats = build_weekly_blocks_smart(tours)
+        blocks, block_stats = build_weekly_blocks_smart(
+            tours,
+            cap_quota_2er=config.cap_quota_2er,
+            enable_diag=config.enable_diag_block_caps
+        )
         block_time = perf_counter() - t_block
         
         log(f"Generated {len(blocks)} blocks in {block_time:.1f}s")
         
+        if METRICS_ENABLED:
+            record_candidate_counts(block_stats)
+            
         block_scores = block_stats.get("block_scores", {})
         block_props = block_stats.get("block_props", {})
         block_index = build_block_index(blocks)
@@ -398,20 +428,43 @@ def run_portfolio(
         if phase1_stats["status"] != "OK":
             log(f"Phase 1 FAILED: {phase1_stats.get('error', 'Unknown error')}")
             from src.services.forecast_solver_v4 import SolveResultV4
+            
+            fail_solution = SolveResultV4(
+                status="FAILED",
+                assignments=[],
+                kpi={"error": "Phase 1 failed"},
+                solve_times={"block_building": block_time},
+                block_stats=phase1_stats,
+            )
+            
+            fail_runtime = perf_counter() - start_time
+            
+            # Record metrics for failure
+            if METRICS_ENABLED:
+                try:
+                    record_phase_timing("profiling", profiling_time)
+                    record_phase_timing("phase1", capacity_time)
+                    record_phase_timing("total", fail_runtime)
+                    
+                    record_run_completed({
+                        "status": "FAILED",
+                        "reason_codes": reason_codes + ["PHASE1_FAILED"],
+                        "solution_signature": "failed_" + str(seed),
+                        "kpi": fail_solution.kpi,
+                        "time_budget": time_budget,
+                        "total_runtime": fail_runtime,
+                    })
+                except Exception as m_err:
+                    log(f"Metrics recording failed: {m_err}")
+            
             return PortfolioResult(
-                solution=SolveResultV4(
-                    status="FAILED",
-                    assignments=[],
-                    kpi={"error": "Phase 1 failed"},
-                    solve_times={"block_building": block_time},
-                    block_stats=block_stats,
-                ),
+                solution=fail_solution,
                 features=features,
                 initial_path=initial_path,
                 final_path=initial_path,
                 parameters_used=params,
                 reason_codes=reason_codes + ["PHASE1_FAILED"],
-                total_runtime_s=perf_counter() - start_time,
+                total_runtime_s=fail_runtime,
                 profiling_time_s=profiling_time,
                 phase1_time_s=capacity_time,
             )
@@ -436,6 +489,7 @@ def run_portfolio(
             lns_budget=budget_slices.lns,        # S0.2: Hard slice
             log_fn=log,
             seed=seed,
+            remaining_fn=remaining,  # Global deadline enforcement
         )
         
         phase2_time = result.get("phase2_time", 0.0)
@@ -454,7 +508,7 @@ def run_portfolio(
         MIN_RERUN_BUDGET = 15.0  # seconds
         remaining_after_phase4 = time_budget - (perf_counter() - start_time)
         
-        if (initial_path == PathSelection.A 
+        if (initial_path == PS.A 
             and solver_status in ["OK", "FEASIBLE"]
             and rerun_count == 0 
             and remaining_after_phase4 > MIN_RERUN_BUDGET):
@@ -475,10 +529,10 @@ def run_portfolio(
                 
                 # Get Path B parameters and re-execute
                 from src.services.policy_engine import select_parameters
-                new_params = select_parameters(features, PathSelection.B, "BAD_BLOCK_MIX", remaining_after_phase4)
+                new_params = select_parameters(features, PS.B, "BAD_BLOCK_MIX", remaining_after_phase4)
                 
                 result = _execute_path(
-                    path=PathSelection.B,
+                    path=PS.B,
                     params=new_params,
                     selected_blocks=selected_blocks,
                     tours=tours,
@@ -489,13 +543,14 @@ def run_portfolio(
                     lns_budget=budget_slices.lns,        # S0.2: Reuse original slice
                     log_fn=log,
                     seed=seed,
+                    remaining_fn=remaining,  # Global deadline enforcement
                 )
                 
                 phase2_time += result.get("phase2_time", 0.0)
                 lns_time += result.get("lns_time", 0.0)
                 assignments = result.get("assignments", assignments)
                 solver_status = result.get("status", solver_status)
-                final_path = PathSelection.B
+                final_path = PS.B
                 fallback_used = True
                 fallback_count = 1
                 params = new_params
@@ -503,7 +558,7 @@ def run_portfolio(
         # ==========================================================================
         # PHASE 5: FALLBACK IF NEEDED
         # ==========================================================================
-        if solver_status not in ["OK", "OPTIMAL", "FEASIBLE"] and initial_path != PathSelection.C:
+        if solver_status not in ["OK", "OPTIMAL", "FEASIBLE"] and initial_path != PS.C:
             remaining_budget = time_budget - (perf_counter() - start_time)
             
             if remaining_budget > 5.0:  # Only fallback if we have time
@@ -528,6 +583,7 @@ def run_portfolio(
                         lns_budget=budget_slices.lns,        # S0.2: Reuse original slice
                         log_fn=log,
                         seed=seed,
+                        remaining_fn=remaining,  # Global deadline enforcement
                     )
                     
                     phase2_time += result.get("phase2_time", 0.0)
@@ -602,7 +658,7 @@ def run_portfolio(
             assignments=assignments,
             kpi=kpi,
             solve_times=solve_times,
-            block_stats=block_stats,
+            block_stats=phase1_stats,
         )
         
         log("=" * 70)
@@ -612,6 +668,38 @@ def run_portfolio(
         log(f"Gap to LB: {gap_to_lb*100:.1f}%")
         log(f"Runtime: {total_runtime:.1f}s")
         log("=" * 70)
+        
+        # ==========================================================================
+        # PROMETHEUS METRICS
+        # ==========================================================================
+        if METRICS_ENABLED:
+            try:
+                # Record phase timings
+                record_phase_timing("profiling", profiling_time)
+                record_phase_timing("phase1", capacity_time)
+                record_phase_timing("phase2", phase2_time)
+                record_phase_timing("lns", lns_time)
+                record_phase_timing("total", total_runtime)
+                
+                # Record path selection
+                record_path_selection(initial_path.value, reason_codes[0] if reason_codes else "UNKNOWN")
+                
+                # Record fallback if used
+                if fallback_used:
+                    record_fallback(initial_path.value, final_path.value)
+                
+                # Record run completion with full report
+                run_report = {
+                    "status": solver_status,
+                    "reason_codes": reason_codes,
+                    "solution_signature": solution.kpi.get("solver_arch", "") + "_" + str(seed),
+                    "kpi": kpi,
+                    "time_budget": time_budget,
+                    "total_runtime": total_runtime,
+                }
+                record_run_completed(run_report)
+            except Exception as metrics_err:
+                log(f"Metrics recording failed (non-fatal): {metrics_err}")
         
         return PortfolioResult(
             solution=solution,
@@ -636,33 +724,53 @@ def run_portfolio(
         
     except Exception as e:
         import traceback
-        log(f"CRITICAL PORTFOLIO ERROR: {e}")
-        log(traceback.format_exc())
+        error_tb = traceback.format_exc()
+        log(f"CRITICAL PORTFOLIO ERROR: {type(e).__name__}: {e}")
+        log(error_tb)
         
-        from src.services.forecast_solver_v4 import SolveResultV4
-        from src.services.policy_engine import PathSelection, ParameterBundle
-        from src.services.instance_profiler import FeatureVector
-        
-        # Create dummy artifacts for return
-        dummy_params = ParameterBundle(path=PathSelection.A)
-        dummy_features = FeatureVector(n_tours=len(tours))
-        
-        error_solution = SolveResultV4(
-            status="CRITICAL_ERROR",
-            assignments=[],
-            kpi={"error": str(e), "traceback": traceback.format_exc()},
-            solve_times={"total": round(perf_counter() - start_time, 2)},
-        )
-        
-        return PortfolioResult(
-            solution=error_solution,
-            features=dummy_features,
-            initial_path=PathSelection.A,
-            final_path=PathSelection.A,
-            parameters_used=dummy_params,
-            reason_codes=["CRITICAL_ERROR"],
-            total_runtime_s=perf_counter() - start_time,
-        )
+        # Robust error result construction - must never crash
+        try:
+            from src.services.forecast_solver_v4 import SolveResultV4
+            
+            dummy_params = ParameterBundle(path=PS.A, reason_code="CRITICAL_PORTFOLIO_ERROR")
+            dummy_features = FeatureVector(n_tours=len(tours))
+            
+            error_solution = SolveResultV4(
+                status="CRITICAL_ERROR",
+                assignments=[],
+                kpi={"error": str(e), "traceback": error_tb},
+                solve_times={"total": round(perf_counter() - start_time, 2)},
+                block_stats={},
+            )
+            
+            return PortfolioResult(
+                solution=error_solution,
+                features=dummy_features,
+                initial_path=PS.A,
+                final_path=PS.A,
+                parameters_used=dummy_params,
+                reason_codes=["CRITICAL_PORTFOLIO_ERROR"],
+                total_runtime_s=perf_counter() - start_time,
+            )
+        except Exception as inner_e:
+            # Absolute fallback - error handler must never crash
+            logger.error(f"Error handler crashed: {type(inner_e).__name__}: {inner_e}")
+            from src.services.forecast_solver_v4 import SolveResultV4
+            return PortfolioResult(
+                solution=SolveResultV4(
+                    status="CRITICAL_ERROR",
+                    assignments=[],
+                    kpi={"error": "Error handler failed"},
+                    solve_times={},
+                    block_stats={},
+                ),
+                features=FeatureVector(n_tours=0),
+                initial_path=PS.A,
+                final_path=PS.A,
+                parameters_used=ParameterBundle(path=PS.A, reason_code="CRITICAL_PORTFOLIO_ERROR"),
+                reason_codes=["CRITICAL_PORTFOLIO_ERROR", "ERROR_HANDLER_FAILED"],
+                total_runtime_s=0.0,
+            )
 
 
 def _execute_path(
@@ -677,12 +785,16 @@ def _execute_path(
     lns_budget: float,      # S0.2: Hard slice for LNS
     log_fn: Callable[[str], None],
     seed: int,
+    remaining_fn: Callable[[], float] = None,  # Global deadline function
 ) -> dict:
     """
     Execute a specific solver path.
     
     S0.2: Uses hard budget slices for phase2 and lns, not remaining time.
     Returns dict with: status, assignments, phase2_time, lns_time
+    
+    Args:
+        remaining_fn: Optional callable returning seconds remaining in global budget.
     """
     from src.services.forecast_solver_v4 import (
         assign_drivers_greedy,
@@ -700,7 +812,7 @@ def _execute_path(
     }
     
     try:
-        if path == PathSelection.A:
+        if path == PS.A:
             # Path A: Greedy + Light LNS
             log_fn(f"Path A: Greedy assignment...")
             t_phase2 = perf_counter()
@@ -719,13 +831,13 @@ def _execute_path(
             if actual_lns_budget > 5.0:
                 log_fn(f"Path A: Light LNS ({actual_lns_budget:.1f}s budget)...")
                 t_lns = perf_counter()
-                assignments = _run_light_lns(assignments, selected_blocks, config, actual_lns_budget, seed)
+                assignments = _run_light_lns(assignments, selected_blocks, config, actual_lns_budget, seed, remaining_fn=remaining_fn)
                 result["lns_time"] = perf_counter() - t_lns
             
             result["assignments"] = assignments
             result["status"] = "OK"
             
-        elif path == PathSelection.B:
+        elif path == PS.B:
             # Path B: Heuristic + Extended LNS
             log_fn(f"Path B: Heuristic solver...")
             t_phase2 = perf_counter()
@@ -747,14 +859,14 @@ def _execute_path(
                 log_fn(f"Path B: Extended LNS ({actual_lns_budget:.1f}s budget)...")
                 t_lns = perf_counter()
                 assignments = _run_extended_lns(
-                    assignments, selected_blocks, config, actual_lns_budget, seed, params
+                    assignments, selected_blocks, config, actual_lns_budget, seed, params, remaining_fn=remaining_fn
                 )
                 result["lns_time"] = perf_counter() - t_lns
             
             result["assignments"] = assignments
             result["status"] = "OK"
             
-        elif path == PathSelection.C:
+        elif path == PS.C:
             # Path C: Set-Partitioning + Fallback
             log_fn(f"Path C: Set-Partitioning...")
             t_phase2 = perf_counter()
@@ -804,9 +916,13 @@ def _run_light_lns(
     config: 'ConfigV4',
     budget: float,
     seed: int,
+    remaining_fn: callable = None,
 ) -> list:
     """
     Run light LNS refinement (Path A).
+    
+    Args:
+        remaining_fn: Optional callable returning seconds remaining in global budget.
     """
     try:
         from src.services.lns_refiner_v4 import refine_assignments_v4, LNSConfigV4
@@ -819,8 +935,8 @@ def _run_light_lns(
             seed=seed,
         )
         
-        # refine_assignments_v4 returns just the list[DriverAssignment]
-        assignments = refine_assignments_v4(assignments, lns_config)
+        # Pass remaining_fn for global deadline enforcement
+        assignments = refine_assignments_v4(assignments, lns_config, remaining_fn=remaining_fn)
         return assignments
     except Exception as e:
         logger.warning(f"Light LNS failed: {e}")
@@ -834,9 +950,13 @@ def _run_extended_lns(
     budget: float,
     seed: int,
     params: ParameterBundle,
+    remaining_fn: callable = None,
 ) -> list:
     """
     Run extended LNS refinement (Path B).
+    
+    Args:
+        remaining_fn: Optional callable returning seconds remaining in global budget.
     """
     try:
         from src.services.lns_refiner_v4 import refine_assignments_v4, LNSConfigV4
@@ -851,7 +971,8 @@ def _run_extended_lns(
             pt_elimination_fraction=params.pt_focused_destroy_weight,
         )
         
-        assignments = refine_assignments_v4(assignments, lns_config)
+        # Pass remaining_fn for global deadline enforcement
+        assignments = refine_assignments_v4(assignments, lns_config, remaining_fn=remaining_fn)
         return assignments
     except Exception as e:
         logger.warning(f"Extended LNS failed: {e}")

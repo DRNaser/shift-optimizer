@@ -159,5 +159,111 @@ class HealthResponse(BaseModel):
 class ErrorResponse(BaseModel):
     """Error response."""
     status: str = "error"
-    message: str
-    details: list[str] = Field(default_factory=list)
+
+# =============================================================================
+# v2.0 SCHEMAS
+# =============================================================================
+
+class ConfigOverrides(BaseModel):
+    """
+    Client-provided configuration overrides.
+    Only allows specific tunable fields. Locked fields are server-enforced.
+    """
+    enable_fill_to_target_greedy: bool | None = None
+    enable_bad_block_mix_rerun: bool | None = None
+    enable_packability_costs: bool | None = None
+    enable_bounded_swaps: bool | None = None
+    
+    # Penalties
+    penalty_1er_with_multi: float | None = Field(default=None, ge=0.0, le=100.0)
+    bonus_3er: float | None = Field(default=None, ge=-100.0, le=0.0)
+    bonus_2er: float | None = Field(default=None, ge=-100.0, le=0.0)
+    
+    # Thresholds
+    pt_ratio_threshold: float | None = Field(default=None, ge=0.0, le=1.0)
+    underfull_ratio_threshold: float | None = Field(default=None, ge=0.0, le=1.0)
+    
+    # Rerun
+    rerun_1er_penalty_multiplier: float | None = Field(default=None, ge=1.0, le=10.0)
+    min_rerun_budget: float | None = Field(default=None, ge=1.0)
+    
+    # Repair (Bounded)
+    repair_pt_limit: int | None = Field(default=None, ge=0, le=50)
+    repair_fte_limit: int | None = Field(default=None, ge=0, le=50)
+    repair_block_limit: int | None = Field(default=None, ge=0, le=500)
+    
+    # Advanced
+    max_hours_per_fte: float | None = Field(default=None, ge=40.0, le=55.0)
+    
+    # Block Generation Controls
+    enable_diag_block_caps: bool | None = None
+    cap_quota_2er: float | None = Field(default=None, ge=0.0, le=1.0)
+
+
+class RunConfig(BaseModel):
+    """Run execution configuration."""
+    seed: int | None = Field(default=42, description="Seed for reproducibility")
+    time_budget_seconds: float = Field(default=30.0, ge=5.0, le=600.0)
+    preset_id: str = Field(default="default", description="Configuration preset")
+    config_overrides: ConfigOverrides = Field(default_factory=ConfigOverrides)
+
+
+class RunCreateRequest(BaseModel):
+    """Request to start a v2 optimization run."""
+    instance_id: str | None = None  # Optional ref
+    tours: list[TourInput]
+    drivers: list[DriverInput] = Field(default_factory=list)
+    week_start: str = Field(..., pattern=r"^\d{4}-\d{2}-\d{2}$")
+    run: RunConfig = Field(default_factory=RunConfig)
+
+
+class RunCreateResponse(BaseModel):
+    """Response for run creation."""
+    run_id: str
+    status: str
+    events_url: str
+    run_url: str
+
+
+class RunLinks(BaseModel):
+    """HATEOAS links for a run."""
+    events: str
+    report: str
+    plan: str
+    canonical_report: str
+    cancel: str
+
+
+class RunStatusResponse(BaseModel):
+    """Status of a run."""
+    run_id: str
+    status: str
+    phase: str | None
+    budget: dict
+    links: RunLinks
+    created_at: str
+
+
+class ConfigFieldSchema(BaseModel):
+    """Schema metadata for a config field."""
+    key: str
+    type: str
+    default: bool | float | int | str | None
+    editable: bool
+    description: str
+    locked_reason: str | None = None
+    min: float | int | None = None
+    max: float | int | None = None
+
+
+class ConfigGroupSchema(BaseModel):
+    """Group of config fields."""
+    id: str
+    label: str
+    fields: list[ConfigFieldSchema]
+
+
+class ConfigSchemaResponse(BaseModel):
+    """Response for configuration UI schema."""
+    version: str
+    groups: list[ConfigGroupSchema]

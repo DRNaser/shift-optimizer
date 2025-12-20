@@ -26,6 +26,31 @@ from src.domain.constraints import HARD_CONSTRAINTS
 logger = logging.getLogger("SmartBlockBuilder")
 
 
+def safe_log(msg: str) -> None:
+    """
+    Safe logging that handles Windows console encoding errors.
+    The [Errno 22] Invalid argument error occurs when Windows console
+    cannot handle certain output operations during uvicorn reload.
+    This function silently ignores such errors to prevent crashes.
+    """
+    try:
+        logger.info(msg)
+    except OSError:
+        pass  # Silently ignore - message lost but solver continues
+
+
+def safe_print(msg: str) -> None:
+    """
+    Safe print that handles Windows console encoding errors.
+    Falls back to safe_log if print fails.
+    """
+    try:
+        print(msg, flush=True)
+    except OSError:
+        # Windows console encoding error - try logger
+        safe_log(msg)
+
+
 # =============================================================================
 # CONFIGURATION
 # =============================================================================
@@ -86,7 +111,7 @@ def load_policy() -> ManualPolicy:
     # Locate policy file
     path = Path(__file__).parent.parent.parent / "data" / "manual_policy.json"
     if not path.exists():
-        logger.warning(f"[SmartBuilder] WARN: Policy file not found at {path}, using defaults")
+        safe_log(f"[SmartBuilder] WARN: Policy file not found at {path}, using defaults")
         return ManualPolicy(set(), set(), defaultdict(set))
     
     try:
@@ -112,12 +137,12 @@ def load_policy() -> ManualPolicy:
             split_gap_min=split_min
         )
         _POLICY_CACHE = policy
-        print(f"[SmartBuilder] Loaded policy: {len(policy.top_pair_templates)} pair templates, "
+        safe_print(f"[SmartBuilder] Loaded policy: {len(policy.top_pair_templates)} pair templates, "
               f"{len(policy.top_triple_templates)} triple templates")
         return policy
         
     except Exception as e:
-        print(f"[SmartBuilder] ERROR loading policy: {e}")
+        safe_print(f"[SmartBuilder] ERROR loading policy: {e}")
         return ManualPolicy(set(), set(), defaultdict(set))
 
 
@@ -145,6 +170,8 @@ def build_weekly_blocks_smart(
     tours: list[Tour],
     k_per_tour: int = K_PER_TOUR,
     global_top_n: int = GLOBAL_TOP_N,
+    cap_quota_2er: float = 0.30,  # S0.8: Reserved quota for 2-tour blocks
+    enable_diag: bool = False,    # S0.8: Gate diagnostic logs
 ) -> tuple[list[Block], dict]:
     """
     Build blocks with manual-like quality using learned policy.
@@ -152,11 +179,11 @@ def build_weekly_blocks_smart(
     start_time = time_module.time()
     policy = load_policy()
     
-    logger.info(f"[SmartBuilder] Starting with {len(tours)} tours")
+    safe_log(f"[SmartBuilder] Starting with {len(tours)} tours")
     
     # Step 1: Generate ALL blocks
     gen_start = time_module.time()
-    logger.info("[SmartBuilder] Step 1: Generating blocks...")
+    safe_log("[SmartBuilder] Step 1: Generating blocks...")
     all_blocks = _generate_all_blocks(tours)
     gen_time = time_module.time() - gen_start
     
@@ -164,35 +191,48 @@ def build_weekly_blocks_smart(
     count_2er = sum(1 for b in all_blocks if len(b.tours) == 2)
     count_3er = sum(1 for b in all_blocks if len(b.tours) == 3)
     
-    logger.info(f"[SmartBuilder] Generated {len(all_blocks)} blocks in {gen_time:.2f}s")
-    logger.info(f"[SmartBuilder]   1er={count_1er}, 2er={count_2er}, 3er={count_3er}")
+    safe_log(f"[SmartBuilder] Generated {len(all_blocks)} blocks in {gen_time:.2f}s")
+    if enable_diag:
+        safe_print(f"[DIAG] candidates_raw{{size=1}}: {count_1er}")
+        safe_print(f"[DIAG] candidates_raw{{size=2}}: {count_2er}")
+        safe_print(f"[DIAG] candidates_raw{{size=3}}: {count_3er}")
     
     # Step 2: Score blocks using policy
-    print("[SmartBuilder] Step 2: Scoring blocks with policy...", flush=True)
+    safe_print("[SmartBuilder] Step 2: Scoring blocks with policy...")
     scored = _score_all_blocks(all_blocks, policy)
-    print(f"[SmartBuilder] Scored {len(scored)} blocks", flush=True)
+    safe_print(f"[SmartBuilder] Scored {len(scored)} blocks")
     
     # Step 3: Dedupe
-    print("[SmartBuilder] Step 3: Deduplicating...", flush=True)
+    safe_print("[SmartBuilder] Step 3: Deduplicating...")
     deduped = _dedupe_blocks(scored)
-    print(f"[SmartBuilder] After dedupe: {len(deduped)} blocks", flush=True)
+    safe_print(f"[SmartBuilder] After dedupe: {len(deduped)} blocks")
+    dedup_1er = sum(1 for sb in deduped if len(sb.block.tours) == 1)
+    dedup_2er = sum(1 for sb in deduped if len(sb.block.tours) == 2)
+    dedup_3er = sum(1 for sb in deduped if len(sb.block.tours) == 3)
+    if enable_diag:
+        safe_print(f"[DIAG] candidates_deduped{{size=1}}: {dedup_1er}")
+        safe_print(f"[DIAG] candidates_deduped{{size=2}}: {dedup_2er}")
+        safe_print(f"[DIAG] candidates_deduped{{size=3}}: {dedup_3er}")
     
     # Step 4: Smart capping (Guarantee 1er)
-    print("[SmartBuilder] Step 4: Smart capping...", flush=True)
+    safe_print("[SmartBuilder] Step 4: Smart capping...")
     # Remove k_per_tour arg, not used anymore inside
     final_blocks, cap_stats = _smart_cap_with_1er_guarantee(
-        deduped, tours, global_top_n
+        deduped, tours, global_top_n, cap_quota_2er
     )
-    logger.info(f"[SmartBuilder] After capping: {len(final_blocks)} blocks")
+    safe_log(f"[SmartBuilder] After capping: {len(final_blocks)} blocks")
     
     # ==== POOL HEALTH CHECK (after capping) ====
     from collections import Counter
     import statistics
     
-    cap_1er = sum(1 for b in final_blocks if len(b.tours) == 1)
-    cap_2er = sum(1 for b in final_blocks if len(b.tours) == 2)
-    cap_3er = sum(1 for b in final_blocks if len(b.tours) == 3)
-    logger.info(f"[POOL AFTER CAP] total={len(final_blocks)} mix: 1er={cap_1er}, 2er={cap_2er}, 3er={cap_3er}")
+    if enable_diag:
+        cap_1er = sum(1 for b in final_blocks if len(b.tours) == 1)
+        cap_2er = sum(1 for b in final_blocks if len(b.tours) == 2)
+        cap_3er = sum(1 for b in final_blocks if len(b.tours) == 3)
+        safe_print(f"[DIAG] candidates_kept{{size=1}}: {cap_1er}")
+        safe_print(f"[DIAG] candidates_kept{{size=2}}: {cap_2er}")
+        safe_print(f"[DIAG] candidates_kept{{size=3}}: {cap_3er}")
     
     # Calculate degrees per block type
     tour_deg_2er = defaultdict(int)
@@ -217,8 +257,8 @@ def build_weekly_blocks_smart(
     deg2_vals = [tour_deg_2er[t.id] for t in tours]
     deg3_vals = [tour_deg_3er[t.id] for t in tours]
     
-    logger.info(f"[POOL DEGREE 2er] {get_stats(deg2_vals)}")
-    logger.info(f"[POOL DEGREE 3er] {get_stats(deg3_vals)}")
+    safe_log(f"[POOL DEGREE 2er] {get_stats(deg2_vals)}")
+    safe_log(f"[POOL DEGREE 3er] {get_stats(deg3_vals)}")
 
     # Step 5: Sanity checks (returns (ok, errors) instead of raising)
     sanity_ok, sanity_errors = _sanity_check(final_blocks, tours)
@@ -226,11 +266,16 @@ def build_weekly_blocks_smart(
         cap_stats["reason_codes"].extend(sanity_errors)
     
     elapsed = time_module.time() - start_time
-    print("[SmartBuilder] Step 5: Computing stats...", flush=True)
+    safe_print("[SmartBuilder] Step 5: Computing stats...")
     stats = _compute_stats(final_blocks, tours, elapsed, cap_stats, deduped) # Pass deduped for stats
     stats["sanity_ok"] = sanity_ok
     
-    print(f"[SmartBuilder] Final: {len(final_blocks)} blocks in {elapsed:.2f}s", flush=True)
+    # Add raw counts for metrics
+    stats["raw_1er"] = count_1er
+    stats["raw_2er"] = count_2er
+    stats["raw_3er"] = count_3er
+    
+    safe_print(f"[SmartBuilder] Final: {len(final_blocks)} blocks in {elapsed:.2f}s")
     return final_blocks, stats
 
 
@@ -407,7 +452,7 @@ def _dedupe_blocks(scored: list[ScoredBlock]) -> list[ScoredBlock]:
 
 
 def _smart_cap_with_1er_guarantee(
-    scored: list[ScoredBlock], tours: list[Tour], global_n: int
+    scored: list[ScoredBlock], tours: list[Tour], global_n: int, quota_2er: float = 0.30
 ) -> tuple[list[Block], dict]:
     """
     S0.4: Block Pool Stabilization (Feasibility-Safe + Deterministic).
@@ -543,23 +588,66 @@ def _smart_cap_with_1er_guarantee(
     protected_blocks = [sb for sb in scored if sb.block.id in protected_ids]
     non_protected = [sb for sb in scored if sb.block.id in dominance_kept_ids and sb.block.id not in protected_ids]
     
-    # D2: Sort non-protected by score (deterministic)
-    non_protected_sorted = sorted(
-        non_protected,
-        key=lambda sb: (-sb.score, -len(sb.block.tours), sb.block.id)
-    )
-    
-    # D3: Cap
+    # D2: Sort non-protected by score (deterministic) and SPLIT for QUOTA
+    np_2er = [sb for sb in non_protected if len(sb.block.tours) == 2]
+    np_3er = [sb for sb in non_protected if len(sb.block.tours) == 3]
+    np_other = [sb for sb in non_protected if len(sb.block.tours) not in (2, 3)]
+
+    # Sort each pool
+    # Key: (-score, id) - simple, deterministic
+    sort_key = lambda sb: (-sb.score, sb.block.id)
+    np_2er.sort(key=sort_key)
+    np_3er.sort(key=sort_key)
+    np_other.sort(key=sort_key)
+
+    # D3: Apply Quota-Based Cap (30% 2er reservation)
     if len(protected_blocks) >= global_n:
-        # Edge case: too many protected (model error, but handle gracefully)
         reason_codes.append("POOL_PROTECTED_EXCEEDS_CAP")
-        final_blocks = protected_blocks  # Keep all protected, can't trim
+        final_blocks = protected_blocks
     else:
         remaining_slots = global_n - len(protected_blocks)
-        trimmed_non_protected = non_protected_sorted[:remaining_slots]
-        final_blocks = protected_blocks + trimmed_non_protected
-        if len(non_protected_sorted) > remaining_slots:
-            reason_codes.append("POOL_CAPPED")
+        
+        # S0.8: Adaptive Quota Logic
+        # Don't force 30% if we have very few 2er available (prevent garbage-in)
+        # But ensure at least 5% floor if some exist
+        raw_total = len(np_2er) + len(np_3er) + len(np_other)
+        avail_ratio = len(np_2er) / raw_total if raw_total > 0 else 0.0
+        
+        # Effective quota: min(configured, max(available, 0.05))
+        effective_quota = min(quota_2er, max(avail_ratio, 0.05))
+        
+        target_2er = int(remaining_slots * effective_quota)
+        target_3er = remaining_slots - target_2er # Rest for 3er
+
+        # Select top items per quota
+        taken_2er = np_2er[:target_2er]
+        taken_3er = np_3er[:target_3er]
+        
+        # Fill slack if one pool ran dry
+        slack_2er = target_2er - len(taken_2er)
+        slack_3er = target_3er - len(taken_3er)
+        
+        # If 3er has slack, give to 2er (and vice versa)
+        if slack_3er > 0 and len(np_2er) > len(taken_2er):
+             extra = np_2er[len(taken_2er) : len(taken_2er) + slack_3er]
+             taken_2er.extend(extra)
+        
+        if slack_2er > 0 and len(np_3er) > len(taken_3er):
+             extra = np_3er[len(taken_3er) : len(taken_3er) + slack_2er]
+             taken_3er.extend(extra)
+
+        # Merge
+        trimmed = taken_2er + taken_3er
+        
+        # Add np_other if we have space left (unlikely but safe)
+        if len(trimmed) < remaining_slots and np_other:
+             needed = remaining_slots - len(trimmed)
+             trimmed.extend(np_other[:needed])
+
+        final_blocks = protected_blocks + trimmed
+        
+        if len(non_protected) > len(trimmed):
+            reason_codes.append("POOL_CAPPED_QUOTA")
     
     # =========================================================================
     # BUILD RESULT
@@ -612,9 +700,9 @@ def _sanity_check(blocks: list[Block], tours: list[Tour]) -> tuple[bool, list[st
             errors.append(f"MISSING_TOUR:{tid}")
     
     if not errors:
-        logger.info(f"[Sanity] OK. 1er count: {count_1er}")
+        safe_log(f"[Sanity] OK. 1er count: {count_1er}")
     else:
-        logger.warning(f"[Sanity] FAILED: {errors}")
+        safe_log(f"[Sanity] FAILED: {errors}")
     
     return (len(errors) == 0, errors)
 

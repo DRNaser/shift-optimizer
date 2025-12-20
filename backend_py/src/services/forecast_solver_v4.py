@@ -99,6 +99,10 @@ class ConfigV4(NamedTuple):
     # S2.4: Rerun config multipliers (make Path-B different)
     rerun_1er_penalty_multiplier: float = 2.0  # Multiply 1er-with-multi penalty by this
 
+    # Block Capping Configuration
+    enable_diag_block_caps: bool = False
+    cap_quota_2er: float = 0.30  # Default 30% reservation for 2-tour blocks
+
 
 # =============================================================================
 # RESULT MODELS

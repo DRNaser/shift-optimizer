@@ -11,6 +11,8 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from src.api.routes import router
+from src.api.routes_v2 import router_v2
+from src.api.forecast_router import router as forecast_router
 
 
 # =============================================================================
@@ -38,14 +40,14 @@ app = FastAPI(
     
     ## Hard Constraints (Always Enforced)
     - Max 55h/week per driver
-    - Max 14.5h daily span
+    - Max 15.5h daily span
     - Max 3 tours per day
     - Min 11h rest between days
     - No tour overlaps
     - Qualification requirements
     - Availability requirements
     """,
-    version="1.0.0",
+    version="2.0.0",
     docs_url="/docs",
     redoc_url="/redoc"
 )
@@ -69,6 +71,8 @@ app.add_middleware(
 # =============================================================================
 
 app.include_router(router, prefix="/api/v1", tags=["scheduling"])
+app.include_router(router_v2, prefix="/api/v1", tags=["v2-runs"])
+app.include_router(forecast_router, tags=["forecast"])
 
 
 # =============================================================================
@@ -94,3 +98,4 @@ async def root():
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
+    # Force reload trigger
