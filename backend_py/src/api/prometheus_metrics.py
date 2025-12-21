@@ -169,6 +169,19 @@ set_partitioning_counter = Counter(
     ['status']  # success, fallback, timeout
 )
 
+# Candidate block counts (for 2-tour starvation monitoring)
+candidates_kept_counter = Counter(
+    'solver_candidates_kept_total',
+    'Number of candidate blocks kept after capping, by size',
+    ['size']  # 1er, 2er, 3er
+)
+
+candidates_raw_counter = Counter(
+    'solver_candidates_raw_total',
+    'Number of candidate blocks generated before filtering, by size',
+    ['size']  # 1er, 2er, 3er
+)
+
 
 # =============================================================================
 # SOLUTION QUALITY METRICS (KPIs)
