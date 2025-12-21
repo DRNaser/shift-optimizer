@@ -203,7 +203,7 @@ class ConfigOverrides(BaseModel):
 class RunConfig(BaseModel):
     """Run execution configuration."""
     seed: int | None = Field(default=42, description="Seed for reproducibility")
-    time_budget_seconds: float = Field(default=30.0, ge=5.0, le=600.0)
+    time_budget_seconds: float = Field(default=180.0, ge=5.0, le=600.0, description="Time budget: 120=FAST, 180=QUALITY (default), 300=PREMIUM")
     preset_id: str = Field(default="default", description="Configuration preset")
     config_overrides: ConfigOverrides = Field(default_factory=ConfigOverrides)
 
