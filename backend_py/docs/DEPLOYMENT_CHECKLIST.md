@@ -1,7 +1,13 @@
-# Deployment Checklist: Shift Optimizer v2.0
+# Deployment Checklist: Shift Optimizer v2.0.0
 
-> **Commit:** `571699f`  
+> **Release Tag:** `v2.0.0-rc1`  
+> **App Commit:** `571699f` (core features + config defaults)  
+> **Docs Commit:** `30c6d81` (runbooks added on top)  
 > **Date:** 2025-12-21
+
+> [!NOTE]
+> The running app is on `571699f`. Runbooks were added in `30c6d81`.
+> Both commits are equivalent for behavior; only documentation differs.
 
 ---
 
