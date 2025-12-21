@@ -34,11 +34,15 @@ TUNABLE_FIELDS = {
     "enable_bad_block_mix_rerun": {"type": "bool", "default": False},
     "enable_packability_costs": {"type": "bool", "default": True},
     "enable_bounded_swaps": {"type": "bool", "default": True},
+    "enable_diag_block_caps": {"type": "bool", "default": False},  # Block capping diagnostics
     
     # Penalties (float)
     "penalty_1er_with_multi": {"type": "float", "default": 2.0, "min": 0.0, "max": 100.0},
     "bonus_3er": {"type": "float", "default": -3.0, "min": -100.0, "max": 0.0},
     "bonus_2er": {"type": "float", "default": -1.0, "min": -100.0, "max": 0.0},
+    
+    # Block capping
+    "cap_quota_2er": {"type": "float", "default": 0.30, "min": 0.0, "max": 1.0},  # 2-tour block quota
     
     # Thresholds
     "pt_ratio_threshold": {"type": "float", "default": 0.25, "min": 0.0, "max": 1.0},
