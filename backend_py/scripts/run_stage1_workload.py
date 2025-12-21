@@ -198,10 +198,10 @@ def main():
         run_id = run_single_test(seed)
         
         if run_id:
-            print(f"✓ {run_id}")
+            print(f"[OK] {run_id}")
             successful += 1
         else:
-            print("✗ FAILED")
+            print("[FAIL]")
             failed += 1
         
         # Progress update every 10 runs
