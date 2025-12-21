@@ -1,0 +1,16 @@
+# Grafana Provisioning: Dashboards
+# =================================
+# Auto-loads dashboards from backend_py/grafana/
+
+apiVersion: 1
+
+providers:
+  - name: 'Shift Optimizer Dashboards'
+    orgId: 1
+    folder: 'Shift Optimizer'
+    folderUid: 'shift-optimizer'
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 30
+    options:
+      path: /etc/grafana/dashboards

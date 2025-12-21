@@ -1,47 +1,91 @@
-# SHIFT OPTIMIZER - Docker Compose
-# Full stack deployment: backend + frontend
+# Docker Compose for Shift Optimizer Production
+# =============================================
+#
+# Usage:
+#   docker-compose up -d       # Start all services
+#   docker-compose logs -f     # View logs
+#   docker-compose down        # Stop all services
+#
+# Endpoints:
+#   - API: http://localhost:8000
+#   - Metrics: http://localhost:8000/api/v1/metrics
+#   - Prometheus: http://localhost:9090
+#   - Grafana: http://localhost:3000 (admin/admin)
+
+version: "3.8"
 
 services:
-  # Python FastAPI Backend
-  backend:
+  # =========================================================================
+  # Shift Optimizer Backend
+  # =========================================================================
+  api:
     build:
       context: ./backend_py
       dockerfile: Dockerfile
-    container_name: shift-optimizer-backend
+    container_name: shift-optimizer-api
     ports:
       - "8000:8000"
     environment:
       - PYTHONUNBUFFERED=1
-      - CORS_ORIGINS=http://localhost:3000,http://frontend
+    deploy:
+      resources:
+        limits:
+          cpus: "4.0"      # Max 4 CPU cores per run
+          memory: 8G       # Max 8GB RAM (OR-Tools can be memory-hungry)
+        reservations:
+          cpus: "1.0"
+          memory: 2G
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/v1/health')"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/v1/healthz')"]
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 10s
     restart: unless-stopped
 
-  # React Frontend (nginx)
-  frontend:
-    build:
-      context: ./frontend
-      dockerfile: Dockerfile
-      args:
-        - VITE_API_BASE=http://localhost:8000/api/v1
-    container_name: shift-optimizer-frontend
+  # =========================================================================
+  # Prometheus (Metrics Collection)
+  # =========================================================================
+  prometheus:
+    image: prom/prometheus:v2.47.0
+    container_name: shift-optimizer-prometheus
     ports:
-      - "3000:80"
-    depends_on:
-      backend:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD", "wget", "-q", "--spider", "http://localhost/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=30d'
     restart: unless-stopped
+    depends_on:
+      - api
 
-# Networks
+  # =========================================================================
+  # Grafana (Dashboards)
+  # =========================================================================
+  grafana:
+    image: grafana/grafana:10.1.0
+    container_name: shift-optimizer-grafana
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./backend_py/grafana:/etc/grafana/dashboards:ro
+    restart: unless-stopped
+    depends_on:
+      - prometheus
+
+volumes:
+  prometheus_data:
+  grafana_data:
+
 networks:
   default:
     name: shift-optimizer-network

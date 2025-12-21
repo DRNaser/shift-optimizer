@@ -80,12 +80,17 @@ async def readiness():
     Used by Kubernetes to control traffic routing.
     Includes build version info for debugging "old code still running" issues.
     """
+    from src.services.forecast_solver_v4 import ConfigV4
+    default_config = ConfigV4()
     return {
         "status": "ready",
         "solver": "warm",
         "ortools_version": "9.11.4210",
         "app_version": "2.0.0",
         "git_commit": _get_git_commit(),
+        "config": {
+            "cap_quota_2er": default_config.cap_quota_2er,
+        }
     }
 
 
