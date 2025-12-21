@@ -1,4 +1,4 @@
-"""
+﻿"""
 FORECAST SOLVER v4 - USE_BLOCK MODEL
 =====================================
 Implements P2: use_block[b] instead of x[b,k] for massive variable reduction.
@@ -14,7 +14,7 @@ Phase 2: Assignment (Greedy)
 - Respect weekly hours constraints (42-53h for FTE)
 - Use PT as overflow
 
-Variables: O(blocks) instead of O(blocks × drivers) = 100x reduction
+Variables: O(blocks) instead of O(blocks Ã— drivers) = 100x reduction
 """
 
 from collections import defaultdict
@@ -30,6 +30,16 @@ from ortools.sat.python import cp_model
 
 # Setup logger
 logger = logging.getLogger("ForecastSolverV4")
+
+
+def safe_print(*args, **kwargs):
+    """Print wrapper that silently ignores Errno 22 on Windows."""
+    import builtins
+    try:
+        builtins.print(*args, **kwargs)
+    except OSError:
+        # Ignore console I/O errors (e.g., detached console on Windows)
+        pass
 
 from src.domain.models import Block, Tour, Weekday
 from src.services.constraints import can_assign_block
@@ -164,13 +174,13 @@ def compute_tour_has_multi(blocks: list[Block], tours: list[Tour]) -> dict[str, 
     S1.1: Precompute tour_has_multi[tour_id] = True if any block covering this
     tour has len(tours) > 1 (i.e., the tour has multi-tour options in pool).
     
-    O(n) single pass over blocks, NOT O(n²).
+    O(n) single pass over blocks, NOT O(nÂ²).
     
     Determinism: Uses sorted tour IDs for iteration.
     """
     tour_has_multi: dict[str, bool] = {t.id: False for t in tours}
     
-    # Single pass O(blocks × avg_tours_per_block) ≈ O(n)
+    # Single pass O(blocks Ã— avg_tours_per_block) â‰ˆ O(n)
     for block in blocks:
         if len(block.tours) > 1:  # This is a multi-tour block
             for tour in block.tours:
@@ -334,8 +344,8 @@ def compute_block_mix_ratios(
     S2.2: Compute block mix ratios for BAD_BLOCK_MIX detection.
     
     Returns:
-    - pt_ratio: (#PT drivers with ≥1 block) / (#all drivers with ≥1 block)
-    - underfull_ratio: (#FTE with hours < min) / (#FTE with ≥1 block)
+    - pt_ratio: (#PT drivers with â‰¥1 block) / (#all drivers with â‰¥1 block)
+    - underfull_ratio: (#FTE with hours < min) / (#FTE with â‰¥1 block)
     
     Determinism: Iterates in stable order (assignments order preserved).
     """
@@ -349,7 +359,7 @@ def compute_block_mix_ratios(
             "total_drivers": 0,
         }
     
-    # Count drivers with ≥1 block
+    # Count drivers with â‰¥1 block
     drivers_with_blocks = [a for a in assignments if a.blocks]
     pt_with_blocks = [a for a in drivers_with_blocks if a.driver_type == "PT"]
     fte_with_blocks = [a for a in drivers_with_blocks if a.driver_type == "FTE"]
@@ -460,7 +470,7 @@ def repair_pt_to_fte_swaps(
     can_assign_fn=None,
 ) -> tuple[list[DriverAssignment], RepairStats]:
     """
-    S3.1-S3.3: Bounded PT→FTE swap repair.
+    S3.1-S3.3: Bounded PTâ†’FTE swap repair.
     
     Moves blocks from PT drivers to underfull/available FTE drivers.
     
@@ -594,7 +604,7 @@ def repair_pt_to_fte_swaps(
                         continue
                     
                     # =========================================================
-                    # MOVE: PT block → FTE
+                    # MOVE: PT block â†’ FTE
                     # =========================================================
                     pt_blocks[pt_id].remove(block)
                     fte_blocks[fte_id].append(block)
@@ -778,7 +788,7 @@ def prune_blocks_tour_aware(blocks: list[Block], tours: list[Tour], config: Conf
     K2 = 4  # Keep top 4 2-tour options
     K1 = 2  # Keep top 2 1-tour options
     
-    print(f"  Tour-aware Pruning: K3={K3}, K2={K2}, K1={K1} per tour...", flush=True)
+    safe_print(f"  Tour-aware Pruning: K3={K3}, K2={K2}, K1={K1} per tour...", flush=True)
     
     # Index blocks by tour
     blocks_by_tour = defaultdict(list)
@@ -791,12 +801,12 @@ def prune_blocks_tour_aware(blocks: list[Block], tours: list[Tour], config: Conf
     kept_ids = set()
     
     # === S0.4: PROTECTED SET (1er guarantee per tour) ===
-    # Invariant: every tour MUST keep ≥1 covering block
+    # Invariant: every tour MUST keep â‰¥1 covering block
     protected_1er_ids = set()
     for tour in tours:
         options = blocks_by_tour.get(tour.id, [])
         if not options:
-            print(f"  WARNING: Tour {tour.id} has NO blocks - feasibility broken!", flush=True)
+            safe_print(f"  WARNING: Tour {tour.id} has NO blocks - feasibility broken!", flush=True)
             continue
         # Protect best 1er for this tour (by score proxy = size)
         opts_1er = [b for b in options if len(b.tours) == 1]
@@ -810,7 +820,7 @@ def prune_blocks_tour_aware(blocks: list[Block], tours: list[Tour], config: Conf
     
     # Add protected blocks first
     kept_ids.update(protected_1er_ids)
-    print(f"  S0.4: Protected {len(protected_1er_ids)} 1er blocks (1 per tour)", flush=True)
+    safe_print(f"  S0.4: Protected {len(protected_1er_ids)} 1er blocks (1 per tour)", flush=True)
     
     for tour in tours:
         # Sort options for this tour by "quality" (larger is better, then implicit score?)
@@ -840,7 +850,7 @@ def prune_blocks_tour_aware(blocks: list[Block], tours: list[Tour], config: Conf
         [block_map[bid] for bid in kept_ids if bid in block_map],
         key=lambda b: b.id
     )
-    print(f"  Retained {len(kept_blocks)} blocks via Tour-Proximity (from {len(blocks)})", flush=True)
+    safe_print(f"  Retained {len(kept_blocks)} blocks via Tour-Proximity (from {len(blocks)})", flush=True)
     
     # If we still have space below max_blocks, fill with others?
     # Or if we have TOO many, do we cut?
@@ -857,10 +867,10 @@ def prune_blocks_tour_aware(blocks: list[Block], tours: list[Tour], config: Conf
             # S0.1: Stable sort with id tie-break
             others.sort(key=lambda b: (-b.total_work_minutes, b.id))
             kept_blocks.extend(others[:needed])
-            print(f"  Filled {min(len(others), needed)} additional blocks to reach cap.", flush=True)
+            safe_print(f"  Filled {min(len(others), needed)} additional blocks to reach cap.", flush=True)
     
     elif len(kept_blocks) > config.max_blocks:
-        print(f"  WARNING: Union kept {len(kept_blocks)} > {config.max_blocks}. Capping...", flush=True)
+        safe_print(f"  WARNING: Union kept {len(kept_blocks)} > {config.max_blocks}. Capping...", flush=True)
         # S0.4: When capping, NEVER remove protected 1ers
         # Split into protected and non-protected
         protected_blocks = [b for b in kept_blocks if b.id in protected_1er_ids]
@@ -870,7 +880,7 @@ def prune_blocks_tour_aware(blocks: list[Block], tours: list[Tour], config: Conf
         # Cap non-protected blocks, keep all protected
         cap_room = config.max_blocks - len(protected_blocks)
         kept_blocks = protected_blocks + other_blocks[:cap_room]
-        print(f"  S0.4: Kept {len(protected_blocks)} protected + {min(len(other_blocks), cap_room)} others", flush=True)
+        safe_print(f"  S0.4: Kept {len(protected_blocks)} protected + {min(len(other_blocks), cap_room)} others", flush=True)
         
     return kept_blocks
 
@@ -890,21 +900,21 @@ def solve_capacity_phase(
     Phase 1: Determine which blocks to use.
     
     Model:
-    - use[b] ∈ {0, 1}: block b is used
+    - use[b] âˆˆ {0, 1}: block b is used
     - Coverage: for each tour t, exactly one block containing t is used
     - Objective: minimize weighted cost using policy-derived scores
     
     Returns:
         (selected_blocks, stats)
     """
-    print(f"\n{'='*60}", flush=True)
-    print("PHASE 1: Capacity Planning (use_block model)", flush=True)
-    print(f"{'='*60}", flush=True)
-    print(f"Blocks: {len(blocks)}, Tours: {len(tours)}", flush=True)
+    safe_print(f"\n{'='*60}", flush=True)
+    safe_print("PHASE 1: Capacity Planning (use_block model)", flush=True)
+    safe_print(f"{'='*60}", flush=True)
+    safe_print(f"Blocks: {len(blocks)}, Tours: {len(tours)}", flush=True)
     
     # ==== DAY-MIN-SOLVE: Find TRUE lower bound per peak day ====
     # This tells us if 140 FTE is even mathematically achievable
-    print("\n--- DAY-MIN-SOLVE (TRUE Lower Bounds) ---", flush=True)
+    safe_print("\n--- DAY-MIN-SOLVE (TRUE Lower Bounds) ---", flush=True)
     tours_by_day = defaultdict(list)
     for t in tours:
         tours_by_day[t.day.value].append(t)
@@ -921,13 +931,13 @@ def solve_capacity_phase(
             min_blocks, stats = solve_day_min_blocks(day_blocks, day_tours, time_limit=10.0)
             day_min_results[day_val] = min_blocks
             status_str = stats.get("status", "UNKNOWN")
-            print(f"  {day_val}: min_blocks={min_blocks} ({status_str}), "
+            safe_print(f"  {day_val}: min_blocks={min_blocks} ({status_str}), "
                   f"1er={stats.get('blocks_1er', 0)}, 2er={stats.get('blocks_2er', 0)}, 3er={stats.get('blocks_3er', 0)}, "
                   f"avg={stats.get('avg_tours_per_block', 0):.2f} tours/block", flush=True)
     
     # Compute achievable FTE floor
     max_day_min = max(day_min_results.values()) if day_min_results else 0
-    print(f"  => Peak day minimum: {max_day_min} blocks (theoretical FTE floor)", flush=True)
+    safe_print(f"  => Peak day minimum: {max_day_min} blocks (theoretical FTE floor)", flush=True)
     
     # ==== ITERATIVE TIGHTENING (OPTIMIZED) ====
     # Start high (above current Fri peak), then tighten
@@ -950,7 +960,7 @@ def solve_capacity_phase(
     
     iteration = 0
     t_msg = f"Budget: {TOTAL_BUDGET:.1f}s"
-    print(f"\n--- TIGHTENING LOOP START ({t_msg}) ---", flush=True)
+    safe_print(f"\n--- TIGHTENING LOOP START ({t_msg}) ---", flush=True)
 
     while (perf_counter() - t_total_start) < TOTAL_BUDGET:
         iteration += 1
@@ -959,10 +969,10 @@ def solve_capacity_phase(
         elapsed = perf_counter() - t_total_start
         remaining = TOTAL_BUDGET - elapsed
         if remaining < 2.0: # Minimum slice for meaningful solve
-            print("  Time budget exhausted.", flush=True)
+            safe_print("  Time budget exhausted.", flush=True)
             break
             
-        print(f"\n--- ITER {iteration}: CAP={current_cap} (Time left: {remaining:.1f}s) ---", flush=True)
+        safe_print(f"\n--- ITER {iteration}: CAP={current_cap} (Time left: {remaining:.1f}s) ---", flush=True)
         
         result = _solve_capacity_single_cap(
             blocks, tours, block_index, config,
@@ -973,7 +983,7 @@ def solve_capacity_phase(
         )
         
         if result is None:
-            print(f"  INFEASIBLE at cap={current_cap}. Stopping tightening.", flush=True)
+            safe_print(f"  INFEASIBLE at cap={current_cap}. Stopping tightening.", flush=True)
             break
         
         selected, stats = result
@@ -982,7 +992,7 @@ def solve_capacity_phase(
         day_counts = stats.get('blocks_by_day', {}).values()
         current_max_day = max(day_counts) if day_counts else 0
         
-        print(f"  FEASIBLE: {len(selected)} blocks, max_day={current_max_day}", flush=True)
+        safe_print(f"  FEASIBLE: {len(selected)} blocks, max_day={current_max_day}", flush=True)
         
         # Store as best
         best_solution = selected
@@ -995,7 +1005,7 @@ def solve_capacity_phase(
         
         # EARLY STOP: incumbent already at or below target
         if current_max_day <= target_cap:
-            print(f"  Target cap {target_cap} hit (Actual={current_max_day}). Early stop.", flush=True)
+            safe_print(f"  Target cap {target_cap} hit (Actual={current_max_day}). Early stop.", flush=True)
             break
             
         # S0.3: SPEC-CONFORMANT TIGHTENING
@@ -1003,19 +1013,19 @@ def solve_capacity_phase(
         # NO stumpf -5 or -10 steps
         cap_next = max(target_cap, current_max_day - 1)
         
-        # S0.3 Safety: if cap_next >= cap_current → stop (no progress possible)
+        # S0.3 Safety: if cap_next >= cap_current â†’ stop (no progress possible)
         if cap_next >= current_cap:
-            print(f"  Cannot tighten further (next={cap_next} >= curr={current_cap}). Done.", flush=True)
+            safe_print(f"  Cannot tighten further (next={cap_next} >= curr={current_cap}). Done.", flush=True)
             break
             
         current_cap = cap_next
     
     # Report results
     total_elapsed = perf_counter() - t_total_start
-    print(f"\n=== TIGHTENING COMPLETE ===", flush=True)
-    print(f"  Best CAP: {best_cap} (Floor: {MIN_CAP})", flush=True)
-    print(f"  Iterations: {iteration}", flush=True)
-    print(f"  Time: {total_elapsed:.1f}s / {TOTAL_BUDGET:.1f}s", flush=True)
+    safe_print(f"\n=== TIGHTENING COMPLETE ===", flush=True)
+    safe_print(f"  Best CAP: {best_cap} (Floor: {MIN_CAP})", flush=True)
+    safe_print(f"  Iterations: {iteration}", flush=True)
+    safe_print(f"  Time: {total_elapsed:.1f}s / {TOTAL_BUDGET:.1f}s", flush=True)
     
     if best_solution is None:
         logger.error("[FAILED] No feasible solution found even at initial cap")
@@ -1030,7 +1040,7 @@ def solve_capacity_phase(
         lb_peak = max(day_min_results.values()) if day_min_results else 0
         fri_cur = sum(1 for b in best_solution if b.day.value == "Fri")
         if fri_lb and fri_cur > fri_lb + 5:
-            print(f"\n--- LNS Friday Reopt: {fri_cur} -> target~{fri_lb} ---", flush=True)
+            safe_print(f"\n--- LNS Friday Reopt: {fri_cur} -> target~{fri_lb} ---", flush=True)
             improved = _lns_reopt_friday(
                 current_solution=best_solution,
                 all_blocks=blocks,
@@ -1043,17 +1053,17 @@ def solve_capacity_phase(
                 lb_peak=lb_peak,
             )
             if improved:
-                print(f"  LNS improved blocks: {len(best_solution)} -> {len(improved)}", flush=True)
+                safe_print(f"  LNS improved blocks: {len(best_solution)} -> {len(improved)}", flush=True)
                 best_solution = improved
             else:
-                print("  LNS: no improvement", flush=True)
+                safe_print("  LNS: no improvement", flush=True)
     except Exception as e:
-        print(f"[LNS] skipped due to error: {e}", flush=True)
+        safe_print(f"[LNS] skipped due to error: {e}", flush=True)
 
     # ==== POST-COMPRESSION: Swap 3x1er into 1x3er ====
     best_solution, compressions = compress_selected_blocks(best_solution, blocks, block_index, tours)
     if compressions > 0:
-        print(f"  POST-COMPRESSION: Replaced {compressions} block sets (savings: ~{compressions*2} blocks)", flush=True)
+        safe_print(f"  POST-COMPRESSION: Replaced {compressions} block sets (savings: ~{compressions*2} blocks)", flush=True)
         # Update stats
         best_stats["blocks_1er"] = sum(1 for b in best_solution if len(b.tours) == 1)
         best_stats["blocks_2er"] = sum(1 for b in best_solution if len(b.tours) == 2)
@@ -1069,13 +1079,13 @@ def compress_selected_blocks(selected_blocks: list[Block], all_blocks: list[Bloc
     
     For each candidate block c (2er/3er) in pool:
         victims = {selected_block covering tour t for t in c.tours}
-        If len(victims) >= 2 → replace victims with c (saves len(victims)-1 blocks)
+        If len(victims) >= 2 â†’ replace victims with c (saves len(victims)-1 blocks)
     
     Handles:
-        - (2er+1er) → 3er  (saves 1 block)
-        - (1er+1er) → 2er  (saves 1 block)
-        - (3×1er) → 3er    (saves 2 blocks)
-        - (1er+2er) → 3er  (saves 1 block)
+        - (2er+1er) â†’ 3er  (saves 1 block)
+        - (1er+1er) â†’ 2er  (saves 1 block)
+        - (3Ã—1er) â†’ 3er    (saves 2 blocks)
+        - (1er+2er) â†’ 3er  (saves 1 block)
     """
     
     # Map tour ID to currently selected block
@@ -1157,7 +1167,7 @@ def compress_selected_blocks(selected_blocks: list[Block], all_blocks: list[Bloc
         compressions += 1
     
     if compressions > 0:
-        print(f"  COMPRESSION: {compressions} moves, saved {blocks_saved} blocks", flush=True)
+        safe_print(f"  COMPRESSION: {compressions} moves, saved {blocks_saved} blocks", flush=True)
     
     return new_selected, compressions
 
@@ -1199,7 +1209,7 @@ def _lns_reopt_friday(
         if fri_cap < fri_lb:
             break
             
-        print(f"    LNS attempt: Fri cap={fri_cap}", flush=True)
+        safe_print(f"    LNS attempt: Fri cap={fri_cap}", flush=True)
         
         model = cp_model.CpModel()
         
@@ -1255,7 +1265,7 @@ def _run_phase1_diagnostics(selected: list[Block], tours: list[Tour], block_inde
     """Run and print Phase 1 diagnostics."""
     import math
     
-    print(f"\n{'='*20} DIAGNOSTICS {'='*20}", flush=True)
+    safe_print(f"\n{'='*20} DIAGNOSTICS {'='*20}", flush=True)
     
     # 1. Selected Blocks per Day (Split)
     day_stats = defaultdict(lambda: {"1er": 0, "2er": 0, "3er": 0, "total": 0, "tours": 0})
@@ -1268,12 +1278,12 @@ def _run_phase1_diagnostics(selected: list[Block], tours: list[Tour], block_inde
         day_stats[d]["tours"] += n
         
     sorted_days = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
-    print("SELECTED BLOCKS BY DAY:", flush=True)
+    safe_print("SELECTED BLOCKS BY DAY:", flush=True)
     for d in sorted_days:
         if d in day_stats:
             s = day_stats[d]
             avg_tours = s["tours"] / s["total"] if s["total"] else 0
-            print(f"  {d}: {s['total']} blocks ({s['1er']} 1er, {s['2er']} 2er, {s['3er']} 3er) | avg={avg_tours:.2f} tours/block", flush=True)
+            safe_print(f"  {d}: {s['total']} blocks ({s['1er']} 1er, {s['2er']} 2er, {s['3er']} 3er) | avg={avg_tours:.2f} tours/block", flush=True)
 
     # 2. Forced 1ers & Missed Opportunities
     forced_1er_tours = []
@@ -1299,11 +1309,11 @@ def _run_phase1_diagnostics(selected: list[Block], tours: list[Tour], block_inde
             elif has_3er:
                 missed_3er_tours.append(tid)
 
-    print(f"FORCED 1er TOURS: {len(forced_1er_tours)} (No multi-block option)", flush=True)
-    print(f"MISSED 3er OPPS: {len(missed_3er_tours)} (Chose 1er despite 3er existing)", flush=True)
+    safe_print(f"FORCED 1er TOURS: {len(forced_1er_tours)} (No multi-block option)", flush=True)
+    safe_print(f"MISSED 3er OPPS: {len(missed_3er_tours)} (Chose 1er despite 3er existing)", flush=True)
 
     # 3. Day Min Lower Bound + Gap
-    print("GAP TO THEORETICAL MINIMUM:", flush=True)
+    safe_print("GAP TO THEORETICAL MINIMUM:", flush=True)
     for d in sorted_days:
         if d not in day_stats: continue
         day_tours = [t for t in tours if t.day.value == d]
@@ -1317,9 +1327,9 @@ def _run_phase1_diagnostics(selected: list[Block], tours: list[Tour], block_inde
         
         actual = day_stats[d]["total"]
         gap = actual - lb
-        print(f"  {d}: Actual={actual} vs LB={lb} (Gap={gap})", flush=True)
+        safe_print(f"  {d}: Actual={actual} vs LB={lb} (Gap={gap})", flush=True)
 
-    print(f"{'='*53}", flush=True)
+    safe_print(f"{'='*53}", flush=True)
     
     # Update stats with diagnostics
     stats["time"] = round(elapsed, 2)
@@ -1349,13 +1359,13 @@ def _solve_capacity_single_cap(
     for b, block in enumerate(blocks):
         use[b] = model.NewBoolVar(f"use_{b}")
     
-    print(f"Variables: {len(use)} (vs {len(use) * 150}+ in old model)", flush=True)
+    safe_print(f"Variables: {len(use)} (vs {len(use) * 150}+ in old model)", flush=True)
     
-    # Precompute block index lookup for O(1) block → variable mapping
+    # Precompute block index lookup for O(1) block â†’ variable mapping
     block_id_to_idx = {block.id: idx for idx, block in enumerate(blocks)}
 
     # Constraint: Coverage (each tour exactly once)
-    print("Adding coverage constraints...", flush=True)
+    safe_print("Adding coverage constraints...", flush=True)
     for tour in tours:
         blocks_with_tour = block_index.get(tour.id, [])
         if not blocks_with_tour:
@@ -1373,7 +1383,7 @@ def _solve_capacity_single_cap(
         
         model.Add(sum(use[b] for b in block_indices) == 1)
     
-    print("Coverage constraints added.", flush=True)
+    safe_print("Coverage constraints added.", flush=True)
     
     # Objective: Use POLICY-DERIVED scores if available
     # Higher policy score = more desirable block
@@ -1384,7 +1394,7 @@ def _solve_capacity_single_cap(
         vals = list(block_scores.values())
         if vals:
             p_over_1000 = (sum(1 for v in vals if v > 1000) / len(vals)) * 100
-            print(f"  SCORE DEBUG: min={min(vals):.1f} max={max(vals):.1f} %>1000={p_over_1000:.1f}%", flush=True)
+            safe_print(f"  SCORE DEBUG: min={min(vals):.1f} max={max(vals):.1f} %>1000={p_over_1000:.1f}%", flush=True)
 
     # Score normalization helpers
     s_min = min(block_scores.values()) if block_scores else 0
@@ -1429,7 +1439,7 @@ def _solve_capacity_single_cap(
         next_day_val = idx_to_day.get((day_idx + 1) % 7, "Mon")
         trap_pressure[day_val] = late_pressure.get(day_val, 0) * early_pressure.get(next_day_val, 0)
     
-    print(f"  TRAP PRESSURE: {', '.join(f'{d[:3]}={trap_pressure.get(d, 0):.2f}' for d in days)}", flush=True)
+    safe_print(f"  TRAP PRESSURE: {', '.join(f'{d[:3]}={trap_pressure.get(d, 0):.2f}' for d in days)}", flush=True)
     
     # ==== V4 Chainability Analysis (Pre-calculation) ====
     # For every block, how many "compatible" blocks exist on the next day?
@@ -1521,8 +1531,8 @@ def _solve_capacity_single_cap(
         else:
             chain_penalty_map[b.id] = 0
             
-    print(f"  CHAINABILITY: {count_low_compat} blocks have low next-day options (<{TARGET_COMPAT}). Applied penalties.", flush=True)
-    print(f"  COMPAT HISTOGRAM: {compat_counts}", flush=True)
+    safe_print(f"  CHAINABILITY: {count_low_compat} blocks have low next-day options (<{TARGET_COMPAT}). Applied penalties.", flush=True)
+    safe_print(f"  COMPAT HISTOGRAM: {compat_counts}", flush=True)
 
     # Day count variable + soft cap
     # Use override if provided, else calculate from config
@@ -1544,7 +1554,7 @@ def _solve_capacity_single_cap(
         if day_val in PEAK_DAYS:
             # HARD CONSTRAINT for peak days: No slack!
             model.Add(day_count[day_val] <= DAY_CAP)
-            print(f"    {day_val}: HARD cap at {DAY_CAP}", flush=True)
+            safe_print(f"    {day_val}: HARD cap at {DAY_CAP}", flush=True)
         else:
             # SOFT cap for other days (slack penalized in objective)
             model.Add(day_count[day_val] <= DAY_CAP + day_slack[day_val])
@@ -1561,7 +1571,7 @@ def _solve_capacity_single_cap(
             
     forced_1er_count = sum(1 for sizes in tour_block_sizes.values() if sizes == {1})
     forced_1er_pct = (forced_1er_count / len(tours)) * 100 if tours else 0
-    print(f"  REALITY CHECK: {forced_1er_count} tours ({forced_1er_pct:.1f}%) FORCED to be 1er (no multi option found)", flush=True)
+    safe_print(f"  REALITY CHECK: {forced_1er_count} tours ({forced_1er_pct:.1f}%) FORCED to be 1er (no multi option found)", flush=True)
 
     for day_val in days:
         model.Add(max_day >= day_count[day_val])
@@ -1576,7 +1586,7 @@ def _solve_capacity_single_cap(
         for tour_id, pool in block_index.items()
         if any(len(b.tours) > 1 for b in pool)
     }
-    print(f"  PACKABILITY: {len(tour_has_multi)}/{len(tours)} tours have multi-block options", flush=True)
+    safe_print(f"  PACKABILITY: {len(tour_has_multi)}/{len(tours)} tours have multi-block options", flush=True)
     
     # Cost Constants - PACKABILITY TUNING (user-approved guardrails)
     # Hierarchy: BASE values << COUNT_WEIGHT (10M) to ensure block-count always dominates
@@ -1590,7 +1600,7 @@ def _solve_capacity_single_cap(
     avail_1er = sum(1 for b in blocks if len(b.tours) == 1)
     avail_2er = sum(1 for b in blocks if len(b.tours) == 2)
     avail_3er = sum(1 for b in blocks if len(b.tours) == 3)
-    print(f"  AVAILABLE BLOCKS: 1er={avail_1er}, 2er={avail_2er}, 3er={avail_3er}", flush=True)
+    safe_print(f"  AVAILABLE BLOCKS: 1er={avail_1er}, 2er={avail_2er}, 3er={avail_3er}", flush=True)
 
     for b, block in enumerate(blocks):
         n = len(block.tours)
@@ -1632,7 +1642,7 @@ def _solve_capacity_single_cap(
     # Priority: min max_day >> min total_blocks >> min cost
     
     # Greedy Warmstart
-    print("  Adding greedy hint...", flush=True)
+    safe_print("  Adding greedy hint...", flush=True)
     greedy_selected_ids = set()
     covered_tours = set()
     
@@ -1657,7 +1667,7 @@ def _solve_capacity_single_cap(
             hint_count += 1
         else:
             model.AddHint(use[b], 0)
-    print(f"  Greedy hint added: {hint_count} blocks", flush=True)
+    safe_print(f"  Greedy hint added: {hint_count} blocks", flush=True)
 
     # ==== DECISION STRATEGY: Guide search to prefer 3ers ====
     vars_3er = [use[b] for b, blk in enumerate(blocks) if len(blk.tours) == 3]
@@ -1670,7 +1680,7 @@ def _solve_capacity_single_cap(
         model.AddDecisionStrategy(vars_2er, cp_model.CHOOSE_FIRST, cp_model.SELECT_MAX_VALUE)
     if vars_1er:
         model.AddDecisionStrategy(vars_1er, cp_model.CHOOSE_FIRST, cp_model.SELECT_MIN_VALUE)
-    print(f"  DECISION STRATEGY: 3er->True, 2er->True, 1er->False", flush=True)
+    safe_print(f"  DECISION STRATEGY: 3er->True, 2er->True, 1er->False", flush=True)
 
     # ==== OBJECTIVE: Block-count first, then max_day ====
     W_COUNT = 10_000_000   # HIGHEST: minimize total blocks
@@ -1688,10 +1698,10 @@ def _solve_capacity_single_cap(
     )
     
     model.Minimize(objective)
-    print(f"  V4 OBJECTIVE (Block-Min): {W_COUNT}*count + {W_MAXDAY}*max + {W_SLACK}*slack", flush=True)
-    print(f"  DAY CAP: {DAY_CAP} (HARD for Fri/Mon)", flush=True)
+    safe_print(f"  V4 OBJECTIVE (Block-Min): {W_COUNT}*count + {W_MAXDAY}*max + {W_SLACK}*slack", flush=True)
+    safe_print(f"  DAY CAP: {DAY_CAP} (HARD for Fri/Mon)", flush=True)
     
-    print(f"PHASE 1A: CP-SAT model build done in {perf_counter() - t0:.2f}s", flush=True)
+    safe_print(f"PHASE 1A: CP-SAT model build done in {perf_counter() - t0:.2f}s", flush=True)
     
     # Solve
     t1 = perf_counter()
@@ -1711,7 +1721,7 @@ def _solve_capacity_single_cap(
     logger.info(f"[CP-SAT] Status: {status_name}, ObjectiveValue: {solver.ObjectiveValue()}")
     logger.info(f"[CP-SAT] Solve time: {perf_counter() - t1:.2f}s")
     
-    print(f"PHASE 1B: CP-SAT solve done status={status_name} in {perf_counter() - t1:.2f}s", flush=True)
+    safe_print(f"PHASE 1B: CP-SAT solve done status={status_name} in {perf_counter() - t1:.2f}s", flush=True)
     
     if status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
         return None  # INFEASIBLE - caller will handle
@@ -1723,7 +1733,7 @@ def _solve_capacity_single_cap(
     sel_1er = sum(1 for b in selected if len(b.tours) == 1)
     sel_2er = sum(1 for b in selected if len(b.tours) == 2)
     sel_3er = sum(1 for b in selected if len(b.tours) == 3)
-    print(f"  SELECTED BLOCKS: 1er={sel_1er}, 2er={sel_2er}, 3er={sel_3er}", flush=True)
+    safe_print(f"  SELECTED BLOCKS: 1er={sel_1er}, 2er={sel_2er}, 3er={sel_3er}", flush=True)
     
     by_type = {"1er": sel_1er, "2er": sel_2er, "3er": sel_3er}
     split_2er_count = 0
@@ -1772,14 +1782,14 @@ def _solve_capacity_single_cap(
         "template_match_count": template_match_count,
     }
     
-    print(f"Selected {len(selected)} blocks: {by_type}")
-    print(f"Block mix: 1er={block_mix['1er']*100:.1f}%, 2er={block_mix['2er']*100:.1f}%, 3er={block_mix['3er']*100:.1f}%")
-    print(f"Template matches: {template_match_count}")
-    print(f"Total hours: {total_hours:.1f}h")
-    print(f"Time: {elapsed:.2f}s")
+    safe_print(f"Selected {len(selected)} blocks: {by_type}")
+    safe_print(f"Block mix: 1er={block_mix['1er']*100:.1f}%, 2er={block_mix['2er']*100:.1f}%, 3er={block_mix['3er']*100:.1f}%")
+    safe_print(f"Template matches: {template_match_count}")
+    safe_print(f"Total hours: {total_hours:.1f}h")
+    safe_print(f"Time: {elapsed:.2f}s")
     
     # ==== DIAGNOSTICS: Forced 1ers & Missed Opportunities ====
-    print(f"\n{'='*20} DIAGNOSTICS {'='*20}", flush=True)
+    safe_print(f"\n{'='*20} DIAGNOSTICS {'='*20}", flush=True)
     
     # 1. Selected Blocks per Day (Split)
     day_stats = defaultdict(lambda: {"1er": 0, "2er": 0, "3er": 0, "total": 0})
@@ -1795,7 +1805,7 @@ def _solve_capacity_single_cap(
     for d in sorted_days:
         if d in day_stats:
             s = day_stats[d]
-            print(f"  {d}: {s['total']} blocks ({s['1er']} 1er, {s['2er']} 2er, {s['3er']} 3er)", flush=True)
+            safe_print(f"  {d}: {s['total']} blocks ({s['1er']} 1er, {s['2er']} 2er, {s['3er']} 3er)", flush=True)
 
     # 2. Forced 1ers (Tours that had NO non-1er option in the *input* pool)
     # We need to check 'block_index' for this.
@@ -1831,22 +1841,22 @@ def _solve_capacity_single_cap(
                 if has_3er:
                     missed_3er_tours.append(tid)
 
-    print(f"FORCED 1er TOURS: {len(forced_1er_tours)} (No multi-block option available in pool)", flush=True)
-    print(f"MISSED 3er OPPS: {len(missed_3er_tours)} (Assigned 1er, but 3er option existed)", flush=True)
+    safe_print(f"FORCED 1er TOURS: {len(forced_1er_tours)} (No multi-block option available in pool)", flush=True)
+    safe_print(f"MISSED 3er OPPS: {len(missed_3er_tours)} (Assigned 1er, but 3er option existed)", flush=True)
     if missed_3er_tours:
-        print(f"  Example missed opps: {missed_3er_tours[:10]}...", flush=True)
+        safe_print(f"  Example missed opps: {missed_3er_tours[:10]}...", flush=True)
 
     # 3. Day Min Lower Bound
-    print("DAY MIN LOWER BOUND (Max Concurrent Tours):", flush=True)
+    safe_print("DAY MIN LOWER BOUND (Max Concurrent Tours):", flush=True)
     for d in sorted_days:
         day_tours = [t for t in tours if t.day.value == d]
         if not day_tours: continue
         lb = solve_day_min_diagnostic(day_tours, d, config)
         actual = day_stats[d]["total"]
         gap = actual - lb
-        print(f"  {d}: LB={lb} vs Actual={actual} (Gap={gap})", flush=True)
+        safe_print(f"  {d}: LB={lb} vs Actual={actual} (Gap={gap})", flush=True)
 
-    print(f"{'='*53}", flush=True)
+    safe_print(f"{'='*53}", flush=True)
     
     return selected, stats
 
@@ -1946,7 +1956,7 @@ def assign_drivers_greedy(
         # Use central service to check overlap and rest constraints
         allowed, reason = can_assign_block(d["blocks"], block)
         if not allowed:
-            # print(f"DEBUG: Rejecting block {block.id} for driver {driver_id}: {reason}")
+            # safe_print(f"DEBUG: Rejecting block {block.id} for driver {driver_id}: {reason}")
             return False
             
         return True
@@ -2012,7 +2022,7 @@ def assign_drivers_greedy(
             base_score = (0 if crosses else 1, dist)
             
             # Convert tuple to comparable number for sorting with penalties
-            # crosses=True → 0, crosses=False → 1000000
+            # crosses=True â†’ 0, crosses=False â†’ 1000000
             score = (0 if crosses else 1_000_000) + dist
             
             # Activation penalty for new drivers
@@ -2157,10 +2167,10 @@ def solve_forecast_v4(
     
     # Phase A: Build blocks
     t_block = perf_counter()
-    print("PHASE A: Block building start...", flush=True)
+    safe_print("PHASE A: Block building start...", flush=True)
     blocks, block_stats = build_weekly_blocks_smart(tours)
     block_time = perf_counter() - t_block
-    print(f"PHASE A: Block building done in {block_time:.2f}s, generated {len(blocks)} blocks", flush=True)
+    safe_print(f"PHASE A: Block building done in {block_time:.2f}s, generated {len(blocks)} blocks", flush=True)
     
     # Extract scores from block_stats
     block_scores = block_stats.get("block_scores", {})
@@ -2169,7 +2179,7 @@ def solve_forecast_v4(
     # Block pruning: sort deterministically and limit to max_blocks
     original_count = len(blocks)
     if config.max_blocks and len(blocks) > config.max_blocks:
-        print(f"Pruning blocks: {len(blocks)} > max_blocks={config.max_blocks}", flush=True)
+        safe_print(f"Pruning blocks: {len(blocks)} > max_blocks={config.max_blocks}", flush=True)
         
         # V4 NEW: Tour-Aware Pruning
         blocks = prune_blocks_tour_aware(blocks, tours, config)
@@ -2177,7 +2187,7 @@ def solve_forecast_v4(
         # Sort by ID for determinism after pruning
         blocks.sort(key=lambda b: b.id)
         
-        print(f"Pruned from {original_count} to {len(blocks)} blocks", flush=True)
+        safe_print(f"Pruned from {original_count} to {len(blocks)} blocks", flush=True)
         # Rebuild index after pruning
         block_index = build_block_index(blocks)
         # Update block_scores and block_props to only include pruned blocks
@@ -2187,9 +2197,9 @@ def solve_forecast_v4(
     else:
         block_index = build_block_index(blocks)
     
-    print(f"Blocks: {len(blocks)} (1er={block_stats['blocks_1er']}, 2er={block_stats['blocks_2er']}, 3er={block_stats['blocks_3er']})", flush=True)
+    safe_print(f"Blocks: {len(blocks)} (1er={block_stats['blocks_1er']}, 2er={block_stats['blocks_2er']}, 3er={block_stats['blocks_3er']})", flush=True)
     if block_scores:
-        print(f"Policy scores loaded: {len(block_scores)} blocks", flush=True)
+        safe_print(f"Policy scores loaded: {len(block_scores)} blocks", flush=True)
     
     # Phase 1: Capacity (use policy scores)
     selected_blocks, phase1_stats = solve_capacity_phase(
@@ -2478,10 +2488,10 @@ def solve_forecast_fte_only(
     
     # Phase A: Build blocks
     t_block = perf_counter()
-    print("PHASE A: Block building...", flush=True)
+    safe_print("PHASE A: Block building...", flush=True)
     blocks, block_stats = build_weekly_blocks_smart(tours)
     block_time = perf_counter() - t_block
-    print(f"Generated {len(blocks)} blocks in {block_time:.1f}s", flush=True)
+    safe_print(f"Generated {len(blocks)} blocks in {block_time:.1f}s", flush=True)
     
     block_scores = block_stats.get("block_scores", {})
     block_props = block_stats.get("block_props", {})
@@ -2489,7 +2499,7 @@ def solve_forecast_fte_only(
     
     # Phase 1: Select blocks
     t_capacity = perf_counter()
-    print("PHASE 1: Block selection (CP-SAT)...", flush=True)
+    safe_print("PHASE 1: Block selection (CP-SAT)...", flush=True)
     selected_blocks, phase1_stats = solve_capacity_phase(
         blocks, tours, block_index, config,
         block_scores=block_scores, block_props=block_props
@@ -2505,17 +2515,17 @@ def solve_forecast_fte_only(
             block_stats=block_stats
         )
     
-    print(f"Selected {len(selected_blocks)} blocks in {capacity_time:.1f}s", flush=True)
+    safe_print(f"Selected {len(selected_blocks)} blocks in {capacity_time:.1f}s", flush=True)
     
     # Phase 2: FEASIBILITY PIPELINE (Step 0 + Step 1)
-    print("=" * 60, flush=True)
-    print("PHASE 2: FEASIBILITY PIPELINE", flush=True)
-    print("=" * 60, flush=True)
+    safe_print("=" * 60, flush=True)
+    safe_print("PHASE 2: FEASIBILITY PIPELINE", flush=True)
+    safe_print("=" * 60, flush=True)
     
     from src.services.feasibility_pipeline import run_feasibility_pipeline
     
     def log_fn(msg):
-        print(msg, flush=True)
+        safe_print(msg, flush=True)
         logger.info(msg)
     
     k_target = 148  # Max drivers for 42h min
@@ -2676,8 +2686,8 @@ def rebalance_to_min_fte_hours(
     Enhanced repair pass: ensure all FTE drivers have >= min_fte_hours.
     
     Strategy (in order):
-    1. FTE→FTE balancing: Move blocks from overfull FTEs to underfull FTEs
-    2. PT→FTE stealing: Move blocks from PT drivers to underfull FTEs
+    1. FTEâ†’FTE balancing: Move blocks from overfull FTEs to underfull FTEs
+    2. PTâ†’FTE stealing: Move blocks from PT drivers to underfull FTEs
     3. Reclassify: Convert still-underfull FTEs to PT (last resort)
     """
     stats = {
@@ -2689,8 +2699,8 @@ def rebalance_to_min_fte_hours(
     # Get all FTE drivers
     all_ftes = [a for a in assignments if a.driver_type == "FTE"]
     
-    # Phase 1: FTE→FTE balancing
-    logger.info("Repair Phase 1: FTE→FTE balancing...")
+    # Phase 1: FTEâ†’FTE balancing
+    logger.info("Repair Phase 1: FTEâ†’FTE balancing...")
     
     # Identify underfull and donor FTEs
     underfull_ftes = sorted(
@@ -2744,8 +2754,8 @@ def rebalance_to_min_fte_hours(
             _move_block(donor, underfull, block)
             stats["moved_blocks_fte_fte"] += 1
     
-    # Phase 2: PT→FTE stealing
-    logger.info("Repair Phase 2: PT→FTE stealing...")
+    # Phase 2: PTâ†’FTE stealing
+    logger.info("Repair Phase 2: PTâ†’FTE stealing...")
     
     # Re-identify underfull FTEs (some may have been filled in Phase 1)
     underfull_ftes = sorted(
@@ -2794,8 +2804,8 @@ def rebalance_to_min_fte_hours(
             a.driver_type = "PT"
             stats["reclassified_fte_to_pt"] += 1
     
-    logger.info(f"Repair stats: FTE→FTE moves={stats['moved_blocks_fte_fte']}, "
-                f"PT→FTE moves={stats['moved_blocks_pt_fte']}, "
+    logger.info(f"Repair stats: FTEâ†’FTE moves={stats['moved_blocks_fte_fte']}, "
+                f"PTâ†’FTE moves={stats['moved_blocks_pt_fte']}, "
                 f"reclassified={stats['reclassified_fte_to_pt']}")
     
     return assignments, stats
@@ -3030,7 +3040,7 @@ def absorb_saturday_pt_into_fte(
             if not ok:
                 continue
                 
-            # Move block PT→FTE
+            # Move block PTâ†’FTE
             _move_block(source_pt, fte, block)
             stats["absorbed_blocks"] += 1
             break
@@ -3045,7 +3055,7 @@ def absorb_saturday_pt_into_fte(
     assignments = [a for a in assignments if len(a.blocks) > 0]
     
     logger.info(f"Absorbed {stats['absorbed_blocks']} Saturday blocks into FTEs. "
-                f"PT with Sat: {stats['pt_sat_before']} → {stats['pt_sat_after']}")
+                f"PT with Sat: {stats['pt_sat_before']} â†’ {stats['pt_sat_after']}")
     
     return assignments, stats
 
@@ -3228,7 +3238,7 @@ def pack_part_time_saturday(
     )
     
     logger.info(f"Packed {packed_count} Saturday blocks. "
-                f"PT with Sat: {stats['pt_drivers_with_sat_before']} → {stats['pt_drivers_with_sat_after']}")
+                f"PT with Sat: {stats['pt_drivers_with_sat_before']} â†’ {stats['pt_drivers_with_sat_after']}")
     
     return assignments, stats
 
@@ -3260,10 +3270,10 @@ def solve_forecast_set_partitioning(
     
     # Phase A: Build blocks (reuse existing)
     t_block = perf_counter()
-    print("PHASE A: Block building...", flush=True)
+    safe_print("PHASE A: Block building...", flush=True)
     blocks, block_stats = build_weekly_blocks_smart(tours)
     block_time = perf_counter() - t_block
-    print(f"Generated {len(blocks)} blocks in {block_time:.1f}s", flush=True)
+    safe_print(f"Generated {len(blocks)} blocks in {block_time:.1f}s", flush=True)
     
     block_scores = block_stats.get("block_scores", {})
     block_props = block_stats.get("block_props", {})
@@ -3271,7 +3281,7 @@ def solve_forecast_set_partitioning(
     
     # Phase 1: Select blocks (reuse existing)
     t_capacity = perf_counter()
-    print("PHASE 1: Block selection (CP-SAT)...", flush=True)
+    safe_print("PHASE 1: Block selection (CP-SAT)...", flush=True)
     # Use local ConfigV4 (not ForecastConfig from forecast_weekly_solver)
     config = ConfigV4(min_hours_per_fte=40.0, time_limit_phase1=float(time_limit), seed=seed)
     selected_blocks, phase1_stats = solve_capacity_phase(
@@ -3289,15 +3299,15 @@ def solve_forecast_set_partitioning(
             block_stats=block_stats
         )
     
-    print(f"Selected {len(selected_blocks)} blocks in {capacity_time:.1f}s", flush=True)
+    safe_print(f"Selected {len(selected_blocks)} blocks in {capacity_time:.1f}s", flush=True)
     
     # Phase 2: Set-Partitioning
-    print("=" * 60, flush=True)
-    print("PHASE 2: SET-PARTITIONING", flush=True)
-    print("=" * 60, flush=True)
+    safe_print("=" * 60, flush=True)
+    safe_print("PHASE 2: SET-PARTITIONING", flush=True)
+    safe_print("=" * 60, flush=True)
     
     def log_fn(msg):
-        print(msg, flush=True)
+        safe_print(msg, flush=True)
         logger.info(msg)
     
     from src.services.set_partition_solver import solve_set_partitioning, convert_rosters_to_assignments
@@ -3329,7 +3339,7 @@ def solve_forecast_set_partitioning(
         logger.info("POST-GREEDY REPAIR")
         logger.info("=" * 60)
         
-        # Step 1: Rebalance FTEs (FTE→FTE, then PT→FTE, then reclassify)
+        # Step 1: Rebalance FTEs (FTEâ†’FTE, then PTâ†’FTE, then reclassify)
         assignments, repair_stats = rebalance_to_min_fte_hours(assignments, 40.0, 53.0)
         
         # Step 1.5: Fill empty days after 3-tour days
