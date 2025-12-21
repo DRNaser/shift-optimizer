@@ -145,12 +145,11 @@ class TestDriver:
         assert driver.name == "Max Mustermann"
         assert driver.max_weekly_hours == 50.0
     
-    @pytest.mark.xfail(reason="TICKET-001: Driver.max_daily_span_hours default is 16.5, test expects 14.5")
     def test_driver_defaults(self):
-        """Driver should have proper defaults."""
+        """Driver should have proper defaults (from HARD_CONSTRAINTS)."""
         driver = Driver(id="D002", name="Test Driver")
         assert driver.max_weekly_hours == 55.0
-        assert driver.max_daily_span_hours == 14.5
+        assert driver.max_daily_span_hours == 15.5  # From HARD_CONSTRAINTS
         assert driver.max_tours_per_day == 3
         assert driver.min_rest_hours == 11.0
     

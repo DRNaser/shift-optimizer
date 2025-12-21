@@ -61,6 +61,65 @@ async def health_check():
 
 
 # =============================================================================
+# HEALTHCHECK ENDPOINTS (Kubernetes Probes)
+# =============================================================================
+
+@router.get("/healthz")
+async def liveness():
+    """
+    Liveness probe - is the process alive?
+    Used by Kubernetes to restart unhealthy pods.
+    """
+    return {"status": "alive", "version": "2.0.0"}
+
+
+@router.get("/readyz")
+async def readiness():
+    """
+    Readiness probe - can we accept traffic?
+    Used by Kubernetes to control traffic routing.
+    Includes build version info for debugging "old code still running" issues.
+    """
+    return {
+        "status": "ready",
+        "solver": "warm",
+        "ortools_version": "9.11.4210",
+        "app_version": "2.0.0",
+        "git_commit": _get_git_commit(),
+    }
+
+
+def _get_git_commit() -> str:
+    """Get short git commit hash for build identification."""
+    import subprocess
+    try:
+        return subprocess.check_output(
+            ['git', 'rev-parse', '--short', 'HEAD'],
+            stderr=subprocess.DEVNULL
+        ).decode().strip()
+    except Exception:
+        return "unknown"
+
+# =============================================================================
+# PROMETHEUS METRICS ENDPOINT
+# =============================================================================
+
+@router.get("/metrics")
+async def metrics():
+    """
+    Prometheus metrics endpoint for scraping.
+    Returns all registered metrics in Prometheus text format.
+    """
+    from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
+    from fastapi.responses import Response
+    
+    return Response(
+        content=generate_latest(),
+        media_type=CONTENT_TYPE_LATEST
+    )
+
+
+# =============================================================================
 # CONSTRAINTS
 # =============================================================================
 
@@ -79,6 +138,187 @@ async def get_constraints():
             "target_2er_ratio": 0.72,
             "target_3er_ratio": 0.22,
         }
+    }
+
+
+@router.get("/config-schema")
+async def get_config_schema():
+    """Get configuration schema for frontend."""
+    return {
+        "version": "4.0",
+        "groups": [
+            {
+                "id": "solver",
+                "label": "Solver Settings",
+                "fields": [
+                    {
+                        "key": "solver_type",
+                        "type": "string",
+                        "default": "portfolio",
+                        "editable": True,
+                        "description": "Solver algorithm to use",
+                        "min": None,
+                        "max": None
+                    },
+                    {
+                        "key": "extended_hours",
+                        "type": "bool",
+                        "default": False,
+                        "editable": True,
+                        "description": "Allow extended hours (up to 56h/week)",
+                        "min": None,
+                        "max": None
+                    }
+                ]
+            },
+            {
+                "id": "constraints",
+                "label": "Constraints",
+                "fields": [
+                    {
+                        "key": "min_hours_per_fte",
+                        "type": "float",
+                        "default": 42.0,
+                        "editable": False,
+                        "description": "Minimum weekly hours for FTE drivers",
+                        "locked_reason": "Hard constraint",
+                        "min": 40,
+                        "max": 48
+                    },
+                    {
+                        "key": "max_hours_per_fte",
+                        "type": "float",
+                        "default": 53.0,
+                        "editable": True,
+                        "description": "Maximum weekly hours for FTE drivers",
+                        "min": 48,
+                        "max": 56
+                    }
+                ]
+            }
+        ]
+    }
+
+
+@router.post("/runs")
+async def create_run(request: dict):
+    """
+    Create a new optimization run.
+    Accepts the frontend's RunCreateRequest format and returns RunCreateResponse.
+    """
+    import uuid
+    
+    # Extract data from frontend format
+    week_start = request.get("week_start", "2024-01-01")
+    tours_data = request.get("tours", [])
+    run_config = request.get("run", {})
+    
+    # Convert to ScheduleRequest format
+    from src.api.models import ScheduleRequest, TourInputFE
+    
+    # Day name mapping (frontend may send various formats)
+    day_mapping = {
+        "monday": "Mon", "mon": "Mon", "MONDAY": "Mon", "MON": "Mon",
+        "tuesday": "Tue", "tue": "Tue", "TUESDAY": "Tue", "TUE": "Tue",
+        "wednesday": "Wed", "wed": "Wed", "WEDNESDAY": "Wed", "WED": "Wed",
+        "thursday": "Thu", "thu": "Thu", "THURSDAY": "Thu", "THU": "Thu",
+        "friday": "Fri", "fri": "Fri", "FRIDAY": "Fri", "FRI": "Fri",
+        "saturday": "Sat", "sat": "Sat", "SATURDAY": "Sat", "SAT": "Sat",
+        "sunday": "Sun", "sun": "Sun", "SUNDAY": "Sun", "SUN": "Sun",
+    }
+    
+    # Convert tours
+    fe_tours = []
+    for t in tours_data:
+        raw_day = t.get("day", "Mon")
+        day = day_mapping.get(raw_day, raw_day)  # Map or pass through
+        fe_tours.append(TourInputFE(
+            id=t.get("id", f"T{len(fe_tours)}"),
+            day=day,
+            start_time=t.get("start_time", "08:00"),
+            end_time=t.get("end_time", "12:00"),
+        ))
+    
+    # Build ScheduleRequest
+    schedule_request = ScheduleRequest(
+        week_start=week_start,
+        tours=fe_tours,
+        time_limit_seconds=run_config.get("time_budget_seconds", 120),
+        seed=run_config.get("seed", 42),
+        solver_type="portfolio",
+        extended_hours=run_config.get("config_overrides", {}).get("extended_hours", False),
+    )
+    
+    # Run the solver
+    result = await create_schedule(schedule_request)
+    
+    # Generate run_id from result
+    run_id = result.id if hasattr(result, 'id') else str(uuid.uuid4())
+    
+    # Store result for later retrieval
+    global RUNS_CACHE
+    if 'RUNS_CACHE' not in globals():
+        RUNS_CACHE = {}
+    RUNS_CACHE[run_id] = result
+    
+    # Return frontend-expected format
+    return {
+        "run_id": run_id,
+        "status": "COMPLETED",
+        "events_url": f"/api/v1/runs/{run_id}/events",
+        "run_url": f"/api/v1/runs/{run_id}"
+    }
+
+
+# Cache for run results
+RUNS_CACHE = {}
+
+
+@router.get("/runs/{run_id}")
+async def get_run_status(run_id: str):
+    """Get status of a run."""
+    if run_id not in RUNS_CACHE:
+        raise HTTPException(status_code=404, detail="Run not found")
+    
+    return {
+        "run_id": run_id,
+        "status": "COMPLETED",
+        "phase": None,
+        "budget": {"total": 120, "status": "completed"},
+        "links": {
+            "events": f"/api/v1/runs/{run_id}/events",
+            "report": f"/api/v1/runs/{run_id}/report",
+            "plan": f"/api/v1/runs/{run_id}/plan",
+            "canonical_report": f"/api/v1/runs/{run_id}/report/canonical",
+            "cancel": f"/api/v1/runs/{run_id}/cancel"
+        },
+        "created_at": "2024-01-01T00:00:00Z"
+    }
+
+
+@router.get("/runs/{run_id}/plan")
+async def get_run_plan(run_id: str):
+    """Get the plan/result of a run."""
+    if run_id not in RUNS_CACHE:
+        raise HTTPException(status_code=404, detail="Run not found")
+    return RUNS_CACHE[run_id]
+
+
+@router.get("/runs/{run_id}/report")
+async def get_run_report(run_id: str):
+    """Get report for a run."""
+    if run_id not in RUNS_CACHE:
+        raise HTTPException(status_code=404, detail="Run not found")
+    
+    result = RUNS_CACHE[run_id]
+    return {
+        "run_id": run_id,
+        "input_summary": {"tours": len(result.assignments) if hasattr(result, 'assignments') else 0},
+        "pool": {"raw": 0, "dedup": 0, "capped": 0},
+        "budget": {"total": 120, "slices": {}, "enforced": True},
+        "timing": {"phase1_s": 0, "phase2_s": 0, "lns_s": 0, "total_s": 0},
+        "reason_codes": [],
+        "solution_signature": run_id
     }
 
 

@@ -436,3 +436,53 @@ class TestS06BudgetCompliance:
         assert "phase2" in d
         assert "lns" in d
         assert "buffer" in d
+
+
+# =============================================================================
+# S0.7: PATHSELECTION REGRESSION TEST
+# =============================================================================
+
+class TestPathSelectionRegression:
+    """
+    Regression test to prevent PathSelection from becoming a local variable
+    in run_portfolio, which causes UnboundLocalError crashes.
+    
+    This test ensures that no accidental binding (assignment, except-as, 
+    for-loop, or local import) shadows the module-level PathSelection import.
+    """
+    
+    def test_run_portfolio_pathselection_not_local(self):
+        """
+        CRITICAL: PathSelection must NOT be in run_portfolio's co_varnames.
+        If this test fails, there is an assignment/binding that shadows PathSelection.
+        """
+        import src.services.portfolio_controller as pc
+        
+        local_vars = pc.run_portfolio.__code__.co_varnames
+        assert "PathSelection" not in local_vars, (
+            f"PathSelection is a local variable in run_portfolio! "
+            f"This will cause UnboundLocalError crashes. "
+            f"Found in co_varnames: {[v for v in local_vars if 'Path' in v]}"
+        )
+    
+    def test_execute_path_pathselection_not_local(self):
+        """
+        CRITICAL: PathSelection must NOT be in _execute_path's co_varnames.
+        """
+        import src.services.portfolio_controller as pc
+        
+        local_vars = pc._execute_path.__code__.co_varnames
+        assert "PathSelection" not in local_vars, (
+            f"PathSelection is a local variable in _execute_path! "
+            f"This will cause UnboundLocalError crashes."
+        )
+    
+    def test_ps_alias_exists_at_module_level(self):
+        """
+        Verify the PS = PathSelection alias is defined at module level.
+        """
+        import src.services.portfolio_controller as pc
+        from src.services.policy_engine import PathSelection
+        
+        assert hasattr(pc, 'PS'), "PS alias not found at module level"
+        assert pc.PS is PathSelection, "PS alias does not point to PathSelection"

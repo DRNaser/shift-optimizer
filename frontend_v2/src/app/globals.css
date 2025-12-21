@@ -1,0 +1,257 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 0 0% 100%;
+    --foreground: 222.2 84% 4.9%;
+    --card: 0 0% 100%;
+    --card-foreground: 222.2 84% 4.9%;
+    --primary: 221.2 83.2% 53.3%;
+    --primary-foreground: 210 40% 98%;
+    --secondary: 210 40% 96.1%;
+    --secondary-foreground: 222.2 47.4% 11.2%;
+    --muted: 210 40% 96.1%;
+    --muted-foreground: 215.4 16.3% 46.9%;
+    --accent: 210 40% 96.1%;
+    --accent-foreground: 222.2 47.4% 11.2%;
+    --destructive: 0 84.2% 60.2%;
+    --destructive-foreground: 210 40% 98%;
+    --border: 214.3 31.8% 91.4%;
+    --radius: 0.5rem;
+  }
+
+  .dark {
+    --background: 222.2 84% 4.9%;
+    --foreground: 210 40% 98%;
+    --card: 222.2 84% 4.9%;
+    --card-foreground: 210 40% 98%;
+    --primary: 217.2 91.2% 59.8%;
+    --primary-foreground: 222.2 47.4% 11.2%;
+    --secondary: 217.2 32.6% 17.5%;
+    --secondary-foreground: 210 40% 98%;
+    --muted: 217.2 32.6% 17.5%;
+    --muted-foreground: 215 20.2% 65.1%;
+    --accent: 217.2 32.6% 17.5%;
+    --accent-foreground: 210 40% 98%;
+    --destructive: 0 62.8% 30.6%;
+    --destructive-foreground: 210 40% 98%;
+    --border: 217.2 32.6% 17.5%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply bg-background text-foreground;
+  }
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: hsl(var(--muted));
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: hsl(var(--muted-foreground) / 0.3);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: hsl(var(--muted-foreground) / 0.5);
+}
+
+/* Log console styles */
+.log-console {
+  font-family: 'Fira Code', 'SF Mono', Monaco, 'Andale Mono', monospace;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.log-entry {
+  @apply py-0.5 px-2 border-b border-border/50;
+}
+
+.log-entry.level-DEBUG {
+  @apply text-muted-foreground;
+}
+
+.log-entry.level-INFO {
+  @apply text-foreground;
+}
+
+.log-entry.level-WARN {
+  @apply text-amber-500 bg-amber-500/5;
+}
+
+.log-entry.level-ERROR {
+  @apply text-red-500 bg-red-500/5;
+}
+
+/* Status badges */
+.status-badge {
+  @apply inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium;
+}
+
+.status-QUEUED {
+  @apply bg-gray-100 text-gray-800 dark:bg-gray-800 dark:text-gray-100;
+}
+
+.status-RUNNING {
+  @apply bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-100 animate-pulse;
+}
+
+.status-COMPLETED {
+  @apply bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-100;
+}
+
+.status-FAILED {
+  @apply bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-100;
+}
+
+.status-CANCELLED {
+  @apply bg-orange-100 text-orange-800 dark:bg-orange-900 dark:text-orange-100;
+}
+
+/* Phase indicator */
+.phase-badge {
+  @apply inline-flex items-center px-3 py-1 rounded-md text-sm font-medium bg-primary/10 text-primary;
+}
+
+/* Connection indicator */
+.connection-indicator {
+  @apply w-2 h-2 rounded-full;
+}
+
+.connection-indicator.connected {
+  @apply bg-green-500 animate-pulse;
+}
+
+.connection-indicator.disconnected {
+  @apply bg-red-500;
+}
+
+/* Card styles */
+.card {
+  @apply rounded-lg border bg-card text-card-foreground shadow-sm p-6;
+}
+
+/* Button styles */
+.btn {
+  @apply inline-flex items-center justify-center rounded-md text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 disabled:opacity-50 disabled:pointer-events-none;
+}
+
+.btn-primary {
+  @apply btn bg-primary text-primary-foreground hover:bg-primary/90 h-10 px-4;
+}
+
+.btn-secondary {
+  @apply btn bg-secondary text-secondary-foreground hover:bg-secondary/80 h-10 px-4;
+}
+
+.btn-destructive {
+  @apply btn bg-destructive text-destructive-foreground hover:bg-destructive/90 h-10 px-4;
+}
+
+.btn-outline {
+  @apply btn border border-border hover:bg-accent hover:text-accent-foreground h-10 px-4;
+}
+
+.btn-ghost {
+  @apply btn hover:bg-accent hover:text-accent-foreground h-10 px-4;
+}
+
+.btn-sm {
+  @apply h-8 px-3 text-xs;
+}
+
+/* Input styles */
+.input {
+  @apply flex h-10 w-full rounded-md border border-border bg-background px-3 py-2 text-sm ring-offset-background file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50;
+}
+
+.textarea {
+  @apply flex min-h-[80px] w-full rounded-md border border-border bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50;
+}
+
+/* Toggle (simple CSS-only) */
+.toggle-container {
+  @apply relative inline-flex h-6 w-11 items-center rounded-full transition-colors cursor-pointer;
+}
+
+.toggle-container.active {
+  @apply bg-primary;
+}
+
+.toggle-container.inactive {
+  @apply bg-gray-200 dark:bg-gray-700;
+}
+
+.toggle-container.disabled {
+  @apply opacity-50 cursor-not-allowed;
+}
+
+.toggle-dot {
+  @apply inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform;
+}
+
+.toggle-container.active .toggle-dot {
+  @apply translate-x-6;
+}
+
+.toggle-container.inactive .toggle-dot {
+  @apply translate-x-1;
+}
+
+/* Slider */
+.slider {
+  @apply w-full h-2 bg-gray-200 dark:bg-gray-700 rounded-full appearance-none cursor-pointer;
+}
+
+.slider::-webkit-slider-thumb {
+  @apply appearance-none w-4 h-4 bg-primary rounded-full cursor-pointer;
+}
+
+/* Table */
+.table {
+  @apply w-full caption-bottom text-sm;
+}
+
+.table thead {
+  @apply border-b;
+}
+
+.table th {
+  @apply h-12 px-4 text-left align-middle font-medium text-muted-foreground;
+}
+
+.table tbody tr {
+  @apply border-b transition-colors hover:bg-muted/50;
+}
+
+.table td {
+  @apply p-4 align-middle;
+}
+
+/* Tooltip */
+.tooltip {
+  @apply relative inline-block;
+}
+
+.tooltip .tooltip-text {
+  @apply invisible opacity-0 absolute z-10 px-3 py-2 text-sm font-medium text-white bg-gray-900 rounded-lg shadow-sm -top-10 left-1/2 -translate-x-1/2 whitespace-nowrap transition-opacity duration-300;
+}
+
+.tooltip:hover .tooltip-text {
+  @apply visible opacity-100;
+}

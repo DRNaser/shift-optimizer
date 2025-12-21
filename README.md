@@ -90,7 +90,7 @@ curl -X POST http://localhost:8000/api/v1/schedule \
 | Constraint | Default | Description |
 |-----------|---------|-------------|
 | `MAX_WEEKLY_HOURS` | 55h | Max hours per driver per week |
-| `MAX_DAILY_SPAN_HOURS` | 14.5h | Max span first→last tour |
+| `MAX_DAILY_SPAN_HOURS` | 15.5h | Max span first→last tour |
 | `MIN_REST_HOURS` | 11h | Min rest between days |
 | `MAX_TOURS_PER_DAY` | 3 | Max tours per driver per day |
 

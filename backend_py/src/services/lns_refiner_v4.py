@@ -931,6 +931,7 @@ def repair_assignments(
     config: LNSConfigV4,
     seed: int,
     banned_driver_ids: set = None,  # Drivers that should NOT receive any blocks
+    iter_time_limit: float = None,  # S0.7: Time limit for this iteration (respects global budget)
 ) -> dict[str, str]:
     """
     Repair by reassigning blocks using small CP-SAT.
@@ -938,6 +939,8 @@ def repair_assignments(
     Args:
         banned_driver_ids: Drivers that are completely excluded from candidates
                           (used to enforce PT elimination)
+        iter_time_limit: Optional time limit for this specific iteration.
+                        If provided, caps the solver time to respect global budget.
     
     Returns:
         block_id -> driver_id mapping
@@ -1186,11 +1189,21 @@ def repair_assignments(
     # Dynamic time limit: small repairs are fast, large repairs get more time
     num_blocks = len(blocks)
     if num_blocks < 10:
-        time_limit = 2.0
+        base_limit = 2.0
     elif num_blocks < 50:
-        time_limit = 10.0
+        base_limit = 10.0
     else:
-        time_limit = config.repair_time_limit
+        base_limit = config.repair_time_limit
+    
+    # S0.7: Respect iteration time limit if provided (global budget enforcement)
+    if iter_time_limit is not None and iter_time_limit > 0:
+        time_limit = min(base_limit, iter_time_limit)
+        if time_limit < 1.0:
+            # Not enough time to run a meaningful repair
+            logger.warning(f"Repair skipped: iter_time_limit={iter_time_limit:.1f}s too small")
+            return {}
+    else:
+        time_limit = base_limit
     
     solver.parameters.max_time_in_seconds = time_limit
     solver.parameters.search_branching = cp_model.FIXED_SEARCH
@@ -1462,12 +1475,19 @@ def score_assignments(assignments: list) -> tuple:
 def refine_assignments_v4(
     assignments: list,  # list[DriverAssignment]
     config: LNSConfigV4 = None,
+    remaining_fn: callable = None,  # Global deadline function from portfolio controller
 ) -> list:
     """
     Refine v4 driver assignments using LNS.
     
     Iteratively destroys part of the assignment and repairs with CP-SAT.
     Early stopping: stops if no improvement after N consecutive failures.
+    
+    Args:
+        assignments: List of DriverAssignment to refine
+        config: LNS configuration
+        remaining_fn: Optional callable returning seconds remaining in global budget.
+                     If provided, LNS will respect this as hard deadline.
     """
     log_progress("=" * 60)
     log_progress("LNS V4 REFINEMENT START")
@@ -1516,18 +1536,39 @@ def refine_assignments_v4(
     start_time = time.time()
     lns_time_limit = config.lns_time_limit
     
+    # Log budget info
+    if remaining_fn:
+        global_remaining = remaining_fn()
+        effective_limit = min(lns_time_limit, global_remaining)
+        log_progress(f"Budget: lns_slice={lns_time_limit:.1f}s, global_remaining={global_remaining:.1f}s, effective={effective_limit:.1f}s")
+    else:
+        effective_limit = lns_time_limit
+        log_progress(f"Budget: lns_slice={lns_time_limit:.1f}s (no global deadline)")
+    
     for iteration in range(config.max_iterations):
-        # Check global time limit
+        # Check global deadline FIRST (hard enforcement)
+        if remaining_fn:
+            global_remaining = remaining_fn()
+            if global_remaining <= 0:
+                log_progress(f"GLOBAL BUDGET EXHAUSTED (remaining={global_remaining:.1f}s), stopping LNS")
+                break
+        
+        # Check local time limit
         elapsed = time.time() - start_time
         if elapsed >= lns_time_limit:
-            log_progress(f"LNS time limit reached ({elapsed:.1f}s >= {lns_time_limit}s), stopping")
+            log_progress(f"LNS slice limit reached ({elapsed:.1f}s >= {lns_time_limit}s), stopping")
             break
+        
+        # Calculate time available for this iteration's repair
+        iter_remaining = lns_time_limit - elapsed
+        if remaining_fn:
+            iter_remaining = min(iter_remaining, remaining_fn())
         
         # Deterministic seed per iteration
         iter_seed = config.seed + iteration
         iter_rng = random.Random(iter_seed)
         
-        log_progress(f"\n--- Iteration {iteration + 1}/{config.max_iterations} ({elapsed:.1f}s) ---")
+        log_progress(f"\n--- Iteration {iteration + 1}/{config.max_iterations} ({elapsed:.1f}s, remain={iter_remaining:.1f}s) ---")
         
         # Destroy: Use ejection chain if PT elimination enabled, otherwise random
         banned_driver_ids = set()  # Drivers that cannot receive blocks
@@ -1566,12 +1607,14 @@ def refine_assignments_v4(
             continue
         
         # Repair (with banned drivers excluded from candidates)
+        # S0.7: Pass iter_remaining to cap CP-SAT time to global budget
         block_mapping = repair_assignments(
             driver_states,
             blocks_to_repair,
             config,
             iter_seed,
             banned_driver_ids=banned_driver_ids,
+            iter_time_limit=iter_remaining,  # Respect global deadline
         )
         
         if not block_mapping:

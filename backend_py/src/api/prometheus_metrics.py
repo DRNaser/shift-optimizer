@@ -18,13 +18,38 @@ Signature Tracking:
     No high-cardinality labels - safe for long-running production.
 """
 
-from prometheus_client import Counter, Histogram
+from prometheus_client import Counter, Histogram, Info
 from collections import OrderedDict
 import hashlib
 import logging
 import threading
+import subprocess
 
 logger = logging.getLogger("PrometheusMetrics")
+
+
+# =============================================================================
+# BUILD INFO METRIC (for version tracking)
+# =============================================================================
+
+def _get_git_commit_for_metrics() -> str:
+    """Get short git commit hash for build info metric."""
+    try:
+        return subprocess.check_output(
+            ['git', 'rev-parse', '--short', 'HEAD'],
+            stderr=subprocess.DEVNULL
+        ).decode().strip()
+    except Exception:
+        return "unknown"
+
+
+# Initialize build info metric at module load
+build_info = Info('solver_build', 'Shift Optimizer build information')
+build_info.info({
+    'version': '2.0.0',
+    'commit': _get_git_commit_for_metrics(),
+    'ortools': '9.11.4210'
+})
 
 
 # =============================================================================

@@ -70,7 +70,7 @@ class ParameterBundle:
     """
     # Path info
     path: PathSelection
-    reason_code: str
+    reason_code: str = "OK"  # Default to avoid missing arg errors
     
     # LNS parameters
     lns_iterations: int = 100

@@ -13,7 +13,7 @@ import { UnassignedList } from './components/UnassignedList';
 import { SolverProof } from './components/SolverProof';
 import { LeftoverTours } from './components/LeftoverTours';
 
-type SolverType = 'greedy' | 'cpsat' | 'cpsat+lns' | 'cpsat-global' | 'set-partitioning' | 'heuristic';
+type SolverType = 'greedy' | 'cpsat' | 'cpsat+lns' | 'cpsat-global' | 'set-partitioning' | 'heuristic' | 'portfolio';
 type AppView = 'setup' | 'running' | 'results';
 type ResultsTab = 'schedule' | 'proof' | 'leftover';
 
@@ -27,11 +27,12 @@ export default function App() {
 
   // Config
   // Config
-  const [solverType, setSolverType] = useState<SolverType>('cpsat');
+  const [solverType, setSolverType] = useState<SolverType>('portfolio');
   const [timeLimit, setTimeLimit] = useState(30);
   const [seed, setSeed] = useState(42);
   const [targetFtes, setTargetFtes] = useState(145);
   const [overflowCap, setOverflowCap] = useState(10);
+  const [extendedHours, setExtendedHours] = useState(true);
 
   // Execution
   const [logs, setLogs] = useState<string[]>([]);
@@ -94,6 +95,7 @@ export default function App() {
         lns_iterations: solverType === 'cpsat+lns' ? 100 : undefined,
         target_ftes: solverType === 'heuristic' ? targetFtes : undefined,
         fte_overflow_cap: solverType === 'heuristic' ? overflowCap : undefined,
+        extended_hours: extendedHours,
       };
 
       const response = await createSchedule(request);
@@ -155,6 +157,7 @@ export default function App() {
                   value={solverType}
                   onChange={(e) => setSolverType(e.target.value as SolverType)}
                 >
+                  <option value="portfolio">✨ Portfolio (Auto-Select)</option>
                   <option value="greedy">Greedy (Fast)</option>
                   <option value="heuristic">Heuristic (Target FTE)</option>
                   <option value="cpsat">CP-SAT (Optimal)</option>
@@ -205,6 +208,18 @@ export default function App() {
                   value={seed}
                   onChange={(e) => setSeed(Number(e.target.value))}
                 />
+              </div>
+
+              <div className="form-group" style={{ flexDirection: 'row', alignItems: 'center', gap: 'var(--spacing-sm)' }}>
+                <input
+                  type="checkbox"
+                  id="extendedHours"
+                  checked={extendedHours}
+                  onChange={(e) => setExtendedHours(e.target.checked)}
+                />
+                <label htmlFor="extendedHours" className="form-label" style={{ marginBottom: 0, cursor: 'pointer' }}>
+                  Extended Hours (Max 56h)
+                </label>
               </div>
             </div>
           )}

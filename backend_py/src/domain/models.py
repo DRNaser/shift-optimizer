@@ -12,6 +12,9 @@ from enum import Enum
 from typing import Annotated
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+# Import constraints for default values (avoids drift between constraint and model)
+from src.domain.constraints import HARD_CONSTRAINTS
+
 
 # =============================================================================
 # ENUMS
@@ -175,7 +178,7 @@ class Driver(BaseModel):
     
     # Constraint limits (can be driver-specific, defaults from HARD_CONSTRAINTS)
     max_weekly_hours: float = Field(default=55.0, ge=0, le=168)
-    max_daily_span_hours: float = Field(default=16.5, ge=0, le=24)
+    max_daily_span_hours: float = Field(default=HARD_CONSTRAINTS.MAX_DAILY_SPAN_HOURS, ge=0, le=24)
     max_tours_per_day: int = Field(default=3, ge=1, le=10)
     min_rest_hours: float = Field(default=11.0, ge=0, le=24)
     

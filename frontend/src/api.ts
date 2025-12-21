@@ -10,7 +10,7 @@ const API_BASE = '/api/v1';
 // TYPES
 // =============================================================================
 
-export type WeekdayFE = 'MONDAY' | 'TUESDAY' | 'WEDNESDAY' | 'THURSDAY' | 'FRIDAY' | 'SATURDAY' | 'SUNDAY';
+export type WeekdayFE = 'Mon' | 'Tue' | 'Wed' | 'Thu' | 'Fri' | 'Sat' | 'Sun';
 
 export interface TourInput {
     id: string;
@@ -22,12 +22,13 @@ export interface TourInput {
 export interface ScheduleRequest {
     week_start: string;
     tours: TourInput[];
-    solver_type: 'greedy' | 'cpsat' | 'cpsat+lns' | 'cpsat-global' | 'set-partitioning' | 'heuristic';
+    solver_type: 'greedy' | 'cpsat' | 'cpsat+lns' | 'cpsat-global' | 'set-partitioning' | 'heuristic' | 'portfolio';
     time_limit_seconds: number;
     seed?: number;
     lns_iterations?: number;
     target_ftes?: number;
     fte_overflow_cap?: number;
+    extended_hours?: boolean;
 }
 
 export interface TourOutput {

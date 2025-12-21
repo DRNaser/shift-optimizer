@@ -11,22 +11,24 @@
 import type { TourInput, WeekdayFE } from '../api';
 
 const WEEKDAY_MAP: Record<string, WeekdayFE> = {
-    'montag': 'MONDAY',
-    'dienstag': 'TUESDAY',
-    'mittwoch': 'WEDNESDAY',
-    'donnerstag': 'THURSDAY',
-    'freitag': 'FRIDAY',
-    'samstag': 'SATURDAY',
-    'sonntag': 'SUNDAY',
+    // German to short format (backend expects 'Mon', 'Tue', etc.)
+    'montag': 'Mon',
+    'dienstag': 'Tue',
+    'mittwoch': 'Wed',
+    'donnerstag': 'Thu',
+    'freitag': 'Fri',
+    'samstag': 'Sat',
+    'sonntag': 'Sun',
     // English
-    'monday': 'MONDAY',
-    'tuesday': 'TUESDAY',
-    'wednesday': 'WEDNESDAY',
-    'thursday': 'THURSDAY',
-    'friday': 'FRIDAY',
-    'saturday': 'SATURDAY',
-    'sunday': 'SUNDAY',
+    'monday': 'Mon',
+    'tuesday': 'Tue',
+    'wednesday': 'Wed',
+    'thursday': 'Thu',
+    'friday': 'Fri',
+    'saturday': 'Sat',
+    'sunday': 'Sun',
 };
+
 
 export interface ParseResult {
     tours: TourInput[];
