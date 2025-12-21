@@ -55,39 +55,91 @@ def safe_print(msg: str) -> None:
 # CONFIGURATION
 # =============================================================================
 
-# Block generation - Use HARD_CONSTRAINTS for tour pauses within a block.
-# For split-shift candidates (multi-block per day), we allow larger gaps
-# but apply scoring penalties. 8h is the safety cap.
-MIN_PAUSE_MINUTES = HARD_CONSTRAINTS.MIN_PAUSE_BETWEEN_TOURS  # 30 min (standard pause)
-MAX_PAUSE_MINUTES = 480  # 8h max gap - intentional for split-shift candidates
+# Two-Zone Pause Model for Block Generation
+# Zone 1 (Regular): 30-120 min - standard consecutive tours
+# Zone 2 (Split):  240-360 min - legal split-shift gap (2er only)
+# Forbidden Zone:  121-239 min - explicitly banned ("half-splits")
 
-# Split-gap scoring policy (in minutes)
-# Gaps in this range are considered "ideal" for split shifts
-SPLIT_GAP_IDEAL_MIN = 315   # 5h 15m - min of ideal split gap
-SPLIT_GAP_IDEAL_MAX = 405   # 6h 45m - max of ideal split gap  
-SPLIT_GAP_ACCEPTABLE_MAX = 480  # 8h - absolute max, heavy penalty above ideal
+# Regular pause limits (Zone 1)
+MIN_PAUSE_MINUTES = HARD_CONSTRAINTS.MIN_PAUSE_BETWEEN_TOURS  # 30 min
+MAX_PAUSE_REGULAR = HARD_CONSTRAINTS.MAX_PAUSE_BETWEEN_TOURS  # 120 min
 
-# Capping
-# Tour-wise retention keeps critical 3er/2er combinations alive before any
-# global cap is applied. Global cap only fills beyond these guarantees.
-GLOBAL_TOP_N = 20_000    # Global limit
-K1_TOP_1ER = 3           # Top singles per tour (usually only 1 exists)
-K2_TOP_2ER = 30          # Top pairs per tour (INCREASED from 15)
-K3_TOP_3ER = 50          # Top triples per tour (INCREASED from 30)
-K_PER_TOUR = K3_TOP_3ER  # Backwards compatibility with legacy parameter name
+# Split pause limits (Zone 2)
+SPLIT_PAUSE_MIN = HARD_CONSTRAINTS.SPLIT_PAUSE_MIN   # 240 min (4h)
+SPLIT_PAUSE_MAX = HARD_CONSTRAINTS.SPLIT_PAUSE_MAX   # 360 min (6h)
+MAX_SPREAD_SPLIT = HARD_CONSTRAINTS.MAX_SPREAD_SPLIT_MINUTES  # 840 min (14h)
+
+# Feature flag for split-shift generation
+ENABLE_SPLIT_SHIFTS = True  # Can be overridden via config
+
+# CLASS-AWARE CAPPING (Combi-Prio)
+# Each class retains its own Top-K per tour to ensure split candidates survive
+K_3ER_PER_TOUR = 30      # Top 3er blocks per tour (was 50, reduced for efficiency)
+K_2ER_REG_PER_TOUR = 25  # Top regular 2er blocks per tour  
+K_2ER_SPLIT_PER_TOUR = 15 # Top split 2er blocks per tour (MUST survive pruning)
+K_1ER_PER_TOUR = 3       # Top 1er blocks per tour
+GLOBAL_TOP_N = 40_000    # Global limit (increased for class diversity)
+
+# Legacy compatibility
+K1_TOP_1ER = K_1ER_PER_TOUR
+K2_TOP_2ER = K_2ER_REG_PER_TOUR
+K3_TOP_3ER = K_3ER_PER_TOUR
+K_PER_TOUR = K_3ER_PER_TOUR
+
+# COMBI-PRIO RANKING (lower = higher priority)
+# 3er > 2er_reg > 2er_split > 1er
+RANK_3ER = 0
+RANK_2ER_REG = 1
+RANK_2ER_SPLIT = 2
+RANK_1ER = 3
 
 # Scoring - POLICY DRIVEN
 SCORE_TEMPLATE_MATCH = 500  # Huge bonus for exact template match
 SCORE_CANONICAL_WIN = 50    # Bonus per canonical window
 SCORE_3ER_BASE = 150
 SCORE_2ER_BASE = 100
+SCORE_2ER_SPLIT_BASE = 90   # Slightly below regular 2er but still high
 SCORE_1ER_BASE = 10
 
-# Penalties
-PENALTY_SPLIT_2ER = -30          # General split penalty
-PENALTY_SPLIT_3ER = -20          # General split penalty
-PENALTY_LONG_SPAN = -40          # Span > 12h
-PENALTY_SPLIT_GAP_PER_15MIN = -5 # Penalty per 15min above ideal gap
+# Penalties (NEUTRALIZED for split to enable selection)
+PENALTY_SPLIT_2ER = 0       # DISABLED - splits must be selectable
+PENALTY_SPLIT_3ER = 0       # DISABLED - no split 3er anyway
+PENALTY_LONG_SPAN = -40     # Span > 12h still penalized
+
+
+# =============================================================================
+# 3ER GAP VALIDATION (MIN_HEADCOUNT_3ER profile)
+# =============================================================================
+
+def gaps_3er_valid_min(block, gap_min: int = 30) -> bool:
+    """
+    Check if BOTH gaps in a 3er block are >= gap_min minutes.
+    
+    Used only by MIN_HEADCOUNT_3ER profile to filter valid 3er blocks.
+    
+    Args:
+        block: Block object with .tours list
+        gap_min: Minimum required gap between consecutive tours (default 30)
+    
+    Returns:
+        True if block is valid (not a 3er OR all gaps >= gap_min)
+        False if 3er with at least one gap < gap_min
+    """
+    if len(block.tours) != 3:
+        return True  # Not a 3er, no filtering
+    
+    # Sort tours by start time (deterministic)
+    tours = sorted(block.tours, key=lambda t: t.start_time)
+    
+    for i in range(2):  # Check gap1 (tour1→tour2) and gap2 (tour2→tour3)
+        end_mins = tours[i].end_time.hour * 60 + tours[i].end_time.minute
+        start_mins = tours[i+1].start_time.hour * 60 + tours[i+1].start_time.minute
+        gap = start_mins - end_mins
+        
+        if gap < gap_min:
+            return False  # Gap too small
+    
+    return True
 
 
 # =============================================================================
@@ -157,9 +209,15 @@ class ScoredBlock:
     is_split: bool = False
     is_template: bool = False
     tour_ids_hash: int = 0
+    combi_rank: int = 3  # Combi-Prio: 0=3er, 1=2er_reg, 2=2er_split, 3=1er
     
     def __hash__(self):
         return hash(self.block.id)
+    
+    def sort_key(self):
+        """Sort key for combi-prio ordering: (rank, -score, spread, pause)"""
+        return (self.combi_rank, -self.score, self.block.span_minutes, 
+                self.block.max_pause_minutes if hasattr(self.block, 'max_pause_minutes') else 0)
 
 
 # =============================================================================
@@ -172,14 +230,22 @@ def build_weekly_blocks_smart(
     global_top_n: int = GLOBAL_TOP_N,
     cap_quota_2er: float = 0.30,  # S0.8: Reserved quota for 2-tour blocks
     enable_diag: bool = False,    # S0.8: Gate diagnostic logs
+    output_profile: str = "BEST_BALANCED",  # Profile selection
+    gap_3er_min_minutes: int = 30,  # Min gap for 3er in MIN_HEADCOUNT_3ER
+    cap_quota_3er: float = 0.25,  # 3er quota for MIN_HEADCOUNT_3ER
 ) -> tuple[list[Block], dict]:
     """
     Build blocks with manual-like quality using learned policy.
+    
+    Args:
+        output_profile: "MIN_HEADCOUNT_3ER" or "BEST_BALANCED"
+        gap_3er_min_minutes: Min gap between tours in 3er (MIN_HEADCOUNT_3ER only)
+        cap_quota_3er: 3er reservation quota (MIN_HEADCOUNT_3ER only)
     """
     start_time = time_module.time()
     policy = load_policy()
     
-    safe_log(f"[SmartBuilder] Starting with {len(tours)} tours")
+    safe_log(f"[SmartBuilder] Starting with {len(tours)} tours, profile={output_profile}")
     
     # Step 1: Generate ALL blocks
     gen_start = time_module.time()
@@ -196,6 +262,24 @@ def build_weekly_blocks_smart(
         safe_print(f"[DIAG] candidates_raw{{size=1}}: {count_1er}")
         safe_print(f"[DIAG] candidates_raw{{size=2}}: {count_2er}")
         safe_print(f"[DIAG] candidates_raw{{size=3}}: {count_3er}")
+    
+    # Step 1.5: Apply 3er gap filter for MIN_HEADCOUNT_3ER profile
+    if output_profile == "MIN_HEADCOUNT_3ER":
+        filtered_3er_count = 0
+        kept_blocks = []
+        for b in all_blocks:
+            if len(b.tours) == 3:
+                if gaps_3er_valid_min(b, gap_3er_min_minutes):
+                    kept_blocks.append(b)
+                else:
+                    filtered_3er_count += 1
+            else:
+                kept_blocks.append(b)
+        all_blocks = kept_blocks
+        safe_log(f"[SmartBuilder] MIN_HEADCOUNT_3ER: Filtered {filtered_3er_count} invalid 3er blocks (gap < {gap_3er_min_minutes}min)")
+        if enable_diag:
+            new_3er = sum(1 for b in all_blocks if len(b.tours) == 3)
+            safe_print(f"[DIAG] candidates_3er_after_gap_filter: {new_3er}")
     
     # Step 2: Score blocks using policy
     safe_print("[SmartBuilder] Step 2: Scoring blocks with policy...")
@@ -216,9 +300,10 @@ def build_weekly_blocks_smart(
     
     # Step 4: Smart capping (Guarantee 1er)
     safe_print("[SmartBuilder] Step 4: Smart capping...")
-    # Remove k_per_tour arg, not used anymore inside
+    # Pass profile-specific quota parameters
     final_blocks, cap_stats = _smart_cap_with_1er_guarantee(
-        deduped, tours, global_top_n, cap_quota_2er
+        deduped, tours, global_top_n, cap_quota_2er,
+        cap_quota_3er=cap_quota_3er if output_profile == "MIN_HEADCOUNT_3ER" else 0.0
     )
     safe_log(f"[SmartBuilder] After capping: {len(final_blocks)} blocks")
     
@@ -274,38 +359,49 @@ def build_weekly_blocks_smart(
     stats["raw_1er"] = count_1er
     stats["raw_2er"] = count_2er
     stats["raw_3er"] = count_3er
+    stats["candidates_3er_pre_cap"] = cap_stats.get("pre_cap_3er", 0)
     
     safe_print(f"[SmartBuilder] Final: {len(final_blocks)} blocks in {elapsed:.2f}s")
+    if enable_diag:
+        safe_print(f"[DIAG] candidates_3er_pre_cap: {stats['candidates_3er_pre_cap']}")
     return final_blocks, stats
 
 
 # Renamed and adapted from _score_all_blocks to score a single block
 def _score_single_block(block: Block, policy: ManualPolicy) -> ScoredBlock:
-    """Score a single block based on policy."""
+    """Score a single block based on policy and assign combi-prio rank."""
     n = len(block.tours)
     score = 0.0
     is_split = False
     is_template = False
     
-    # Base Score
-    if n == 3: score += SCORE_3ER_BASE
-    elif n == 2: score += SCORE_2ER_BASE
-    else: score += SCORE_1ER_BASE
-    
-    # Gap / Split analysis with graduated scoring
-    if n >= 2:
-        max_gap = _max_gap_in_block(block)
-        if max_gap >= policy.split_gap_min:
+    # Determine combi_rank and base score based on block type
+    if n == 3:
+        combi_rank = RANK_3ER  # 0 = highest priority
+        score += SCORE_3ER_BASE
+    elif n == 2:
+        # Check if split 2er
+        block_is_split = getattr(block, 'is_split', False)
+        if block_is_split:
+            combi_rank = RANK_2ER_SPLIT  # 2
+            score += SCORE_2ER_SPLIT_BASE
             is_split = True
-            score += PENALTY_SPLIT_2ER if n == 2 else PENALTY_SPLIT_3ER
-            
-            # Graduated split-gap penalty: ideal is 315-405 min
-            # Gaps above SPLIT_GAP_IDEAL_MAX get additional penalty
-            if max_gap > SPLIT_GAP_IDEAL_MAX:
-                # Penalty per 15 min above ideal max
-                extra_minutes = max_gap - SPLIT_GAP_IDEAL_MAX
-                chunks = extra_minutes // 15
-                score += chunks * PENALTY_SPLIT_GAP_PER_15MIN
+        else:
+            combi_rank = RANK_2ER_REG  # 1
+            score += SCORE_2ER_BASE
+    else:
+        combi_rank = RANK_1ER  # 3 = lowest priority
+        score += SCORE_1ER_BASE
+    
+    # Gap / Split analysis (for non-tagged blocks, detect via gap zone)
+    if n >= 2 and not is_split:
+        max_gap = _max_gap_in_block(block)
+        
+        # Check if block should be split (gap in split zone)
+        if max_gap >= SPLIT_PAUSE_MIN:
+            is_split = True
+            combi_rank = RANK_2ER_SPLIT  # Reclassify
+            # No penalty applied (PENALTY_SPLIT_2ER = 0)
         
         # Policy: Template match
         template = _get_block_template(block)
@@ -317,7 +413,6 @@ def _score_single_block(block: Block, policy: ManualPolicy) -> ScoredBlock:
             is_template = True
     
     # Canonical Window Bonus (per window)
-    # We need to check if individual tours match canonical windows for that weekday
     day_str = block.day.value  # Mon, Tue...
     if day_str in policy.canonical_windows:
         canonical_set = policy.canonical_windows[day_str]
@@ -338,16 +433,21 @@ def _score_single_block(block: Block, policy: ManualPolicy) -> ScoredBlock:
         score=score, 
         is_split=is_split,
         is_template=is_template,
-        tour_ids_hash=hash(tour_ids)
+        tour_ids_hash=hash(tour_ids),
+        combi_rank=combi_rank
     )
 
 
-def _generate_all_blocks(tours: list[Tour]) -> list[Block]:
-    """Generate 1er, 2er, and 3er blocks."""
-    # This function is now effectively replaced by the inlined generation in build_weekly_blocks_smart
-    # but kept for completeness if other parts of the code still call it.
-    # The new build_weekly_blocks_smart directly generates ScoredBlocks.
-    # For now, this function is not called by the new build_weekly_blocks_smart.
+def _generate_all_blocks(tours: list[Tour], enable_splits: bool = True) -> list[Block]:
+    """
+    Generate 1er, 2er, and 3er blocks using two-zone pause logic.
+    
+    - 1er: Always created for every tour
+    - 2er: Created from BOTH regular (30-120min) AND split (240-360min) adjacency
+    - 3er: Created from regular adjacency ONLY (no splits to avoid complexity)
+    
+    Split blocks are tagged with is_split=True and max_pause_minutes.
+    """
     tours_by_day: dict[Weekday, list[Tour]] = defaultdict(list)
     for tour in tours:
         tours_by_day[tour.day].append(tour)
@@ -358,52 +458,119 @@ def _generate_all_blocks(tours: list[Tour]) -> list[Block]:
     all_blocks: list[Block] = []
     
     for day, day_tours in tours_by_day.items():
-        can_follow = _build_adjacency(day_tours)
+        can_follow_regular, can_follow_split = _build_adjacency(day_tours, enable_splits)
         
-        # 1er - ALWAYS
+        # 1er - ALWAYS (no gaps)
         for tour in day_tours:
-            all_blocks.append(Block(id=f"B1-{tour.id}", day=day, tours=[tour]))
+            all_blocks.append(Block(
+                id=f"B1-{tour.id}", 
+                day=day, 
+                tours=[tour],
+                is_split=False,
+                max_pause_minutes=0
+            ))
         
-        # 2er
+        # 2er - Regular (30-120 min gap)
         for i, t1 in enumerate(day_tours):
-            for j in can_follow[i]:
+            for j in can_follow_regular[i]:
                 t2 = day_tours[j]
                 if _span_ok([t1, t2]):
+                    gap = _calc_gap(t1, t2)
                     all_blocks.append(Block(
-                        id=f"B2-{t1.id}-{t2.id}", day=day, tours=[t1, t2]
+                        id=f"B2-{t1.id}-{t2.id}", 
+                        day=day, 
+                        tours=[t1, t2],
+                        is_split=False,
+                        max_pause_minutes=gap
                     ))
         
-        # 3er
+        # 2er - Split (240-360 min gap) - ONLY for 2er
+        if enable_splits:
+            for i, t1 in enumerate(day_tours):
+                for j in can_follow_split[i]:
+                    t2 = day_tours[j]
+                    # Check spread constraint for split blocks
+                    span = _calc_span([t1, t2])
+                    if span <= MAX_SPREAD_SPLIT:
+                        gap = _calc_gap(t1, t2)
+                        all_blocks.append(Block(
+                            id=f"B2S-{t1.id}-{t2.id}",  # S suffix for split
+                            day=day, 
+                            tours=[t1, t2],
+                            is_split=True,
+                            max_pause_minutes=gap,
+                            pause_zone="SPLIT"
+                        ))
+        
+        # 3er - Regular adjacency ONLY (no splits allowed)
         for i, t1 in enumerate(day_tours):
-            for j in can_follow[i]:
+            for j in can_follow_regular[i]:
                 t2 = day_tours[j]
-                # Optimization: check span of first 2 to fail fast
                 if not _span_ok([t1, t2]): 
-                     continue
+                    continue
                      
-                for k in can_follow[j]:
+                for k in can_follow_regular[j]:
                     if k == i: continue
                     t3 = day_tours[k]
                     if _span_ok([t1, t2, t3]):
+                        gap1 = _calc_gap(t1, t2)
+                        gap2 = _calc_gap(t2, t3)
                         all_blocks.append(Block(
-                            id=f"B3-{t1.id}-{t2.id}-{t3.id}", day=day, tours=[t1, t2, t3]
+                            id=f"B3-{t1.id}-{t2.id}-{t3.id}", 
+                            day=day, 
+                            tours=[t1, t2, t3],
+                            is_split=False,
+                            max_pause_minutes=max(gap1, gap2)
                         ))
     
     return all_blocks
 
 
-def _build_adjacency(tours: list[Tour]) -> dict[int, list[int]]:
-    can_follow = defaultdict(list)
+def _calc_gap(t1: Tour, t2: Tour) -> int:
+    """Calculate gap in minutes between end of t1 and start of t2."""
+    t1_end = t1.end_time.hour * 60 + t1.end_time.minute
+    t2_start = t2.start_time.hour * 60 + t2.start_time.minute
+    return t2_start - t1_end
+
+
+def _calc_span(tours: list[Tour]) -> int:
+    """Calculate span in minutes from first start to last end."""
+    first_start = tours[0].start_time.hour * 60 + tours[0].start_time.minute
+    last_end = tours[-1].end_time.hour * 60 + tours[-1].end_time.minute
+    return last_end - first_start
+
+
+def _build_adjacency(tours: list[Tour], enable_splits: bool = True) -> tuple[dict[int, list[int]], dict[int, list[int]]]:
+    """
+    Build two adjacency mappings for tours:
+    - can_follow_regular: tours reachable with regular pause (30-120 min)
+    - can_follow_split: tours reachable with split pause (240-360 min)
+    
+    Returns: (regular_adjacency, split_adjacency)
+    """
+    can_follow_regular = defaultdict(list)
+    can_follow_split = defaultdict(list)
+    
     for i, t1 in enumerate(tours):
         t1_end = t1.end_time.hour * 60 + t1.end_time.minute
         for j, t2 in enumerate(tours):
-            if i == j: continue
+            if i == j: 
+                continue
             t2_start = t2.start_time.hour * 60 + t2.start_time.minute
             
             gap = t2_start - t1_end
-            if MIN_PAUSE_MINUTES <= gap <= MAX_PAUSE_MINUTES:
-                can_follow[i].append(j)
-    return can_follow
+            
+            # Zone 1: Regular pause (30-120 min)
+            if MIN_PAUSE_MINUTES <= gap <= MAX_PAUSE_REGULAR:
+                can_follow_regular[i].append(j)
+            
+            # Zone 2: Split pause (240-360 min) - only if enabled
+            elif enable_splits and SPLIT_PAUSE_MIN <= gap <= SPLIT_PAUSE_MAX:
+                can_follow_split[i].append(j)
+            
+            # Gaps 121-239 or >360 are forbidden - no entry
+            
+    return can_follow_regular, can_follow_split
 
 
 def _get_block_template(block: Block) -> str:
@@ -452,7 +619,8 @@ def _dedupe_blocks(scored: list[ScoredBlock]) -> list[ScoredBlock]:
 
 
 def _smart_cap_with_1er_guarantee(
-    scored: list[ScoredBlock], tours: list[Tour], global_n: int, quota_2er: float = 0.30
+    scored: list[ScoredBlock], tours: list[Tour], global_n: int, 
+    quota_2er: float = 0.30, cap_quota_3er: float = 0.0
 ) -> tuple[list[Block], dict]:
     """
     S0.4: Block Pool Stabilization (Feasibility-Safe + Deterministic).
@@ -463,15 +631,27 @@ def _smart_cap_with_1er_guarantee(
     3. Determinism: sorted(..., key=...), tie-break on block.id
     4. True dominance: only prune if SAME coverage set AND worse score
     
+    Args:
+        cap_quota_3er: 3er reservation quota for MIN_HEADCOUNT_3ER (default 0 = off)
+    
     Steps:
     A) Protected set: best 1er per tour (or fallback if no 1er)
     B) Tour richness + Dynamic K: scarce tours get 2*K_PER_TOUR
     C) True dominance pruning: same cov_key, keep best score
-    D) Global cap with protected priority
+    D) Global cap with protected priority + quota logic
     """
     import statistics
     from collections import defaultdict
     
+    # S0.8: Debug Stats - Raw counts by class entering capping
+    pre_cap_3er = sum(1 for sb in scored if len(sb.block.tours) == 3)
+    pre_cap_2er_reg = sum(1 for sb in scored if len(sb.block.tours) == 2 and not sb.is_split)
+    pre_cap_2er_split = sum(1 for sb in scored if len(sb.block.tours) == 2 and sb.is_split)
+    pre_cap_1er = sum(1 for sb in scored if len(sb.block.tours) == 1)
+    
+    safe_log(f"[CAPPING] Pre-prune: 3er={pre_cap_3er}, 2er_reg={pre_cap_2er_reg}, "
+             f"2er_split={pre_cap_2er_split}, 1er={pre_cap_1er}")
+
     # =========================================================================
     # A) PROTECTED SET: Ensure every tour has at least 1 block
     # =========================================================================
@@ -531,17 +711,18 @@ def _smart_cap_with_1er_guarantee(
         else:
             return K_PER_TOUR
     
-    # B4: Collect Top-K per tour (deterministic sort, stable tie-break)
+    # B4: Collect Top-K per tour WITH COMBI-PRIO (deterministic sort)
+    # Sort by (combi_rank, -score, span, id) so higher priority classes come first
     kept_ids: set[str] = set()
     
     for tour in sorted(tours, key=lambda t: t.id):
         tour_blocks = tour_to_blocks.get(tour.id, [])
         k = get_k_for_tour(tour.id)
         
-        # S0.4: Sort by (-score, -len(tours), block.id) for determinism
+        # COMBI-PRIO: Sort by (rank ASC, score DESC, span ASC, id ASC)
         tour_blocks_sorted = sorted(
             tour_blocks,
-            key=lambda sb: (-sb.score, -len(sb.block.tours), sb.block.id)
+            key=lambda sb: (sb.combi_rank, -sb.score, sb.block.span_minutes, sb.block.id)
         )
         
         for sb in tour_blocks_sorted[:k]:
@@ -608,22 +789,35 @@ def _smart_cap_with_1er_guarantee(
         remaining_slots = global_n - len(protected_blocks)
         
         # S0.8: Adaptive Quota Logic
-        # Don't force 30% if we have very few 2er available (prevent garbage-in)
-        # But ensure at least 5% floor if some exist
         raw_total = len(np_2er) + len(np_3er) + len(np_other)
-        avail_ratio = len(np_2er) / raw_total if raw_total > 0 else 0.0
+        avail_2er_ratio = len(np_2er) / raw_total if raw_total > 0 else 0.0
+        avail_3er_ratio = len(np_3er) / raw_total if raw_total > 0 else 0.0
         
-        # Effective quota: min(configured, max(available, 0.05))
-        effective_quota = min(quota_2er, max(avail_ratio, 0.05))
+        # Effective 2er quota: min(configured, max(available, 0.05))
+        effective_quota_2er = min(quota_2er, max(avail_2er_ratio, 0.05))
         
-        target_2er = int(remaining_slots * effective_quota)
-        target_3er = remaining_slots - target_2er # Rest for 3er
+        # Effective 3er quota (only if cap_quota_3er > 0, i.e., MIN_HEADCOUNT_3ER)
+        if cap_quota_3er > 0:
+            effective_quota_3er = min(cap_quota_3er, max(avail_3er_ratio, 0.05))
+        else:
+            effective_quota_3er = 0.0
+        
+        # Allocate slots: Priority = 2er > 3er > other
+        # Ensure 2er + 3er quotas don't exceed remaining_slots
+        total_quota = effective_quota_2er + effective_quota_3er
+        if total_quota > 0.95:  # Cap to leave room for flexibility
+            scale = 0.95 / total_quota
+            effective_quota_2er *= scale
+            effective_quota_3er *= scale
+        
+        target_2er = int(remaining_slots * effective_quota_2er)
+        target_3er = int(remaining_slots * effective_quota_3er) if cap_quota_3er > 0 else remaining_slots - target_2er
 
         # Select top items per quota
         taken_2er = np_2er[:target_2er]
         taken_3er = np_3er[:target_3er]
         
-        # Fill slack if one pool ran dry
+        # Fill slack if one pool ran dry (release unused quota to other)
         slack_2er = target_2er - len(taken_2er)
         slack_3er = target_3er - len(taken_3er)
         
@@ -661,11 +855,23 @@ def _smart_cap_with_1er_guarantee(
     template_match = sum(1 for sb in final_blocks if sb.is_template)
     scarce_tours_count = sum(1 for tid, r in tour_richness.items() if r < median_richness / 2)
     
+    # Post-prune class counts
+    post_3er = sum(1 for sb in final_blocks if len(sb.block.tours) == 3)
+    post_2er_reg = sum(1 for sb in final_blocks if len(sb.block.tours) == 2 and not sb.is_split)
+    post_2er_split = sum(1 for sb in final_blocks if len(sb.block.tours) == 2 and sb.is_split)
+    post_1er = sum(1 for sb in final_blocks if len(sb.block.tours) == 1)
+    
+    safe_log(f"[CAPPING] Post-prune: 3er={post_3er}, 2er_reg={post_2er_reg}, "
+             f"2er_split={post_2er_split}, 1er={post_1er}")
+    
     cap_stats = {
         "locked_1er": locked_1er_unique,
         "split_2er_count": split_2er,
         "template_match_count": template_match,
         "final_total": len(result_blocks),
+        "pre_cap_3er": pre_cap_3er,
+        "pre_cap_2er_split": pre_cap_2er_split,  # NEW: Track split candidates pre-prune
+        "post_cap_2er_split": post_2er_split,     # NEW: Track split candidates post-prune
         # S0.4 new stats
         "protected_count": len(protected_ids),
         "dominance_pruned": len(kept_ids) - len(dominance_kept_ids),

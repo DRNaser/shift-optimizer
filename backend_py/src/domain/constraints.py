@@ -67,7 +67,19 @@ class HardConstraints:
     """Minimum break between consecutive tours in a block."""
     
     MAX_PAUSE_BETWEEN_TOURS: int = 120
-    """Maximum gap between consecutive tours to still form a block (2 hours)."""
+    """Maximum gap between consecutive tours for REGULAR blocks (2 hours)."""
+    
+    # Split-shift configuration (Two-Zone Pause Model)
+    SPLIT_PAUSE_MIN: int = 240
+    """Minimum gap for split-shift blocks (4 hours)."""
+    
+    SPLIT_PAUSE_MAX: int = 360
+    """Maximum gap for split-shift blocks (6 hours)."""
+    
+    MAX_SPREAD_SPLIT_MINUTES: int = 840
+    """Maximum spread (first_start -> last_end) for split blocks (14 hours)."""
+    
+    # Note: Gaps 121-239 min are FORBIDDEN (neither regular nor split)
 
 
 # Global singleton instance - THE source of truth

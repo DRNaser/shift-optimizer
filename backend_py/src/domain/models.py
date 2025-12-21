@@ -215,6 +215,11 @@ class Block(BaseModel):
     tours: list[Tour] = Field(..., min_length=1, max_length=3)
     driver_id: str | None = Field(default=None, description="Assigned driver ID")
     
+    # Split-shift metadata (explicit in JSON schema)
+    is_split: bool = Field(default=False, description="True if block has split-shift gap (240-360 min)")
+    max_pause_minutes: int = Field(default=0, description="Largest gap between consecutive tours in minutes")
+    pause_zone: str = Field(default="REGULAR", description="Pause zone: REGULAR (30-120min) or SPLIT (240-360min)")
+    
     @model_validator(mode="after")
     def validate_block(self) -> "Block":
         """Validate block structure."""

@@ -350,24 +350,58 @@ def validate_block_structure(block: Block) -> ValidationResult:
     if block.tours != sorted_tours:
         warnings.append(f"Block {block.id}: Tours not sorted by start time")
     
-    # Check pause gaps between tours
+    # Check pause gaps between tours (TWO-ZONE LOGIC)
+    # Regular blocks: 30-120 min gap
+    # Split blocks: 240-360 min gap (detected by is_split flag or B2S- prefix)
     for i in range(len(block.tours) - 1):
         t1 = block.tours[i]
         t2 = block.tours[i + 1]
         gap_mins = (t2.start_time.hour * 60 + t2.start_time.minute) - \
                    (t1.end_time.hour * 60 + t1.end_time.minute)
         
+        # Minimum gap applies to all blocks
         if gap_mins < HARD_CONSTRAINTS.MIN_PAUSE_BETWEEN_TOURS:
             violations.append(
                 f"Block {block.id}: Gap between {t1.id} and {t2.id} is {gap_mins}min, "
                 f"minimum is {HARD_CONSTRAINTS.MIN_PAUSE_BETWEEN_TOURS}min"
             )
         
-        if gap_mins > HARD_CONSTRAINTS.MAX_PAUSE_BETWEEN_TOURS:
-            violations.append(
-                f"Block {block.id}: Gap between {t1.id} and {t2.id} is {gap_mins}min, "
-                f"maximum is {HARD_CONSTRAINTS.MAX_PAUSE_BETWEEN_TOURS}min"
-            )
+        # Maximum gap depends on block type (regular vs split)
+        # Split block detection: is_split flag or B2S- prefix in ID
+        is_split_block = getattr(block, 'is_split', False) or block.id.startswith('B2S-')
+        
+        if is_split_block:
+            # Split zone: 240-360 min
+            if gap_mins < HARD_CONSTRAINTS.SPLIT_PAUSE_MIN:
+                violations.append(
+                    f"Block {block.id}: Split block gap {gap_mins}min below minimum "
+                    f"{HARD_CONSTRAINTS.SPLIT_PAUSE_MIN}min"
+                )
+            elif gap_mins > HARD_CONSTRAINTS.SPLIT_PAUSE_MAX:
+                violations.append(
+                    f"Block {block.id}: Split block gap {gap_mins}min exceeds maximum "
+                    f"{HARD_CONSTRAINTS.SPLIT_PAUSE_MAX}min"
+                )
+            # Check spread (first_start -> last_end)
+            spread_mins = block.span_minutes
+            if spread_mins > HARD_CONSTRAINTS.MAX_SPREAD_SPLIT_MINUTES:
+                violations.append(
+                    f"Block {block.id}: Split block spread {spread_mins}min exceeds maximum "
+                    f"{HARD_CONSTRAINTS.MAX_SPREAD_SPLIT_MINUTES}min"
+                )
+        else:
+            # Regular zone: 30-120 min
+            if gap_mins > HARD_CONSTRAINTS.MAX_PAUSE_BETWEEN_TOURS:
+                violations.append(
+                    f"Block {block.id}: Gap between {t1.id} and {t2.id} is {gap_mins}min, "
+                    f"maximum is {HARD_CONSTRAINTS.MAX_PAUSE_BETWEEN_TOURS}min"
+                )
+            # Forbidden zone check (121-239 min)
+            if HARD_CONSTRAINTS.MAX_PAUSE_BETWEEN_TOURS < gap_mins < HARD_CONSTRAINTS.SPLIT_PAUSE_MIN:
+                violations.append(
+                    f"Block {block.id}: Gap {gap_mins}min in forbidden zone "
+                    f"({HARD_CONSTRAINTS.MAX_PAUSE_BETWEEN_TOURS+1}-{HARD_CONSTRAINTS.SPLIT_PAUSE_MIN-1}min)"
+                )
     
     return ValidationResult(
         is_valid=len(violations) == 0,
