@@ -210,6 +210,9 @@ async def create_run(request: dict):
     """
     Create a new optimization run.
     Accepts the frontend's RunCreateRequest format and returns RunCreateResponse.
+    
+    FIXED: Now passes all config_overrides to solver via ConfigV4.
+    FIXED: Uses consistent run_id format (run_<hex>) for cache.
     """
     import uuid
     
@@ -217,9 +220,11 @@ async def create_run(request: dict):
     week_start = request.get("week_start", "2024-01-01")
     tours_data = request.get("tours", [])
     run_config = request.get("run", {})
+    config_overrides = run_config.get("config_overrides", {}) or {}
     
     # Convert to ScheduleRequest format
     from src.api.models import ScheduleRequest, TourInputFE
+    from src.services.forecast_solver_v4 import ConfigV4
     
     # Day name mapping (frontend may send various formats)
     day_mapping = {
@@ -244,34 +249,65 @@ async def create_run(request: dict):
             end_time=t.get("end_time", "12:00"),
         ))
     
+    # PATCH A: Build ConfigV4 with all overrides
+    base_config = ConfigV4(
+        seed=run_config.get("seed", 42),
+        num_workers=1,  # Determinism
+    )
+    
+    # Apply known overrides to ConfigV4 (validate fields exist)
+    valid_config_fields = set(ConfigV4._fields)
+    applied_overrides = {}
+    rejected_overrides = {}
+    
+    for key, value in config_overrides.items():
+        if key in valid_config_fields:
+            applied_overrides[key] = value
+        else:
+            rejected_overrides[key] = "UNKNOWN_FIELD"
+    
+    # Apply valid overrides
+    if applied_overrides:
+        try:
+            base_config = base_config._replace(**applied_overrides)
+        except Exception as e:
+            logger.warning(f"Failed to apply overrides: {e}")
+    
     # Build ScheduleRequest
     schedule_request = ScheduleRequest(
         week_start=week_start,
         tours=fe_tours,
-        time_limit_seconds=run_config.get("time_budget_seconds", 120),
+        time_limit_seconds=run_config.get("time_budget_seconds", 180),  # QUALITY default
         seed=run_config.get("seed", 42),
         solver_type="portfolio",
-        extended_hours=run_config.get("config_overrides", {}).get("extended_hours", False),
+        extended_hours=config_overrides.get("extended_hours", False),
     )
     
-    # Run the solver
-    result = await create_schedule(schedule_request)
+    # PATCH B: Generate consistent run_id BEFORE running solver
+    run_id = f"run_{uuid.uuid4().hex[:12]}"
     
-    # Generate run_id from result
-    run_id = result.id if hasattr(result, 'id') else str(uuid.uuid4())
+    # Run the solver (passing config with overrides)
+    result = await create_schedule(schedule_request, config_override=base_config)
     
-    # Store result for later retrieval
+    # Store result for later retrieval with consistent run_id
     global RUNS_CACHE
     if 'RUNS_CACHE' not in globals():
         RUNS_CACHE = {}
     RUNS_CACHE[run_id] = result
+    
+    # Log for debugging
+    logger.info(f"Run {run_id}: applied_overrides={applied_overrides}, rejected={rejected_overrides}")
     
     # Return frontend-expected format
     return {
         "run_id": run_id,
         "status": "COMPLETED",
         "events_url": f"/api/v1/runs/{run_id}/events",
-        "run_url": f"/api/v1/runs/{run_id}"
+        "run_url": f"/api/v1/runs/{run_id}",
+        "config": {
+            "applied": applied_overrides,
+            "rejected": rejected_overrides,
+        }
     }
 
 
@@ -456,7 +492,7 @@ def _generate_roster_csv(response: ScheduleResponse) -> str:
 # =============================================================================
 
 @router.post("/schedule", response_model=ScheduleResponse)
-async def create_schedule(request: ScheduleRequest):
+async def create_schedule(request: ScheduleRequest, config_override: 'ConfigV4' = None):
     """
     Create optimized schedule.
     
@@ -562,12 +598,15 @@ async def create_schedule(request: ScheduleRequest):
             )
         elif request.solver_type == "portfolio":
             emit_log("Using PORTFOLIO OPTIMIZATION (Auto-Select)", "INFO")
+            # Use config_override if provided (from /runs endpoint)
+            portfolio_config = config_override if config_override else config
             result = await loop.run_in_executor(
                 None,
                 lambda: solve_forecast_portfolio(
                     tours,
                     time_budget=float(request.time_limit_seconds),
                     seed=request.seed or 42,
+                    config=portfolio_config,
                 )
             )
         else:
