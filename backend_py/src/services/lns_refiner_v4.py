@@ -221,6 +221,14 @@ def fast_can_assign(
     
     No list rebuilding, no Block object creation.
     """
+    # HARD CONSTRAINTS IMPORT
+    from src.domain.constraints import HARD_CONSTRAINTS
+    
+    # 0. MAX_BLOCKS_PER_DAY check (HARD CONSTRAINT - added to fix violations)
+    current_blocks = len(profile.blocks_by_day[block_day])
+    if current_blocks >= HARD_CONSTRAINTS.MAX_BLOCKS_PER_DRIVER_PER_DAY:
+        return False, f"blocks_per_day ({current_blocks}+1>{HARD_CONSTRAINTS.MAX_BLOCKS_PER_DRIVER_PER_DAY})"
+    
     # 1. Overlap check with existing blocks on same day
     for (start, end, _, _) in profile.blocks_by_day[block_day]:
         # Overlap if intervals intersect
@@ -252,11 +260,16 @@ def fast_can_assign(
         if rest < config.min_rest_minutes:
             return False, f"rest_to_next ({rest/60:.1f}h<11h)"
     
-    # 5. Weekly hours check (FTE only)
+    # 5. MAX_WEEKLY_HOURS check (HARD CONSTRAINT - applies to ALL drivers)
+    max_weekly_minutes = int(HARD_CONSTRAINTS.MAX_WEEKLY_HOURS * 60)
+    if profile.week_minutes + block_duration > max_weekly_minutes:
+        return False, f"max_weekly_hours ({(profile.week_minutes + block_duration)/60:.1f}h>{HARD_CONSTRAINTS.MAX_WEEKLY_HOURS}h)"
+    
+    # 5b. Stricter FTE weekly hours check
     if profile.driver_type == "FTE":
-        max_minutes = int(config.max_hours_per_fte * 60)
-        if profile.week_minutes + block_duration > max_minutes:
-            return False, "weekly_hours"
+        max_fte_minutes = int(config.max_hours_per_fte * 60)
+        if profile.week_minutes + block_duration > max_fte_minutes:
+            return False, "weekly_hours_fte"
     
     # 6. Heavy-day recovery: if adding causes heavy day, check next day tours
     if current_tours + block_tours >= 3 and block_day < 6:
@@ -1064,14 +1077,31 @@ def repair_assignments(
             )
             model.Add(repair_minutes + d.fixed_minutes <= max_minutes)
     
-    # 5. Max tours per day
+    # 5. Max tours per day AND Max blocks per day (HARD CONSTRAINT)
+    from src.domain.constraints import HARD_CONSTRAINTS
+    
     for d in candidate_drivers:
         for day_idx in range(7):
             day_blocks = [b for b in blocks if b.day_idx == day_idx]
-            if day_blocks:
-                repair_tours = sum(b.tour_count * x[b.block_id, d.driver_id] for b in day_blocks)
-                fixed_tours = d.fixed_tours_on_day(day_idx)
-                model.Add(repair_tours + fixed_tours <= config.max_tours_per_day)
+            from_repair = sum(x[b.block_id, d.driver_id] for b in day_blocks)
+            
+            # A) Tours per day
+            repair_tours = sum(b.tour_count * x[b.block_id, d.driver_id] for b in day_blocks)
+            fixed_tours = d.fixed_tours_on_day(day_idx)
+            model.Add(repair_tours + fixed_tours <= config.max_tours_per_day)
+            
+            # B) Blocks per day (Max 2) - CRITICAL FIX
+            # Count fixed blocks on this day
+            fixed_blocks_count = len([fb for fb in d.fixed_blocks if fb.day_idx == day_idx])
+            model.Add(from_repair + fixed_blocks_count <= HARD_CONSTRAINTS.MAX_BLOCKS_PER_DRIVER_PER_DAY)
+
+    # 5b. Weekly hours check (ALL drivers - Max 55h) - CRITICAL FIX
+    max_weekly_minutes_hard = int(HARD_CONSTRAINTS.MAX_WEEKLY_HOURS * 60)
+    for d in candidate_drivers:
+        repair_minutes = sum(
+            b.duration_min * x[b.block_id, d.driver_id] for b in blocks
+        )
+        model.Add(repair_minutes + d.fixed_minutes <= max_weekly_minutes_hard)
     
     # 6. Daily span constraint - DISABLED
     # Split-shifts (06:00-10:30 + 18:00-22:30) have 16h30 span but only 9h work.

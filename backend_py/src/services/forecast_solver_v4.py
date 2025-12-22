@@ -112,6 +112,32 @@ class ConfigV4(NamedTuple):
     # Block Capping Configuration
     enable_diag_block_caps: bool = False
     cap_quota_2er: float = 0.30  # Default 30% reservation for 2-tour blocks
+    
+    # S4.1: Choice-1er Penalty (WP11)
+    w_choice_1er: float = 1.0  # Penalty factor for Choice-1er (x BASE_1)
+    
+    # =========================================================================
+    # OUTPUT PROFILES: MIN_HEADCOUNT_3ER vs BEST_BALANCED
+    # =========================================================================
+    output_profile: str = "BEST_BALANCED"  # "MIN_HEADCOUNT_3ER" | "BEST_BALANCED"
+    
+    # 3er Gap Constraints (MIN_HEADCOUNT_3ER only)
+    gap_3er_min_minutes: int = 30  # Min gap between tours in a valid 3er
+    cap_quota_3er: float = 0.25    # 3er reservation for MIN_HEADCOUNT_3ER
+    w_3er_bonus: float = 10.0      # Small tie-break reward for 3er selection
+    
+    # BEST_BALANCED: balance-focused weights
+    max_extra_driver_pct: float = 0.05   # Max +5% drivers vs min-headcount
+    w_balance_underfull: float = 100.0   # Penalty per underfull FTE
+    w_pt_penalty: float = 500.0          # Penalty for PT usage
+    w_balance_variance: float = 50.0     # Variance/smoothness penalty
+    
+    # =========================================================================
+    # QUALITY-FIRST: Two-Pass Guarantee (RC0 Release Policy)
+    # =========================================================================
+    pass2_min_time_s: float = 15.0       # GUARANTEED minimum time for Pass-2 (Quality profile)
+    quality_mode: bool = False           # If True, use QUALITY profile (longer budgets, guaranteed Pass-2)
+    quality_time_budget: float = 300.0   # Default time budget for QUALITY mode (5 min)
 
 
 # =============================================================================
@@ -200,6 +226,8 @@ def compute_packability_metrics(
     Metrics:
     - forced_1er_rate: Tours with ONLY 1er options in pool (no 2er/3er)
     - missed_3er_opps: Tours covered by 1er in solution, despite having 3er option in pool
+    - missed_2er_opps: Tours covered by 1er despite having 2er option (but no 3er)
+    - missed_multi_opps: Total tours covered by 1er that had ANY multi option
     
     Determinism: Uses sorted IDs for iteration.
     """
@@ -224,21 +252,33 @@ def compute_packability_metrics(
         for tour in block.tours:
             tour_solution_size[tour.id] = len(block.tours)
     
-    # missed_3er_opps: Tours covered by 1er despite having 3er option
+    # Compute missed opportunities
     missed_3er_opps = []
+    missed_2er_opps = []
+    missed_multi_opps = []
+    
     for tour_id in sorted(tour_solution_size.keys()):
         solution_size = tour_solution_size.get(tour_id, 0)
         available_sizes = tour_available_sizes.get(tour_id, set())
         
-        if solution_size == 1 and 3 in available_sizes:
-            missed_3er_opps.append(tour_id)
+        if solution_size == 1:
+            # Check if multi-tour options existed
+            if 3 in available_sizes:
+                missed_3er_opps.append(tour_id)
+                missed_multi_opps.append(tour_id)
+            elif 2 in available_sizes:
+                missed_2er_opps.append(tour_id)
+                missed_multi_opps.append(tour_id)
     
     return {
         "forced_1er_rate": round(forced_1er_rate, 4),
         "forced_1er_count": len(forced_1er_tours),
         "missed_3er_opps_count": len(missed_3er_opps),
+        "missed_2er_opps_count": len(missed_2er_opps),
+        "missed_multi_opps_count": len(missed_multi_opps),
         "total_tours": len(tours),
     }
+
 
 
 def compute_packability_cost_adjustments(
@@ -894,7 +934,8 @@ def solve_capacity_phase(
     block_index: dict[str, list[Block]],
     config: ConfigV4,
     block_scores: dict[str, float] = None,
-    block_props: dict[str, dict] = None
+    block_props: dict[str, dict] = None,
+    time_limit: float = None
 ) -> tuple[list[Block], dict]:
     """
     Phase 1: Determine which blocks to use.
@@ -956,7 +997,9 @@ def solve_capacity_phase(
     # Time Budget Management
     t_total_start = perf_counter()
     # Use strict budget from config (passed from portfolio controller)
-    TOTAL_BUDGET = config.time_limit_phase1 
+    # Use strict budget from config (passed from portfolio controller)
+    # Override takes precedence if provided (e.g. from two-pass solver)
+    TOTAL_BUDGET = time_limit if time_limit is not None else config.time_limit_phase1 
     
     iteration = 0
     t_msg = f"Budget: {TOTAL_BUDGET:.1f}s"
@@ -1588,49 +1631,61 @@ def _solve_capacity_single_cap(
     }
     safe_print(f"  PACKABILITY: {len(tour_has_multi)}/{len(tours)} tours have multi-block options", flush=True)
     
-    # Cost Constants - PACKABILITY TUNING (user-approved guardrails)
-    # Hierarchy: BASE values << COUNT_WEIGHT (10M) to ensure block-count always dominates
-    BASE_1 = 200_000      # Strong penalty for singles
-    BASE_2 = 30_000       # Moderate penalty for 2er
-    BASE_3 = -50_000      # REWARD for 3er (negative = incentive)
-    ALTERNATIVE_PENALTY = 50_000  # Extra penalty for 1er when multi exists
-    SCORE_TIEBREAK = 10 
+    # Cost Constants - MULTI-TOUR MAXIMIZATION (User Policy: 3er > 2er_REG > 2er_SPLIT > 1er)
+    # These costs are designed so the solver STRONGLY prefers multi-tour blocks.
+    # Hierarchy is enforced by large magnitude differences.
+    # Negative values = REWARD (incentive to select)
+    # Positive values = PENALTY (disincentive)
+    COST_3ER = -300_000        # Strong REWARD for 3er (best)
+    COST_2ER_REGULAR = -100_000  # Moderate REWARD for 2er REGULAR (2nd best)
+    COST_2ER_SPLIT = 0           # Neutral for 2er SPLIT (3rd best)
+    COST_1ER = 500_000           # Heavy PENALTY for 1er (last resort)
+    
+    # Extra penalty if 1er is chosen when a multi-block option exists
+    COST_1ER_WITH_ALTERNATIVE = 200_000  # Additional penalty
+    
+    SCORE_TIEBREAK = 10  # Normalized score as tertiary tie-breaker
 
     # Debug: count available types
     avail_1er = sum(1 for b in blocks if len(b.tours) == 1)
-    avail_2er = sum(1 for b in blocks if len(b.tours) == 2)
+    avail_2er_reg = sum(1 for b in blocks if len(b.tours) == 2 and b.pause_zone.value == "REGULAR")
+    avail_2er_split = sum(1 for b in blocks if len(b.tours) == 2 and b.pause_zone.value == "SPLIT")
     avail_3er = sum(1 for b in blocks if len(b.tours) == 3)
-    safe_print(f"  AVAILABLE BLOCKS: 1er={avail_1er}, 2er={avail_2er}, 3er={avail_3er}", flush=True)
+    safe_print(f"  AVAILABLE BLOCKS: 1er={avail_1er}, 2er_REG={avail_2er_reg}, 2er_SPLIT={avail_2er_split}, 3er={avail_3er}", flush=True)
 
     for b, block in enumerate(blocks):
         n = len(block.tours)
         
-        # 1. Base Cost with PACKABILITY logic
-        if n == 1:
+        # 1. Base Cost based on block type (MULTI-TOUR MAXIMIZATION)
+        if n == 3:
+            cost = COST_3ER  # Best option: 3er
+        elif n == 2:
+            # Differentiate by pause_zone
+            if block.pause_zone.value == "REGULAR":
+                cost = COST_2ER_REGULAR  # 2nd best: 2er REGULAR
+            else:
+                cost = COST_2ER_SPLIT    # 3rd best: 2er SPLIT
+        else:  # n == 1
             tour_id = block.tours[0].id
             # Extra penalty if this tour has a multi-block alternative
-            cost = BASE_1 + (ALTERNATIVE_PENALTY if tour_id in tour_has_multi else 0)
-        elif n == 2:
-            cost = BASE_2
-        else:
-            cost = BASE_3  # 3er gets reward (negative)
+            alternative_penalty = COST_1ER_WITH_ALTERNATIVE if tour_id in tour_has_multi else 0
+            cost = COST_1ER + alternative_penalty  # Last resort: 1er
         
-        # 2. Score Tie-break (Subtract score)
+        # 2. Score Tie-break (Subtract normalized score - higher score = lower cost)
         s_raw = block_scores.get(block.id, s_min) if block_scores else 0
         s_norm = norm_score(s_raw)
         cost = cost - (SCORE_TIEBREAK * s_norm)
         
-        # ==== Dynamic trap penalty ====
-        # Penalize late 3-tour blocks on high-trap days
+        # ==== Dynamic trap penalty (de-prioritize late 3-tours on high-trap days) ====
         is_3tour = (n == 3)
         is_late = block.last_end.hour >= 20
         day_trap = trap_pressure.get(block.day.value, 0)
         
         if is_3tour and is_late and day_trap > 0.01:
-            # Scale penalty by trap intensity
+            # Scale penalty by trap intensity (this is a tie-breaker, not a blocker)
             cost += int(TRAP_PENALTY * day_trap * 10) 
             
-        # ==== Chainability Penalty ====
+        # ==== Chainability Penalty (de-prioritize blocks that dead-end) ====
         c_pen = chain_penalty_map.get(block.id, 0)
         if c_pen > 0:
             cost += int(c_pen) 
@@ -1862,6 +1917,400 @@ def _solve_capacity_single_cap(
 
 
 # =============================================================================
+# TWO-PASS SOLVE FOR BEST_BALANCED PROFILE
+# =============================================================================
+
+def solve_capacity_twopass_balanced(
+    blocks: list[Block],
+    tours: list[Tour],
+    block_index: dict[str, list[Block]],
+    config: ConfigV4,
+    block_scores: dict[str, float] = None,
+    block_props: dict[str, dict] = None,
+    total_time_budget: float = 180.0,
+) -> tuple[list[Block], dict]:
+    """
+    Two-pass solve for BEST_BALANCED profile.
+    
+    Pass 1: Minimize headcount via full solve (capacity + greedy) to get true D_min.
+    Pass 2: Optimize for balance with block_cap constraint (derived from D_min).
+    
+    NOTE: D_min is the actual drivers_total from Pass 1, not just block count.
+    block_cap is used as a proxy constraint since drivers come from assignment phase.
+    
+    Returns:
+        (selected_blocks, stats) with D_min (true driver count) and driver_cap in stats
+    """
+    safe_print(f"\n{'='*60}", flush=True)
+    safe_print("BEST_BALANCED: TWO-PASS SOLVE", flush=True)
+    safe_print(f"{'='*60}", flush=True)
+    
+    t0 = perf_counter()
+    
+    # =========================================================================
+    # QUALITY-FIRST Budget Allocation (RC0 Policy)
+    # =========================================================================
+    # Pass-2 is GUARANTEED a minimum time (pass2_min_time_s), even if it means
+    # cutting Pass-1 budget. This ensures twopass_executed=True for Quality runs.
+    
+    pass2_min_guaranteed = config.pass2_min_time_s  # Default: 15s
+    
+    # Calculate budgets: Pass-2 gets guaranteed minimum, Pass-1 gets rest
+    if total_time_budget < pass2_min_guaranteed + 10.0:
+        # Total budget too small - can't guarantee both passes meaningfully
+        # Give 60/40 split as fallback
+        pass1_budget = total_time_budget * 0.60
+        pass2_budget = total_time_budget * 0.40
+        safe_print(f"WARNING: Total budget {total_time_budget:.1f}s too small for quality guarantee", flush=True)
+    else:
+        # QUALITY-FIRST: Reserve minimum for Pass-2, rest goes to Pass-1
+        pass2_budget = max(pass2_min_guaranteed, total_time_budget * 0.35)  # At least 35% or minimum
+        pass1_budget = total_time_budget - pass2_budget - 2.0  # 2s buffer for overhead
+    
+    safe_print(f"Budget (QUALITY-FIRST): Pass1={pass1_budget:.1f}s, Pass2={pass2_budget:.1f}s (min guaranteed: {pass2_min_guaranteed:.1f}s)", flush=True)
+    
+    # =========================================================================
+    # PASS 1: Full MIN_HEADCOUNT solve to get true D_min (drivers_total)
+    # Use solve_capacity_phase (same function that works for MIN_HEADCOUNT_3ER)
+    # =========================================================================
+    safe_print(f"\nPASS 1: Minimize headcount (target budget: {pass1_budget:.1f}s)...", flush=True)
+    t1 = perf_counter()
+    
+    # Explicitly pass time_limit to ensure it overrides config
+    try:
+        selected_pass1, stats_pass1 = solve_capacity_phase(
+            blocks, tours, block_index, config,
+            block_scores=block_scores,
+            block_props=block_props,
+            time_limit=pass1_budget
+        )
+        result_pass1 = (selected_pass1, stats_pass1) if stats_pass1.get("status") == "OK" else None
+    except Exception as e:
+        import traceback
+        safe_print(f"PASS 1 EXCEPTION: {type(e).__name__}: {e}", flush=True)
+        safe_print(traceback.format_exc(), flush=True)
+        raise
+    
+    if result_pass1 is None:
+        safe_print("PASS 1 INFEASIBLE - falling back to single-pass", flush=True)
+        return solve_capacity_phase(
+            blocks, tours, block_index, config,
+            block_scores=block_scores,
+            block_props=block_props
+        )
+    
+    selected_pass1, stats_pass1 = result_pass1
+    blocks_pass1 = len(selected_pass1)
+    
+    # Run greedy assignment to get TRUE D_min (drivers_total)
+    safe_print(f"  Running greedy assignment on {blocks_pass1} blocks...", flush=True)
+    assignments_pass1, assign_stats_pass1 = assign_drivers_greedy(selected_pass1, config)
+    
+    # D_pass1_seed = actual driver count from pass 1 (heuristic seed)
+    D_pass1_seed = len(assignments_pass1)
+    fte_pass1 = len([a for a in assignments_pass1 if a.driver_type == "FTE"])
+    pt_pass1 = len([a for a in assignments_pass1 if a.driver_type == "PT"])
+    underfull_pass1 = len([a for a in assignments_pass1 if a.driver_type == "FTE" and a.total_hours < config.min_hours_per_fte])
+    
+    elapsed_pass1 = perf_counter() - t1
+    
+    safe_print(f"PASS 1 RESULT: D_pass1_seed={D_pass1_seed} drivers ({fte_pass1} FTE, {pt_pass1} PT) from {blocks_pass1} blocks in {elapsed_pass1:.1f}s", flush=True)
+    safe_print(f"  underfull_pass1: {underfull_pass1} ({underfull_pass1/fte_pass1*100:.1f}% of FTE)" if fte_pass1 > 0 else "  underfull_pass1: N/A", flush=True)
+    
+    # Compute driver cap: ceil((1 + max_extra_driver_pct) * D_pass1_seed)
+    driver_cap = math.ceil((1 + config.max_extra_driver_pct) * D_pass1_seed)
+    
+    # Also compute block_cap as proxy (use same ratio applied to blocks)
+    block_cap = math.ceil((1 + config.max_extra_driver_pct) * blocks_pass1)
+    
+    safe_print(f"PASS 2 CAPS: driver_cap={driver_cap} (+5% of {D_pass1_seed}), block_cap={block_cap} (+5% of {blocks_pass1})", flush=True)
+    
+    # FEASIBILITY CHECK (User Request)
+    safe_print(f"PASS 2 FEASIBILITY CHECK: drivers_pass1 ({D_pass1_seed}) <= driver_cap ({driver_cap})", flush=True)
+    if D_pass1_seed > driver_cap:
+        safe_print(f"WARNING: D_pass1_seed > driver_cap! ({D_pass1_seed} > {driver_cap})", flush=True)
+    
+    # =========================================================================
+    # PASS 2: Balance objective with block_cap constraint
+    # (We constrain blocks as proxy since drivers come from assignment)
+    # =========================================================================
+    safe_print("\nPASS 2: Optimize balance with block cap...", flush=True)
+    t2 = perf_counter()
+    
+    # Remaining budget after pass 1
+    elapsed_so_far = perf_counter() - t0
+    remaining_budget = min(pass2_budget, total_time_budget - elapsed_so_far - 1.0)
+    
+    safe_print(f"  Pass 1 overhead: {elapsed_pass1:.2f}s, Total elapsed: {elapsed_so_far:.2f}s", flush=True)
+    safe_print(f"  Remaining budget: {remaining_budget:.2f}s (Threshold: 5.0s)", flush=True)
+    
+    if remaining_budget < config.pass2_min_time_s:
+        # QUALITY-FIRST: This should rarely happen with proper budget allocation
+        safe_print(f"WARNING: Insufficient budget for Pass-2 ({remaining_budget:.1f}s < {config.pass2_min_time_s}s minimum)", flush=True)
+        safe_print(f"Using Pass-1 result (Pass-2 skipped due to budget exhaustion)", flush=True)
+        stats_pass1["twopass_executed"] = False  # Pass 2 was skipped
+        stats_pass1["D_pass1_seed"] = D_pass1_seed
+        stats_pass1["D_min"] = D_pass1_seed  # Legacy
+        stats_pass1["driver_cap"] = driver_cap
+        stats_pass1["block_cap"] = block_cap
+        stats_pass1["blocks_pass1"] = blocks_pass1
+        stats_pass1["underfull_pass1"] = underfull_pass1
+        stats_pass1["pt_pass1"] = pt_pass1
+        stats_pass1["drivers_total_pass1"] = D_pass1_seed
+        stats_pass1["drivers_total_pass2"] = None  # Not available
+        stats_pass1["twopass_status"] = "PASS2_SKIPPED_BUDGET"
+        stats_pass1["pass1_time_s"] = round(elapsed_pass1, 2)
+        stats_pass1["pass2_time_s"] = None
+        stats_pass1["pass2_min_time_s"] = config.pass2_min_time_s
+        stats_pass1["output_profile"] = config.output_profile
+        stats_pass1["gap_3er_min_minutes"] = config.gap_3er_min_minutes
+        stats_pass1["diagnostics_failure_reason"] = f"Budget exhausted (rem={remaining_budget:.1f}s < min={config.pass2_min_time_s}s)"
+        return selected_pass1, stats_pass1
+    
+    # Create CP-SAT model for pass 2 with balance objective
+    # Use block_cap (not driver_cap) since we constrain at capacity phase
+    result_pass2 = _solve_capacity_balanced_with_cap(
+        blocks, tours, block_index, config,
+        block_scores=block_scores,
+        block_props=block_props,
+        driver_cap=block_cap,  # Actually block_cap (proxy for driver cap)
+        time_limit=remaining_budget,
+        warm_start_blocks=selected_pass1
+    )
+    
+    if result_pass2 is None:
+        safe_print("PASS 2 INFEASIBLE - using pass 1 result", flush=True)
+        stats_pass1["twopass_executed"] = False  # Pass 2 failed
+        stats_pass1["diagnostics_failure_reason"] = "Pass 2 Infeasible (No solution found within budget)"
+        stats_pass1["D_pass1_seed"] = D_pass1_seed
+        stats_pass1["D_min"] = D_pass1_seed  # Legacy
+        stats_pass1["driver_cap"] = driver_cap
+        stats_pass1["block_cap"] = block_cap
+        stats_pass1["blocks_pass1"] = blocks_pass1
+        stats_pass1["underfull_pass1"] = underfull_pass1
+        stats_pass1["pt_pass1"] = pt_pass1
+        stats_pass1["drivers_total_pass1"] = D_pass1_seed
+        stats_pass1["drivers_total_pass2"] = None  # Not available
+        stats_pass1["twopass_status"] = "PASS2_INFEASIBLE"
+        stats_pass1["pass1_time_s"] = round(elapsed_pass1, 2)
+        stats_pass1["pass2_time_s"] = None
+        stats_pass1["output_profile"] = config.output_profile
+        stats_pass1["gap_3er_min_minutes"] = config.gap_3er_min_minutes
+        return selected_pass1, stats_pass1
+    
+    # Pass 1 FAILED check
+    safe_print(f"DEBUG: stats_pass1 status = '{stats_pass1.get('status')}'", flush=True)
+    if stats_pass1.get("status") not in ["OK", "FEASIBLE", "OPTIMAL"]:
+        safe_print(f"PASS 1 FAILED or NO SOLUTION (status={stats_pass1.get('status')}). Skipping Pass 2.", flush=True)
+        stats_pass1["twopass_status"] = f"PASS1_FAIL_{stats_pass1.get('status')}"
+        stats_pass1["twopass_executed"] = False
+        return selected_pass1, stats_pass1
+    
+    selected_pass2, stats_pass2 = result_pass2
+    elapsed_pass2 = perf_counter() - t2
+    
+    # Run greedy assignment on pass 2 blocks to get drivers_total_pass2
+    assignments_pass2, assign_stats_pass2 = assign_drivers_greedy(selected_pass2, config)
+    drivers_total_pass2 = len(assignments_pass2)
+    
+    safe_print(f"PASS 2 RESULT: {len(selected_pass2)} blocks -> {drivers_total_pass2} drivers in {elapsed_pass2:.1f}s", flush=True)
+    
+    # Add two-pass metadata to stats (complete stats for API propagation)
+    stats_pass2["twopass_executed"] = True
+    stats_pass2["D_pass1_seed"] = D_pass1_seed
+    stats_pass2["D_min"] = D_pass1_seed  # Legacy
+    stats_pass2["driver_cap"] = driver_cap
+    stats_pass2["block_cap"] = block_cap
+    stats_pass2["blocks_pass1"] = blocks_pass1
+    stats_pass2["underfull_pass1"] = underfull_pass1
+    stats_pass2["pt_pass1"] = pt_pass1
+    stats_pass2["drivers_total_pass1"] = D_pass1_seed  # D_pass1_seed IS drivers_total from pass 1
+    stats_pass2["drivers_total_pass2"] = drivers_total_pass2
+    stats_pass2["twopass_status"] = "SUCCESS"
+    stats_pass2["pass1_time_s"] = round(elapsed_pass1, 2)
+    stats_pass2["pass2_time_s"] = round(elapsed_pass2, 2)
+    stats_pass2["output_profile"] = config.output_profile
+    stats_pass2["gap_3er_min_minutes"] = config.gap_3er_min_minutes
+    
+    # DEBUG TRACE
+    safe_print(f"DEBUG: solve_capacity_twopass_balanced RETURNING: twopass_executed={stats_pass2.get('twopass_executed')}, expected=True")
+    
+    total_time = perf_counter() - t0
+    safe_print(f"\nTWO-PASS COMPLETE: {len(selected_pass2)} blocks -> {drivers_total_pass2} drivers in {total_time:.1f}s", flush=True)
+    safe_print(f"{'='*60}\n", flush=True)
+    
+    return selected_pass2, stats_pass2
+
+
+def _solve_capacity_balanced_with_cap(
+    blocks: list[Block],
+    tours: list[Tour],
+    block_index: dict[str, list[Block]],
+    config: ConfigV4,
+    block_scores: dict[str, float] = None,
+    block_props: dict[str, dict] = None,
+    driver_cap: int = None,
+    time_limit: float = 60.0,
+    warm_start_blocks: list[Block] = None
+) -> tuple[list[Block], dict] | None:
+    """
+    Pass 2 solver: Balance objective with driver cap constraint.
+    
+    Objective priority (within cap):
+    1. Minimize underfull penalty (prefer full utilization)
+    2. Minimize 1er blocks (balance via multi-tour blocks)
+    3. Minimize variance proxy (smooth distribution)
+    """
+    t0 = perf_counter()
+    
+    model = cp_model.CpModel()
+    
+    # Variables: one per block
+    use = {}
+    for b, block in enumerate(blocks):
+        use[b] = model.NewBoolVar(f"use_{b}")
+    
+    # Warm start from Pass 1
+    if warm_start_blocks:
+        warm_ids = {b.id for b in warm_start_blocks}
+        for b, block in enumerate(blocks):
+            model.AddHint(use[b], 1 if block.id in warm_ids else 0)
+        safe_print(f"  Added warm start hints from {len(warm_start_blocks)} blocks", flush=True)
+
+    # Precompute block index lookup
+    block_id_to_idx = {block.id: idx for idx, block in enumerate(blocks)}
+    
+    # Coverage constraints (each tour exactly once)
+    for tour in tours:
+        blocks_with_tour = block_index.get(tour.id, [])
+        if not blocks_with_tour:
+            return None  # No coverage possible
+        
+        block_indices = []
+        for block in blocks_with_tour:
+            b_idx = block_id_to_idx.get(block.id)
+            if b_idx is not None:
+                block_indices.append(b_idx)
+        
+        if not block_indices:
+            return None
+        
+        model.Add(sum(use[b] for b in block_indices) == 1)
+    
+    # Driver cap constraint (KEY for BEST_BALANCED)
+    total_blocks = sum(use[b] for b in range(len(blocks)))
+    if driver_cap is not None:
+        model.Add(total_blocks <= driver_cap)
+        safe_print(f"  Added cap constraint: total_blocks <= {driver_cap}", flush=True)
+    
+    # Group blocks by day for balance metrics
+    from collections import defaultdict
+    blocks_by_day = defaultdict(list)
+    for b, block in enumerate(blocks):
+        blocks_by_day[block.day.value].append(b)
+    
+    days = list(blocks_by_day.keys())
+    
+    # Day-level counts for variance proxy
+    day_count = {}
+    for d in days:
+        day_count[d] = sum(use[b] for b in blocks_by_day[d])
+    
+    # Compute max and min day counts for variance proxy
+    max_day = model.NewIntVar(0, len(blocks), "max_day")
+    min_day = model.NewIntVar(0, len(blocks), "min_day")
+    
+    for d in days:
+        model.Add(max_day >= day_count[d])
+        model.Add(min_day <= day_count[d])
+    
+    # Variance proxy: max_day - min_day (minimize spread)
+    day_spread = model.NewIntVar(0, len(blocks), "day_spread")
+    model.Add(day_spread == max_day - min_day)
+    
+    # Block type costs (balance-focused)
+    block_cost = []
+    
+    # Cost structure for BEST_BALANCED:
+    # - 1er: high cost (push toward multi-tour)
+    # - 2er: moderate cost
+    # - 3er: low/reward (maximize utilization)
+    BASE_1 = 100_000   # Penalty for 1er
+    BASE_2 = 10_000    # Moderate for 2er
+    BASE_3 = -20_000   # Reward for 3er
+    
+    for b, block in enumerate(blocks):
+        n = len(block.tours)
+        if n == 1:
+            cost = BASE_1
+        elif n == 2:
+            cost = BASE_2
+        else:
+            cost = BASE_3
+        block_cost.append(use[b] * cost)
+    
+    # Objective: Balance-focused
+    # Priority: min spread >> min 1er >> min blocks (within cap)
+    W_SPREAD = 1_000_000     # Minimize day-to-day variance
+    W_COST = 1               # Block type preference
+    W_BLOCKS = 100           # Tie-break: fewer blocks still better
+    
+    objective = (
+        W_SPREAD * day_spread +
+        sum(block_cost) +
+        W_BLOCKS * total_blocks
+    )
+    
+    model.Minimize(objective)
+    
+    # Solve
+    solver = cp_model.CpSolver()
+    solver.parameters.max_time_in_seconds = time_limit
+    solver.parameters.num_search_workers = 1  # Determinism
+    solver.parameters.random_seed = config.seed
+    
+    status = solver.Solve(model)
+    elapsed = perf_counter() - t0
+    
+    if status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
+        return None
+    
+    # Extract selected blocks
+    selected = [blocks[b] for b in range(len(blocks)) if solver.Value(use[b]) == 1]
+    
+    # Stats
+    by_type = {
+        "1er": sum(1 for b in selected if len(b.tours) == 1),
+        "2er": sum(1 for b in selected if len(b.tours) == 2),
+        "3er": sum(1 for b in selected if len(b.tours) == 3),
+    }
+    
+    by_day = defaultdict(int)
+    for block in selected:
+        by_day[block.day.value] += 1
+    
+    total_hours = sum(b.total_work_hours for b in selected)
+    day_spread_val = solver.Value(day_spread)
+    
+    stats = {
+        "status": "OK",
+        "selected_blocks": len(selected),
+        "blocks_1er": by_type["1er"],
+        "blocks_2er": by_type["2er"],
+        "blocks_3er": by_type["3er"],
+        "blocks_by_day": dict(by_day),
+        "total_hours": round(total_hours, 2),
+        "time": round(elapsed, 2),
+        "day_spread": day_spread_val,  # Variance proxy metric
+    }
+    
+    safe_print(f"  Selected {len(selected)} blocks: {by_type}", flush=True)
+    safe_print(f"  Day spread (variance proxy): {day_spread_val}", flush=True)
+    
+    return selected, stats
+
+
+# =============================================================================
 # PHASE 2: DRIVER ASSIGNMENT (Greedy)
 # =============================================================================
 
@@ -1940,13 +2389,24 @@ def assign_drivers_greedy(
     
     def can_take_block(driver_id: str, block: Block) -> bool:
         """Check if driver can take this block."""
+        from src.domain.constraints import HARD_CONSTRAINTS
+        
         d = drivers[driver_id]
         day = block.day.value
         day_idx = get_day_index(day)
         
-        # Check hours if FTE
+        # Check MAX_BLOCKS_PER_DAY (applies to ALL drivers)
+        existing_day_blocks = d["day_blocks"].get(day, [])
+        if len(existing_day_blocks) >= HARD_CONSTRAINTS.MAX_BLOCKS_PER_DRIVER_PER_DAY:
+            return False
+        
+        # Check weekly hours for ALL drivers (not just FTE)
+        new_hours = d["hours"] + block.total_work_hours
+        if new_hours > HARD_CONSTRAINTS.MAX_WEEKLY_HOURS:
+            return False
+        
+        # Check hours if FTE (stricter limit than MAX_WEEKLY_HOURS)
         if d["type"] == "FTE":
-            new_hours = d["hours"] + block.total_work_hours
             if new_hours > config.max_hours_per_fte:
                 return False
         
@@ -2656,8 +3116,47 @@ def solve_forecast_fte_only(
 # REPAIR / POST-PROCESSING (Enhanced)
 # =============================================================================
 
-def _move_block(source: DriverAssignment, target: DriverAssignment, block) -> None:
-    """Helper to move a block between drivers and update stats."""
+def _can_accept_block(target: DriverAssignment, block, max_weekly_hours: float = 55.0) -> bool:
+    """
+    Check if target driver can accept a new block without violating hard constraints.
+    
+    Checks:
+    1. MAX_BLOCKS_PER_DAY (2)
+    2. MAX_WEEKLY_HOURS (55.0)
+    """
+    from src.domain.constraints import HARD_CONSTRAINTS
+    
+    # Check MAX_BLOCKS_PER_DAY
+    day = block.day.value
+    existing_day_blocks = [b for b in target.blocks if b.day.value == day]
+    if len(existing_day_blocks) >= HARD_CONSTRAINTS.MAX_BLOCKS_PER_DRIVER_PER_DAY:
+        return False
+    
+    # Check MAX_WEEKLY_HOURS
+    new_hours = target.total_hours + block.total_work_hours
+    if new_hours > max_weekly_hours:
+        return False
+    
+    return True
+
+
+def _move_block(source: DriverAssignment, target: DriverAssignment, block, check_constraints: bool = True) -> bool:
+    """
+    Helper to move a block between drivers and update stats.
+    
+    Args:
+        source: Driver to remove block from
+        target: Driver to add block to
+        block: Block to move
+        check_constraints: If True, verify target can accept block before moving
+        
+    Returns:
+        True if move was successful, False if blocked by constraints
+    """
+    # Constraint check (unless explicitly disabled)
+    if check_constraints and not _can_accept_block(target, block):
+        return False
+    
     source.blocks.remove(block)
     source.total_hours = sum(b.total_work_hours for b in source.blocks)
     source.days_worked = len({t.day for b in source.blocks for t in b.tours}) if source.blocks else 0
@@ -2665,6 +3164,8 @@ def _move_block(source: DriverAssignment, target: DriverAssignment, block) -> No
     target.blocks.append(block)
     target.total_hours = sum(b.total_work_hours for b in target.blocks)
     target.days_worked = len({t.day for b in target.blocks for t in b.tours})
+    
+    return True
 
 
 def _block_day_priority(block) -> int:
@@ -2750,9 +3251,9 @@ def rebalance_to_min_fte_hours(
             if donor.total_hours - block.total_work_hours < min_fte_hours:
                 continue
                 
-            # Move block
-            _move_block(donor, underfull, block)
-            stats["moved_blocks_fte_fte"] += 1
+            # Move block (will be rejected if violates constraints)
+            if _move_block(donor, underfull, block):
+                stats["moved_blocks_fte_fte"] += 1
     
     # Phase 2: PTâ†’FTE stealing
     logger.info("Repair Phase 2: PTâ†’FTE stealing...")
@@ -2793,8 +3294,8 @@ def rebalance_to_min_fte_hours(
             if not ok:
                 continue
                 
-            _move_block(source_pt, underfull, block)
-            stats["moved_blocks_pt_fte"] += 1
+            if _move_block(source_pt, underfull, block):
+                stats["moved_blocks_pt_fte"] += 1
     
     # Phase 3: Reclassify remaining underfull FTEs
     logger.info("Repair Phase 3: Reclassifying remaining underfull FTEs...")
@@ -2877,9 +3378,9 @@ def fill_in_days_after_heavy(
                     if not ok:
                         continue
                     
-                    _move_block(pt, fte, block)
-                    stats["moved_blocks"] += 1
-                    break
+                    if _move_block(pt, fte, block):
+                        stats["moved_blocks"] += 1
+                        break
             
             if get_tours_on_day(fte, next_day) > 0:
                 stats["filled_days"] += 1
@@ -2946,8 +3447,9 @@ def eliminate_pt_drivers(
                 for fte in sorted([a for a in assignments if a.driver_type == "FTE" 
                                    and a.total_hours + block.total_work_hours <= max_fte_hours],
                                   key=lambda x: x.total_hours):
+                    # Check both rest constraints AND hard daily/weekly limits
                     ok, _ = can_assign_block(fte.blocks, block)
-                    if ok:
+                    if ok and _can_accept_block(fte, block):
                         placements.append((block, fte))
                         fte.blocks.append(block)
                         fte.total_hours += block.total_work_hours
@@ -2958,8 +3460,9 @@ def eliminate_pt_drivers(
                 if not placed:
                     for other in sorted([a for a in assignments if a.driver_type == "PT" and a is not pt],
                                         key=lambda x: -x.total_hours):
+                        # Check both rest constraints AND hard daily/weekly limits
                         ok, _ = can_assign_block(other.blocks, block)
-                        if ok:
+                        if ok and _can_accept_block(other, block):
                             placements.append((block, other))
                             other.blocks.append(block)
                             other.total_hours += block.total_work_hours
@@ -3191,7 +3694,7 @@ def pack_part_time_saturday(
         # Try target bins first
         for driver in target_bins:
             ok, _ = can_assign_block(driver.blocks, block)
-            if ok:
+            if ok and _can_accept_block(driver, block):
                 driver.blocks.append(block)
                 driver.total_hours = sum(b.total_work_hours for b in driver.blocks)
                 driver.days_worked = len({t.day for b in driver.blocks for t in b.tours})
@@ -3203,7 +3706,7 @@ def pack_part_time_saturday(
         if not placed:
             for driver in overflow_bins:
                 ok, _ = can_assign_block(driver.blocks, block)
-                if ok:
+                if ok and _can_accept_block(driver, block):
                     driver.blocks.append(block)
                     driver.total_hours = sum(b.total_work_hours for b in driver.blocks)
                     driver.days_worked = len({t.day for b in driver.blocks for t in b.tours})
@@ -3215,7 +3718,7 @@ def pack_part_time_saturday(
         if not placed:
             for driver in [a for a in assignments if a.driver_type == "PT"]:
                 ok, _ = can_assign_block(driver.blocks, block)
-                if ok:
+                if ok and _can_accept_block(driver, block):
                     driver.blocks.append(block)
                     driver.total_hours = sum(b.total_work_hours for b in driver.blocks)
                     driver.days_worked = len({t.day for b in driver.blocks for t in b.tours})

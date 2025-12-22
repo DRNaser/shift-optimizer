@@ -343,6 +343,7 @@ def run_portfolio(
         ConfigV4,
         SolveResultV4,
         solve_capacity_phase,
+        solve_capacity_twopass_balanced,  # Two-pass for BEST_BALANCED
         assign_drivers_greedy,
         DriverAssignment,
     )
@@ -365,11 +366,14 @@ def run_portfolio(
         blocks, block_stats = build_weekly_blocks_smart(
             tours,
             cap_quota_2er=config.cap_quota_2er,
-            enable_diag=config.enable_diag_block_caps
+            enable_diag=config.enable_diag_block_caps,
+            output_profile=config.output_profile,
+            gap_3er_min_minutes=config.gap_3er_min_minutes,
+            cap_quota_3er=config.cap_quota_3er,
         )
         block_time = perf_counter() - t_block
         
-        log(f"Generated {len(blocks)} blocks in {block_time:.1f}s")
+        log(f"Generated {len(blocks)} blocks in {block_time:.1f}s (profile={config.output_profile})")
         
         if METRICS_ENABLED:
             record_candidate_counts(block_stats)
@@ -412,13 +416,30 @@ def run_portfolio(
         log("PHASE 3: Block selection (CP-SAT)...")
         t_capacity = perf_counter()
         
-        # S0.2: Use hard budget slice for phase 1 (not params which may drift)
-        phase1_config = config._replace(time_limit_phase1=budget_slices.phase1)
-        
-        selected_blocks, phase1_stats = solve_capacity_phase(
-            blocks, tours, block_index, phase1_config,
-            block_scores=block_scores, block_props=block_props
-        )
+        # Profile-specific block selection
+        if config.output_profile == "BEST_BALANCED":
+            # Two-pass solve: minimize headcount first, then optimize balance with cap
+            log(f"Using TWO-PASS solve for BEST_BALANCED (max_extra_driver_pct={config.max_extra_driver_pct})")
+            
+            # S0.2: Allocate 85% of total budget to Two-Pass solve (Pass 1 + Pass 2)
+            # This logic replaces standard Phase 3 (50%) and consumes much of Phase 4/LNS time
+            # because it performs its own internal optimization and assignment steps.
+            best_balanced_budget = time_budget * 0.85
+            
+            selected_blocks, phase1_stats = solve_capacity_twopass_balanced(
+                blocks, tours, block_index, config,
+                block_scores=block_scores, block_props=block_props,
+                total_time_budget=best_balanced_budget
+            )
+            # DEBUG TRACE
+            log(f"DEBUG: Portfolio received phase1_stats: twopass_executed={phase1_stats.get('twopass_executed')}")
+        else:
+            # MIN_HEADCOUNT_3ER: single-pass with standard objective
+            phase1_config = config._replace(time_limit_phase1=budget_slices.phase1)
+            selected_blocks, phase1_stats = solve_capacity_phase(
+                blocks, tours, block_index, phase1_config,
+                block_scores=block_scores, block_props=block_props
+            )
         capacity_time = perf_counter() - t_capacity
         
         # S0.2: Log budget compliance
@@ -616,6 +637,19 @@ def run_portfolio(
             reason_codes.append(early_stop_reason)
             log(f"Early stop triggered: {early_stop_reason}")
         
+        # ==========================================================================
+        # S1.4: COMPUTE PACKABILITY METRICS (for block mix diagnostics)
+        # ==========================================================================
+        from src.services.forecast_solver_v4 import compute_packability_metrics
+        
+        packability_metrics = compute_packability_metrics(
+            selected_blocks=selected_blocks,
+            all_blocks=blocks,
+            tours=tours,
+        )
+        log(f"Packability: forced_1er_rate={packability_metrics['forced_1er_rate']:.2%}, "
+            f"missed_3er_opps={packability_metrics['missed_3er_opps_count']}")
+        
         # Build final KPI
         fte_drivers = [a for a in assignments if a.driver_type == "FTE"]
         pt_drivers = [a for a in assignments if a.driver_type == "PT"]
@@ -634,12 +668,33 @@ def run_portfolio(
             "blocks_1er": phase1_stats.get("blocks_1er", 0),
             "blocks_2er": phase1_stats.get("blocks_2er", 0),
             "blocks_3er": phase1_stats.get("blocks_3er", 0),
+            "candidates_3er_pre_cap": block_stats.get("candidates_3er_pre_cap", 0),
             "path_used": final_path.value,
             "fallback_used": fallback_used,
             "early_stopped": early_stopped,
             "lower_bound": lower_bound,
             "gap_to_lb_pct": round(gap_to_lb * 100, 2),
+            # S1.4: Packability diagnostics
+            "forced_1er_rate": packability_metrics["forced_1er_rate"],
+            "forced_1er_count": packability_metrics["forced_1er_count"],
+            "missed_3er_opps_count": packability_metrics["missed_3er_opps_count"],
+            "missed_2er_opps_count": packability_metrics["missed_2er_opps_count"],
+            "missed_multi_opps_count": packability_metrics["missed_multi_opps_count"],
+            # Output Profile Info (from config)
+            "output_profile": config.output_profile,
+            "gap_3er_min_minutes": config.gap_3er_min_minutes,
         }
+        
+        # Merge two-pass stats from phase1_stats into kpi (for BEST_BALANCED profile)
+        twopass_keys = [
+            "twopass_executed", "D_pass1_seed", "D_min", "driver_cap", "block_cap",
+            "drivers_total_pass1", "drivers_total_pass2", "twopass_status",
+            "pass1_time_s", "pass2_time_s", "underfull_pass1", "pt_pass1",
+            "diagnostics_failure_reason"
+        ]
+        for key in twopass_keys:
+            if key in phase1_stats:
+                kpi[key] = phase1_stats[key]
         
         solve_times = {
             "block_building": round(block_time, 2),
@@ -814,7 +869,6 @@ def _execute_path(
     try:
         if path == PS.A:
             # Path A: Greedy + Light LNS
-            log_fn(f"Path A: Greedy assignment...")
             t_phase2 = perf_counter()
             
             assignments, stats = assign_drivers_greedy(selected_blocks, config)
@@ -822,6 +876,7 @@ def _execute_path(
             
             # Light repair
             assignments, _ = rebalance_to_min_fte_hours(assignments, 40.0, 53.0)
+            
             # Aggressive PT elimination (NEW)
             # S0.2: Use hard phase2_budget for PT elimination
             assignments, _ = eliminate_pt_drivers(assignments, 53.0, time_limit=min(phase2_budget * 0.3, 10.0))
