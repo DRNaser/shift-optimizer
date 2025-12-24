@@ -55,3 +55,14 @@ wheels/
 env/
 venv/
 ENV/
+
+# Large log files
+backend_py/server_log*.txt
+backend_py/debug_log.txt
+backend_py/*.json
+!backend_py/pyproject.json
+# Temporary artifacts
+backend_py/artifacts/
+backend_py/lns_*.json
+backend_py/rc*.json
+backend_py/server.err

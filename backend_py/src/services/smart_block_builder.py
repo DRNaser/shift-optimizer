@@ -1,13 +1,18 @@
 """
-SMART BLOCK BUILDER v5 - Policy-Driven
+SMART BLOCK BUILDER v5 - Policy-Driven (Pipeline v5)
 ======================================
 Uses learned manual policy (manual_policy.json) to guide block generation.
+
+v5 Priority Rules (4.5h tour optimized):
+1. 3er blocks: 30-60 min pause between tours (Prio 1)
+2. 2er blocks REG: 30 min pause exactly (Prio 2)
+3. 2er blocks SPLIT: ≥360 min (6h) pause (Prio 3)
 
 Key features:
 1. 1er blocks ALWAYS included (coverage guarantee)
 2. 2er/3er generation guided by canonical windows & templates
 3. Scoring based on template matching (high bonus)
-4. Split detection using policy threshold (180min)
+4. Split detection using 6h threshold (v5)
 """
 
 import json
@@ -55,10 +60,10 @@ def safe_print(msg: str) -> None:
 # CONFIGURATION
 # =============================================================================
 
-# Two-Zone Pause Model for Block Generation
-# Zone 1 (Regular): 30-120 min - standard consecutive tours
-# Zone 2 (Split):  240-360 min - legal split-shift gap (2er only)
-# Forbidden Zone:  121-239 min - explicitly banned ("half-splits")
+# Two-Zone Pause Model for Block Generation (v5)
+# Zone 1 (Regular): 30-60 min - standard consecutive tours (tighter packing)
+# Zone 2 (Split):  360-480 min - legal split-shift gap (2er only, 6h minimum)
+# Forbidden Zone:  61-359 min - explicitly banned ("half-splits")
 
 # Regular pause limits (Zone 1)
 MIN_PAUSE_MINUTES = HARD_CONSTRAINTS.MIN_PAUSE_BETWEEN_TOURS  # 30 min
@@ -72,12 +77,14 @@ MAX_SPREAD_SPLIT = HARD_CONSTRAINTS.MAX_SPREAD_SPLIT_MINUTES  # 840 min (14h)
 # Feature flag for split-shift generation
 ENABLE_SPLIT_SHIFTS = True  # Can be overridden via config
 
-# CLASS-AWARE CAPPING (Combi-Prio)
-# Each class retains its own Top-K per tour to ensure split candidates survive
-K_3ER_PER_TOUR = 30      # Top 3er blocks per tour (was 50, reduced for efficiency)
-K_2ER_REG_PER_TOUR = 25  # Top regular 2er blocks per tour  
-K_2ER_SPLIT_PER_TOUR = 15 # Top split 2er blocks per tour (MUST survive pruning)
-K_1ER_PER_TOUR = 3       # Top 1er blocks per tour
+# RC1: CLASS-AWARE CAPPING (Per-Tour Guarantees)
+# Each tour retains its own Top-K per class to prevent multi-option starvation
+# Values chosen for N≈1385 tours to stay under GLOBAL_TOP_N=40k:
+# Worst case: (6+8+4+2) × 1385 = ~27,700 before dedup (safe under 40k)
+K_3ER_PER_TOUR = 6       # Top 6 3er blocks per tour
+K_2ER_REG_PER_TOUR = 8   # Top 8 regular 2er blocks per tour  
+K_2ER_SPLIT_PER_TOUR = 4 # Top 4 split 2er blocks per tour (MUST survive pruning)
+K_1ER_PER_TOUR = 2       # Top 2 1er blocks per tour
 GLOBAL_TOP_N = 40_000    # Global limit (increased for class diversity)
 
 # Legacy compatibility
@@ -467,7 +474,8 @@ def _generate_all_blocks(tours: list[Tour], enable_splits: bool = True) -> list[
                 day=day, 
                 tours=[tour],
                 is_split=False,
-                max_pause_minutes=0
+                max_pause_minutes=0,
+                pause_zone="REGULAR"
             ))
         
         # 2er - Regular (30-120 min gap)
@@ -481,7 +489,8 @@ def _generate_all_blocks(tours: list[Tour], enable_splits: bool = True) -> list[
                         day=day, 
                         tours=[t1, t2],
                         is_split=False,
-                        max_pause_minutes=gap
+                        max_pause_minutes=gap,
+                        pause_zone="REGULAR"
                     ))
         
         # 2er - Split (240-360 min gap) - ONLY for 2er
@@ -520,7 +529,8 @@ def _generate_all_blocks(tours: list[Tour], enable_splits: bool = True) -> list[
                             day=day, 
                             tours=[t1, t2, t3],
                             is_split=False,
-                            max_pause_minutes=max(gap1, gap2)
+                            max_pause_minutes=max(gap1, gap2),
+                            pause_zone="REGULAR"
                         ))
     
     return all_blocks
@@ -704,28 +714,62 @@ def _smart_cap_with_1er_guarantee(
         median_richness = 1.0
     
     # B3: Dynamic K per tour
-    def get_k_for_tour(tour_id: str) -> int:
-        richness = tour_richness.get(tour_id, 0)
-        if richness < median_richness / 2:
-            return 2 * K_PER_TOUR  # Scarce tour: double K
-        else:
-            return K_PER_TOUR
+    # B1: Dynamic K values based on global_top_n
+    # If global_top_n is small, clamp K values to prevent exceeding the limit
+    num_tours = len(tours)
+    num_classes = 4  # 3er, 2er_reg, 2er_split, 1er
     
-    # B4: Collect Top-K per tour WITH COMBI-PRIO (deterministic sort)
-    # Sort by (combi_rank, -score, span, id) so higher priority classes come first
-    kept_ids: set[str] = set()
+    # Worst-case per-tour minima
+    base_k_sum = K_3ER_PER_TOUR + K_2ER_REG_PER_TOUR + K_2ER_SPLIT_PER_TOUR + K_1ER_PER_TOUR
+    worst_case_total = base_k_sum * num_tours
+    
+    if worst_case_total > global_n:
+        # Scale down K values proportionally
+        scale_factor = global_n / worst_case_total
+        k_3er_actual = max(1, int(K_3ER_PER_TOUR * scale_factor))
+        k_2er_reg_actual = max(1, int(K_2ER_REG_PER_TOUR * scale_factor))
+        k_2er_split_actual = max(1, int(K_2ER_SPLIT_PER_TOUR * scale_factor))
+        k_1er_actual = max(1, int(K_1ER_PER_TOUR * scale_factor))
+        safe_log(f"[CAPPING] B1: global_top_n={global_n} small, scaling K down by {scale_factor:.2f}")
+        safe_log(f"  K_actual: 3er={k_3er_actual}, 2R={k_2er_reg_actual}, 2S={k_2er_split_actual}, 1er={k_1er_actual}")
+    else:
+        k_3er_actual = K_3ER_PER_TOUR
+        k_2er_reg_actual = K_2ER_REG_PER_TOUR
+        k_2er_split_actual = K_2ER_SPLIT_PER_TOUR
+        k_1er_actual = K_1ER_PER_TOUR
+    
+    # RC1: initialize kept set before per-tour guarantees
+    kept_ids = set()
+    
+    # RC1: Per-Tour Guarantees by Class (deterministic)
+    # Ensure EVERY tour has minimum multi-candidates if they exist
+    # Priority within each class: higher score first, then ID tie-break
     
     for tour in sorted(tours, key=lambda t: t.id):
         tour_blocks = tour_to_blocks.get(tour.id, [])
-        k = get_k_for_tour(tour.id)
         
-        # COMBI-PRIO: Sort by (rank ASC, score DESC, span ASC, id ASC)
-        tour_blocks_sorted = sorted(
-            tour_blocks,
-            key=lambda sb: (sb.combi_rank, -sb.score, sb.block.span_minutes, sb.block.id)
-        )
+        # B2: Consistent split classification - use pause_zone.value consistently
+        # Separate blocks by class
+        blocks_3er = [sb for sb in tour_blocks if len(sb.block.tours) == 3]
+        blocks_2er_reg = [sb for sb in tour_blocks if len(sb.block.tours) == 2 and sb.block.pause_zone.value == "REGULAR"]
+        blocks_2er_split = [sb for sb in tour_blocks if len(sb.block.tours) == 2 and sb.block.pause_zone.value == "SPLIT"]
+        blocks_1er = [sb for sb in tour_blocks if len(sb.block.tours) == 1]
         
-        for sb in tour_blocks_sorted[:k]:
+        # Deterministic sort: (-score, block.id) for stability
+        sort_key = lambda sb: (-sb.score, sb.block.id)
+        blocks_3er.sort(key=sort_key)
+        blocks_2er_reg.sort(key=sort_key)
+        blocks_2er_split.sort(key=sort_key)
+        blocks_1er.sort(key=sort_key)
+        
+        # Keep Top-K per class (using dynamically adjusted K values)
+        for sb in blocks_3er[:k_3er_actual]:
+            kept_ids.add(sb.block.id)
+        for sb in blocks_2er_reg[:k_2er_reg_actual]:
+            kept_ids.add(sb.block.id)
+        for sb in blocks_2er_split[:k_2er_split_actual]:
+            kept_ids.add(sb.block.id)
+        for sb in blocks_1er[:k_1er_actual]:
             kept_ids.add(sb.block.id)
     
     # Union with protected_ids
