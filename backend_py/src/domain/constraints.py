@@ -71,15 +71,15 @@ class HardConstraints:
     
     # Split-shift configuration (Two-Zone Pause Model - v5 Updated)
     SPLIT_PAUSE_MIN: int = 360
-    """Minimum gap for split-shift blocks (6 hours - v5 aligned with MIN_GAP_BETWEEN_BLOCKS)."""
+    """Gap for split-shift blocks (exactly 6 hours)."""
     
-    SPLIT_PAUSE_MAX: int = 480
-    """Maximum gap for split-shift blocks (8 hours)."""
+    SPLIT_PAUSE_MAX: int = 360
+    """Gap for split-shift blocks (exactly 6 hours - same as MIN for exact match)."""
     
     MAX_SPREAD_SPLIT_MINUTES: int = 840
     """Maximum spread (first_start -> last_end) for split blocks (14 hours)."""
     
-    # Note: Gaps 121-239 min are FORBIDDEN (neither regular nor split)
+    # Note: Gaps 61-359 and 361+ are FORBIDDEN (neither regular nor split)
 
 
 # Global singleton instance - THE source of truth

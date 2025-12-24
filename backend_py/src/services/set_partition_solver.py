@@ -15,6 +15,7 @@ Orchestrates the full Set-Partitioning / Crew Scheduling pipeline:
 
 import time
 import logging
+from time import monotonic
 from dataclasses import dataclass
 from typing import Optional
 
@@ -53,6 +54,8 @@ def solve_set_partitioning(
     rmp_time_limit: float = 15.0,
     seed: int = 42,
     log_fn=None,
+    config=None,  # NEW: Pass config for LNS flags
+    global_deadline: float = None,  # Monotonic deadline for budget enforcement
 ) -> SetPartitionResult:
     """
     Solve the crew scheduling problem using Set-Partitioning.
@@ -65,6 +68,7 @@ def solve_set_partitioning(
         rmp_time_limit: RMP solver time limit per solve
         seed: Random seed for determinism
         log_fn: Logging function
+        config: Optional ConfigV4 for LNS settings
     
     Returns:
         SetPartitionResult with selected rosters and stats
@@ -75,11 +79,23 @@ def solve_set_partitioning(
     start_time = time.time()
     
     log_fn("=" * 70)
-    log_fn("SET-PARTITIONING SOLVER")
+    log_fn("SET-PARTITIONING SOLVER - Starting")
     log_fn("=" * 70)
     log_fn(f"Blocks: {len(blocks)}")
     log_fn(f"Max rounds: {max_rounds}")
     log_fn(f"Initial pool target: {initial_pool_size}")
+    
+    # MANDATORY: Log LNS status immediately for diagnostic visibility
+    enable_lns = config and getattr(config, 'enable_lns_low_hour_consolidation', False)
+    log_fn(f"LNS enabled: {enable_lns}")
+    if enable_lns:
+        lns_budget = getattr(config, 'lns_time_budget_s', 30.0)
+        lns_threshold = getattr(config, 'lns_low_hour_threshold_h', 30.0)
+        lns_k = getattr(config, 'lns_receiver_k_values', (3, 5, 8, 12))
+        log_fn(f"  LNS budget: {lns_budget:.1f}s")
+        log_fn(f"  LNS threshold: {lns_threshold:.1f}h")
+        log_fn(f"  LNS K-values: {lns_k}")
+    log_fn("=" * 70)
     
     # =========================================================================
     # STEP 1: Convert blocks to BlockInfo
@@ -161,17 +177,31 @@ def solve_set_partitioning(
     min_coverage_quota = 5  # Each block should be in at least 5 columns
     
     for round_num in range(1, max_rounds + 1):
+        # GLOBAL DEADLINE CHECK
+        if global_deadline:
+            remaining = global_deadline - monotonic()
+            if remaining <= 0:
+                log_fn(f"GLOBAL DEADLINE EXCEEDED at round {round_num} - returning best effort")
+                break
+        
         log_fn(f"\n--- Round {round_num}/{max_rounds} ---")
         log_fn(f"Pool size: {len(generator.pool)}")
         
         # Solve STRICT RMP first
         columns = list(generator.pool.values())
         
+        # Cap RMP time limit to remaining budget (don't starve RMP)
+        effective_rmp_limit = rmp_time_limit
+        if global_deadline:
+            remaining = global_deadline - monotonic()
+            # Use min of configured limit and remaining time (but at least 1s)
+            effective_rmp_limit = min(rmp_time_limit, max(1.0, remaining))
+        
         rmp_start = time.time()
         rmp_result = solve_rmp(
             columns=columns,
             all_block_ids=all_block_ids,
-            time_limit=rmp_time_limit,
+            time_limit=effective_rmp_limit,
             log_fn=log_fn,
         )
         rmp_total_time += time.time() - rmp_start
@@ -183,6 +213,44 @@ def solve_set_partitioning(
                 
                 selected = rmp_result["selected_rosters"]
                 hours = [r.total_hours for r in selected]
+                
+                # =========================================================================
+                # NEW: LNS ENDGAME (if enabled)
+                # =========================================================================
+                if config and hasattr(config, 'enable_lns_low_hour_consolidation') and config.enable_lns_low_hour_consolidation:
+                    lns_budget = getattr(config, 'lns_time_budget_s', 30.0)
+                    log_fn(f"\n{'='*60}")
+                    log_fn(f"LNS ENDGAME: Low-Hour Pattern Elimination")
+                    log_fn(f"{'='*60}")
+                    
+                    lns_result = _lns_consolidate_low_hour(
+                        current_selected=selected,
+                        column_pool=generator.pool,  # FULL POOL!
+                        all_block_ids=all_block_ids,
+                        config=config,
+                        time_budget_s=lns_budget,
+                        log_fn=log_fn,
+                    )
+                    
+                    if lns_result["status"] == "SUCCESS":
+                        selected = lns_result["rosters"]
+                        hours = [r.total_hours for r in selected]
+                        
+                        # LNS SUMMARY LOGGING
+                        log_fn(f"\n{'='*60}")
+                        log_fn(f"LNS SUMMARY:")
+                        log_fn(f"  Status: {lns_result['status']}")
+                        log_fn(f"  Patterns killed: {lns_result['stats']['kills_successful']} / {lns_result['stats']['attempts']} attempts")
+                        log_fn(f"  Drivers: {lns_result['stats']['initial_drivers']} → {lns_result['stats']['final_drivers']}")
+                        log_fn(f"  Low-hour patterns: {lns_result['stats']['initial_lowhour_count']} → {lns_result['stats']['final_lowhour_count']}")
+                        log_fn(f"  Shortfall: {lns_result['stats']['initial_shortfall']:.1f}h → {lns_result['stats']['final_shortfall']:.1f}h")
+                        log_fn(f"  Time: {lns_result['stats']['time_s']:.1f}s")
+                        log_fn(f"{'='*60}")
+                    else:
+                        log_fn(f"\n{'='*60}")
+                        log_fn(f"LNS SUMMARY:")
+                        log_fn(f"  Status: {lns_result['status']} - using original solution")
+                        log_fn(f"{'='*60}")
                 
                 return SetPartitionResult(
                     status="OK",
@@ -213,29 +281,49 @@ def solve_set_partitioning(
             log_fn=log_fn,
         )
         
+        # FIX: Gate progress tracking on solver status
+        relaxed_status = relaxed.get("status", "UNKNOWN")
+        log_fn(f"Relaxed RMP Status: {relaxed_status}")
+        
+        # Initialize variables for all paths
         under_count = relaxed.get("under_count", 0)
         over_count = relaxed.get("over_count", 0)
         under_blocks = relaxed.get("under_blocks", [])
         over_blocks = relaxed.get("over_blocks", [])
         
-        log_fn(f"Relaxed diagnosis: under={under_count}, over={over_count}")
-        log_fn(f"Best so far: under={best_under_count}, over={best_over_count}")
-        
-        # Track progress
-        improved = False
-        if under_count < best_under_count:
-            best_under_count = under_count
-            improved = True
-        if over_count < best_over_count:
-            best_over_count = over_count
-            improved = True
-        
-        if improved:
-            rounds_without_progress = 0
-            log_fn(f"Progress! New best: under={best_under_count}, over={best_over_count}")
+        if relaxed_status not in ("OPTIMAL", "FEASIBLE"):
+            # UNKNOWN/INFEASIBLE: Check if we have an incumbent solution
+            has_incumbent = best_result is not None
+            
+            if has_incumbent:
+                # Incumbent exists - can use as best-effort but log differently
+                log_fn(f"Status={relaxed_status} with incumbent available (best-effort)")
+                # Don't update best_under_count/best_over_count, but don't count as stagnation
+            else:
+                # No incumbent yet - treat as no progress
+                log_fn(f"UNKNOWN/INFEASIBLE status, no incumbent - skipping progress update")
+                rounds_without_progress += 1
+                log_fn(f"No progress for {rounds_without_progress} rounds")
         else:
-            rounds_without_progress += 1
-            log_fn(f"No progress for {rounds_without_progress} rounds")
+            # Valid OPTIMAL/FEASIBLE status: safe to track progress
+            log_fn(f"Relaxed diagnosis: under={under_count}, over={over_count}")
+            log_fn(f"Best so far: under={best_under_count}, over={best_over_count}")
+            
+            # Track progress only on valid status
+            improved = False
+            if under_count < best_under_count:
+                best_under_count = under_count
+                improved = True
+            if over_count < best_over_count:
+                best_over_count = over_count
+                improved = True
+            
+            if improved:
+                rounds_without_progress = 0
+                log_fn(f"Progress! New best: under={best_under_count}, over={best_over_count}")
+            else:
+                rounds_without_progress += 1
+                log_fn(f"No progress for {rounds_without_progress} rounds")
         
         # Check stopping condition
         if rounds_without_progress >= max_stale_rounds:
@@ -348,6 +436,44 @@ def solve_set_partitioning(
             selected = final_rmp_result["selected_rosters"]
             hours = [r.total_hours for r in selected]
             
+            # =========================================================================
+            # NEW: LNS ENDGAME (if enabled) - ALSO after greedy-seeding
+            # =========================================================================
+            if config and hasattr(config, 'enable_lns_low_hour_consolidation') and config.enable_lns_low_hour_consolidation:
+                lns_budget = getattr(config, 'lns_time_budget_s', 30.0)
+                log_fn(f"\n{'='*60}")
+                log_fn(f"LNS ENDGAME: Low-Hour Pattern Elimination")
+                log_fn(f"{'='*60}")
+                
+                lns_result = _lns_consolidate_low_hour(
+                    current_selected=selected,
+                    column_pool=generator.pool,
+                    all_block_ids=all_block_ids,
+                    config=config,
+                    time_budget_s=lns_budget,
+                    log_fn=log_fn,
+                )
+                
+                if lns_result["status"] == "SUCCESS":
+                    selected = lns_result["rosters"]
+                    hours = [r.total_hours for r in selected]
+                    
+                    # LNS SUMMARY LOGGING
+                    log_fn(f"\n{'='*60}")
+                    log_fn(f"LNS SUMMARY:")
+                    log_fn(f"  Status: {lns_result['status']}")
+                    log_fn(f"  Patterns killed: {lns_result['stats']['kills_successful']} / {lns_result['stats']['attempts']} attempts")
+                    log_fn(f"  Drivers: {lns_result['stats']['initial_drivers']} → {lns_result['stats']['final_drivers']}")
+                    log_fn(f"  Low-hour patterns: {lns_result['stats']['initial_lowhour_count']} → {lns_result['stats']['final_lowhour_count']}")
+                    log_fn(f"  Shortfall: {lns_result['stats']['initial_shortfall']:.1f}h → {lns_result['stats']['final_shortfall']:.1f}h")
+                    log_fn(f"  Time: {lns_result['stats']['time_s']:.1f}s")
+                    log_fn(f"{'='*60}")
+                else:
+                    log_fn(f"\n{'='*60}")
+                    log_fn(f"LNS SUMMARY:")
+                    log_fn(f"  Status: {lns_result['status']} - using original solution")
+                    log_fn(f"{'='*60}")
+            
             return SetPartitionResult(
                 status="OK_SEEDED",
                 selected_rosters=selected,
@@ -388,6 +514,305 @@ def solve_set_partitioning(
         rmp_time=rmp_total_time,
         generation_time=generation_time,
     )
+
+
+# =========================================================================
+# LNS ENDGAME: LOW-HOUR PATTERN CONSOLIDATION
+# =========================================================================
+
+def _lns_consolidate_low_hour(
+    current_selected: list[RosterColumn],
+    column_pool: dict[str, RosterColumn],
+    all_block_ids: set,
+    config,
+    time_budget_s: float,
+    log_fn,
+) -> dict:
+    """
+    LNS endgame: Eliminate low-hour patterns via column-kill fix-and-reopt.
+    
+    Uses FULL column_pool (all generated patterns) for candidate columns.
+    
+    Returns:
+        {
+            "status": "SUCCESS" | "NO_IMPROVEMENT",
+            "rosters": list[RosterColumn],
+            "stats": {
+                "enabled": True,
+                "kills_successful": int,
+                "attempts": int,
+                "initial_drivers": int,
+                "final_drivers": int,
+                "initial_lowhour_count": int,
+                "final_lowhour_count": int,
+                "initial_shortfall": float,
+                "final_shortfall": float,
+                "time_s": float,
+            }
+        }
+    """
+    t0 = time.time()
+    threshold = getattr(config, 'lns_low_hour_threshold_h', 30.0)
+    attempt_budget = 2.0
+    max_attempts = min(30, int(time_budget_s / attempt_budget))
+    
+    def compute_shortfall(rosters):
+        return sum(max(0, threshold - r.total_hours) for r in rosters)
+    
+    # CRITICAL FIX #3: Only kill FTE rosters, not PT (PT are intentionally <30h)
+    low_hour = [
+        r for r in current_selected 
+        if r.total_hours < threshold and getattr(r, 'roster_type', 'FTE') == 'FTE'
+    ]
+    
+    stats = {
+        "enabled": True,
+        "kills_successful": 0,
+        "attempts": 0,
+        "initial_drivers": len(current_selected),
+        "final_drivers": len(current_selected),
+        "initial_lowhour_count": len(low_hour),
+        "final_lowhour_count": len(low_hour),
+        "initial_shortfall": compute_shortfall(current_selected),
+        "final_shortfall": compute_shortfall(current_selected),
+        "time_s": 0.0,
+    }
+    
+    if not low_hour:
+        log_fn(f"LNS: No low-hour FTE patterns (<{threshold}h) found")
+        return {"status": "NO_IMPROVEMENT", "rosters": current_selected, "stats": stats}
+    
+    log_fn(f"LNS: Found {len(low_hour)} low-hour FTE patterns (<{threshold}h)")
+    log_fn(f"LNS: Budget={time_budget_s:.1f}s, max_attempts={max_attempts}")
+    
+    # Deterministic candidate sort
+    candidates = sorted(low_hour, key=lambda r: (r.total_hours, r.roster_id))
+    
+    current = list(current_selected)
+    kills = 0
+    
+    for attempt_num, p0 in enumerate(candidates):
+        if stats["attempts"] >= max_attempts:
+            break
+        
+        remaining = time_budget_s - (time.time() - t0)
+        if remaining < 0.5:
+            break
+        
+        # Try kill with escalating receiver sizes K=[3,5,8,12]
+        for K in [3, 5, 8, 12]:
+            result = _try_kill_pattern(
+                p0=p0,
+                current_selected=current,
+                column_pool=column_pool,
+                all_block_ids=all_block_ids,
+                K_receivers=K,
+                attempt_budget=min(attempt_budget, remaining),
+                config=config,
+                log_fn=log_fn,
+            )
+            
+            stats["attempts"] += 1
+            
+            if result["status"] == "KILLED":
+                current = result["rosters"]
+                kills += 1
+                log_fn(f"  LNS[{stats['attempts']}]: ✓ KILLED {p0.roster_id} ({p0.total_hours:.1f}h) with K={K}, drivers {len(current_selected)}→{len(current)}")
+                break  # Success, next candidate
+            elif result["status"] == "TIMEOUT":
+                log_fn(f"  LNS[{stats['attempts']}]: TIMEOUT {p0.roster_id} K={K}")
+                break  # Budget exhausted
+            # INFEASIBLE: try larger K
+            log_fn(f"  LNS[{stats['attempts']}]: INFEASIBLE {p0.roster_id} K={K} - {result.get('reason', 'unknown')}")
+    
+    # Final stats
+    stats["kills_successful"] = kills
+    stats["final_drivers"] = len(current)
+    stats["final_lowhour_count"] = sum(1 for r in current if r.total_hours < threshold)
+    stats["final_shortfall"] = compute_shortfall(current)
+    stats["time_s"] = round(time.time() - t0, 2)
+    
+    status = "SUCCESS" if kills > 0 else "NO_IMPROVEMENT"
+    return {"status": status, "rosters": current, "stats": stats}
+
+
+def _try_kill_pattern(
+    p0: RosterColumn,
+    current_selected: list[RosterColumn],
+    column_pool: dict[str, RosterColumn],
+    all_block_ids: set,
+    K_receivers: int,
+    attempt_budget: float,
+    config,
+    log_fn,
+) -> dict:
+    """
+    Try to eliminate pattern p0 via neighborhood destroy-repair.
+    
+    Returns: {"status": "KILLED" | "INFEASIBLE" | "TIMEOUT", "rosters": [...] | None, "reason": str}
+    """
+    from ortools.sat.python import cp_model
+    
+    # A) Deterministic Receiver Selection
+    cand_R = [
+        (r, 53.0 - r.total_hours, r.roster_id)
+        for r in current_selected if r.roster_id != p0.roster_id
+    ]
+    cand_R.sort(key=lambda x: (-x[1], x[2]))  # free_capacity desc, id asc
+    R = [r for r, _, _ in cand_R[:K_receivers]]
+    
+    # B) Define Neighborhood B
+    B = set(p0.block_ids)
+    for r in R:
+        B.update(r.block_ids)
+    
+    # C) Filter Candidate Columns C from FULL POOL
+    C = {
+        rid: col for rid, col in column_pool.items()
+        if col.block_ids.issubset(B) and col.is_valid and col.roster_id != p0.roster_id
+    }
+    
+    # D) Coverage Check + B-Expansion with R-Update (CRITICAL FIX #1)
+    covered = set()
+    for col in C.values():
+        covered.update(col.block_ids)
+    
+    uncov = B - covered
+    if uncov:
+        # B-EXPANSION: Add blocks determin istically
+        expansion = set()
+        for rid, col in column_pool.items():
+            if any(b in col.block_ids for b in B):
+                expansion.update(col.block_ids)
+        
+        expansion_sorted = sorted(expansion - B)[:200]
+        
+        # CRITICAL FIX #1: Update R with rosters covering expanded blocks
+        # Find which current rosters cover the new expanded blocks
+        expanded_blocks_to_add = set(expansion_sorted)
+        roster_map = {r.roster_id: r for r in current_selected}
+        
+        for r in current_selected:
+            if r == p0 or r in R:
+                continue  # Already in neighborhood
+            # Check if this roster covers any expanded block
+            if r.block_ids & expanded_blocks_to_add:
+                R.append(r)
+                log_fn(f"      B-expansion: Added roster {r.roster_id} to R (covers expanded blocks)")
+        
+        # Now update B
+        B.update(expanded_blocks_to_add)
+        
+        # Rebuild C
+        C = {
+            rid: col for rid, col in column_pool.items()
+            if col.block_ids.issubset(B) and col.is_valid and col.roster_id != p0.roster_id
+        }
+        
+        covered = set()
+        for col in C.values():
+            covered.update(col.block_ids)
+        uncov = B - covered
+        
+        if uncov:
+            return {"status": "INFEASIBLE", "rosters": None, "reason": f"{len(uncov)} uncovered after expansion"}
+    
+    # CRITICAL FIX #2: Cardinality baseline = 1 + len(R) (after final R)
+    baseline_rosters = 1 + len(R)  # p0 + R in current solution
+    
+    # Logging (FIX #3: Safety logging)
+    log_fn(f"    Neighborhood: p0={p0.roster_id}({p0.total_hours:.1f}h), |R|={len(R)}, |B|={len(B)}, |C|={len(C)}")
+    log_fn(f"    Baseline rosters in B: {baseline_rosters}, will try: {baseline_rosters-1}")
+    
+    # E) Build Reduced RMP
+    model = cp_model.CpModel()
+    x_vars = {}
+    
+    for rid, col in C.items():
+        x_vars[rid] = model.NewBoolVar(f"x_{rid}")
+    
+    # Coverage for B
+    for block_id in B:
+        covering = [rid for rid, col in C.items() if block_id in col.block_ids]
+        if not covering:
+            return {"status": "INFEASIBLE", "rosters": None, "reason": f"block {block_id} no coverage in C"}
+        model.Add(sum(x_vars[rid] for rid in covering) == 1)
+    
+    # F) TRY-1: Aggressive kill (total <= baseline - 1)
+    total_selected = sum(x_vars.values())
+    model.Add(total_selected <= baseline_rosters - 1)
+    
+    # Objective: min shortfall
+    shortfall_expr = sum(
+        x_vars[rid] * max(0, int((30.0 - col.total_hours) * 100))
+        for rid, col in C.items()
+    )
+    model.Minimize(shortfall_expr)
+    
+    # G) Solve TRY-1
+    solver = cp_model.CpSolver()
+    solver.parameters.max_time_in_seconds = attempt_budget
+    solver.parameters.num_search_workers = 1
+    solver.parameters.random_seed = config.seed
+    
+    model.ClearHints()
+    for r in current_selected:
+        if r.roster_id in x_vars:
+            hint_val = 1 if r in R else 0
+            model.AddHint(x_vars[r.roster_id], hint_val)
+    
+    status_try1 = solver.Solve(model)
+    log_fn(f"    TRY-1 (≤{baseline_rosters-1}): status={status_try1}")
+    
+    if status_try1 not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
+        # TRY-2: Relax to <= baseline (no kill, just improve)
+        model = cp_model.CpModel()
+        x_vars = {}
+        for rid in C.keys():
+            x_vars[rid] = model.NewBoolVar(f"x_{rid}")
+        
+        for block_id in B:
+            covering = [rid for rid, col in C.items() if block_id in col.block_ids]
+            model.Add(sum(x_vars[rid] for rid in covering) == 1)
+        
+        model.Add(sum(x_vars.values()) <= baseline_rosters)  # FIX #2: Use baseline, not |R|+1
+        model.Minimize(shortfall_expr)
+        
+        solver = cp_model.CpSolver()
+        solver.parameters.max_time_in_seconds = attempt_budget
+        solver.parameters.num_search_workers = 1
+        solver.parameters.random_seed = config.seed
+        model.ClearHints()
+        
+        status_try2 = solver.Solve(model)
+        log_fn(f"    TRY-2 (≤{baseline_rosters}): status={status_try2}")
+        
+        if status_try2 not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
+            return {"status": "INFEASIBLE", "rosters": None, "reason": f"TRY-1={status_try1}, TRY-2={status_try2}"}
+    
+    # H) Extract
+    selected_in_B = [C[rid] for rid in x_vars.keys() if solver.Value(x_vars[rid]) == 1]
+    
+    # I) Rebuild full solution
+    fixed_outside = [r for r in current_selected if r not in R and r != p0]
+    new_rosters = fixed_outside + selected_in_B
+    
+    # J) Validate
+    if p0 in new_rosters:
+        return {"status": "INFEASIBLE", "rosters": None, "reason": "p0 still in solution"}
+    
+    if len(new_rosters) > len(current_selected):
+        return {"status": "INFEASIBLE", "rosters": None, "reason": f"drivers increased {len(new_rosters)} > {len(current_selected)}"}
+    
+    covered_all = set()
+    for r in new_rosters:
+        covered_all.update(r.block_ids)
+    if covered_all != all_block_ids:
+        missing = all_block_ids - covered_all
+        return {"status": "INFEASIBLE", "rosters": None, "reason": f"{len(missing)} blocks missing"}
+    
+    log_fn(f"    ✓ KILL SUCCESS: {len(current_selected)} → {len(new_rosters)} drivers")
+    return {"status": "KILLED", "rosters": new_rosters, "reason": ""}
 
 
 def convert_rosters_to_assignments(

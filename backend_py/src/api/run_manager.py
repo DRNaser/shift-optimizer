@@ -293,7 +293,17 @@ class RunManager:
                 "solution_signature": solution_sig,
                 "reason_codes": sorted(result.reason_codes) if result.reason_codes else [],
                 "total_runtime_s": result.total_runtime_s,
-                "drivers_total": result.solution.kpi.get("drivers_total", 0) if result.solution.kpi else 0,
+                # FIX: Compute drivers_total correctly from FTE + PT
+                "drivers_fte": result.solution.kpi.get("drivers_fte", 0) if result.solution.kpi else 0,
+                "drivers_pt": result.solution.kpi.get("drivers_pt", 0) if result.solution.kpi else 0,
+                "drivers_total": (
+                    # Primary: Sum of FTE + PT
+                    (result.solution.kpi.get("drivers_fte", 0) + result.solution.kpi.get("drivers_pt", 0))
+                    if result.solution.kpi and (result.solution.kpi.get("drivers_fte", 0) + result.solution.kpi.get("drivers_pt", 0)) > 0
+                    # Fallback: Count assignments
+                    else len(result.solution.assignments) if hasattr(result.solution, 'assignments') and result.solution.assignments
+                    else 0
+                ),
             }
             ctx.add_event("run_completed", completed_payload)
 

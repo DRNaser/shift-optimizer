@@ -514,6 +514,7 @@ def run_portfolio(
             log_fn=log,
             seed=seed,
             remaining_fn=remaining,  # Global deadline enforcement
+            global_deadline=deadline,  # Absolute deadline (monotonic)
         )
         
         phase2_time = result.get("phase2_time", 0.0)
@@ -539,6 +540,7 @@ def run_portfolio(
         # Check if achieved score is at or within buffer of lower bound
         daymin_buffer = getattr(params, 'daymin_buffer', 2)
         early_stopped = achieved_score <= lower_bound + daymin_buffer
+        early_stop_reason = ""  # Initialize default value
         if early_stopped:
             early_stop_reason = "GOOD_ENOUGH"
             reason_codes.append(early_stop_reason)
@@ -752,6 +754,7 @@ def _execute_path(
     log_fn: Callable[[str], None],
     seed: int,
     remaining_fn: Callable[[], float] = None,  # Global deadline function
+    global_deadline: float = None,  # Absolute deadline (monotonic) - passed directly from run_portfolio
 ) -> dict:
     """
     Execute a specific solver path.
@@ -842,6 +845,9 @@ def _execute_path(
             # S0.2: Use combined phase2 + lns budget for SP
             sp_budget = phase2_budget + lns_budget
             
+            # Use the global deadline passed from run_portfolio (absolute, not recomputed)
+            sp_deadline = global_deadline  # Already absolute monotonic deadline
+            
             sp_result = solve_set_partitioning(
                 blocks=selected_blocks,
                 max_rounds=params.sp_max_rounds,
@@ -851,6 +857,7 @@ def _execute_path(
                 seed=seed,
                 log_fn=log_fn,
                 config=config,  # NEW: Pass config for LNS
+                global_deadline=sp_deadline,  # FIX: Enforce time budget
             )
             
             result["phase2_time"] = perf_counter() - t_phase2

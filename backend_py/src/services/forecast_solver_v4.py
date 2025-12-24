@@ -98,6 +98,9 @@ class ConfigV4(NamedTuple):
     fte_overflow_cap: int = 10  # Soft limit for overflow
     fte_hours_target: float = 49.5  # Ideal hours for FTE packing
     anytime_budget: float = 30.0  # Seconds for improvement phases
+    
+    # v5: Day cap for peak days (hard operational constraint)
+    day_cap_hard: int = 220  # Maximum blocks per peak day (operational limit)
 
     # Global CP-SAT Phase 2B control
     extended_hours: bool = False  # If True, max_hours_per_fte = 56.0
@@ -131,7 +134,7 @@ class ConfigV4(NamedTuple):
     # =========================================================================
     # OUTPUT PROFILES: MIN_HEADCOUNT_3ER vs BEST_BALANCED
     # =========================================================================
-    output_profile: str = "BEST_BALANCED"  # "MIN_HEADCOUNT_3ER" | "BEST_BALANCED"
+    output_profile: str = "MIN_HEADCOUNT_3ER"  # "MIN_HEADCOUNT_3ER" | "BEST_BALANCED"
     
     # 3er Gap Constraints (MIN_HEADCOUNT_3ER only)
     gap_3er_min_minutes: int = 30  # Min gap between tours in a valid 3er
@@ -1621,12 +1624,12 @@ def _solve_capacity_single_cap(
     safe_print(f"  COMPAT HISTOGRAM: {compat_counts}", flush=True)
 
     # Day count variable + soft cap
-    # Use override if provided, else calculate from config
+    # v5: Use day_cap_hard for operational constraint (default 220)
     if day_cap_override is not None:
         DAY_CAP = day_cap_override
     else:
-        TARGET_FTE = config.target_ftes if hasattr(config, 'target_ftes') else 145
-        DAY_CAP = TARGET_FTE + config.fte_overflow_cap
+        # v5: Fixed cap for operational constraints (not dynamic from target_ftes)
+        DAY_CAP = config.day_cap_hard if hasattr(config, 'day_cap_hard') else 220
     
     day_count = {}
     day_slack = {}
@@ -1754,18 +1757,79 @@ def _solve_capacity_single_cap(
     # Total budget from config or override
     total_budget = time_limit if time_limit is not None else config.time_limit_phase1
     
+    # v5: Two-Pass budget split: 40% Pass 1 (Capacity), 60% Pass 2 (Quality/Lexicographic)
+    pass1_budget = total_budget * 0.40
+    pass2_budget = total_budget * 0.60
+    
+    # Pass 2 stage budgets (split among 5 lexicographic stages)
     # Split: 35% stage1 (3er most important), 25% stage2, 15% stage3, 10% stage4, 15% stage5
     stage_budgets = {
-        1: total_budget * 0.35,
-        2: total_budget * 0.25,
-        3: total_budget * 0.15,
-        4: total_budget * 0.10,
-        5: total_budget * 0.15,
+        1: pass2_budget * 0.35,
+        2: pass2_budget * 0.25,
+        3: pass2_budget * 0.15,
+        4: pass2_budget * 0.10,
+        5: pass2_budget * 0.15,
     }
     
-    safe_print(f"  STAGE BUDGETS (total={total_budget:.1f}s):", flush=True)
+    safe_print(f"  TWO-PASS BUDGET (total={total_budget:.1f}s):", flush=True)
+    safe_print(f"    Pass 1 (Capacity): {pass1_budget:.1f}s", flush=True)
+    safe_print(f"    Pass 2 (Quality):  {pass2_budget:.1f}s", flush=True)
     for st, bud in stage_budgets.items():
-        safe_print(f"    Stage {st}: {bud:.1f}s", flush=True)
+        safe_print(f"      Stage {st}: {bud:.1f}s", flush=True)
+    
+    # =========================================================================
+    # v5 PASS 1: CAPACITY/HEADCOUNT MINIMIZATION
+    # =========================================================================
+    safe_print(f"\n{'='*60}", flush=True)
+    safe_print("v5 PASS 1: HEADCOUNT MINIMIZATION", flush=True)
+    safe_print(f"{'='*60}", flush=True)
+    safe_print(f"  Objective: Minimize max_day (peak headcount)", flush=True)
+    safe_print(f"  DAY_CAP: {DAY_CAP} (hard constraint for peak days)", flush=True)
+    
+    model.Minimize(max_day)
+    
+    solver_pass1 = cp_model.CpSolver()
+    solver_pass1.parameters.max_time_in_seconds = pass1_budget
+    solver_pass1.parameters.num_search_workers = 1  # Determinism
+    solver_pass1.parameters.random_seed = config.seed
+    
+    status_pass1 = solver_pass1.Solve(model)
+    
+    if status_pass1 == cp_model.OPTIMAL:
+        safe_print(f"  PASS 1: OPTIMAL", flush=True)
+        pass1_is_optimal = True
+    elif status_pass1 == cp_model.FEASIBLE:
+        safe_print(f"  PASS 1: FEASIBLE (not proven optimal)", flush=True)
+        pass1_is_optimal = False
+    else:
+        safe_print(f"  PASS 1 FAILED: {status_str(status_pass1)}", flush=True)
+        return None
+    
+    headcount_pass1 = int(solver_pass1.Value(max_day))
+    safe_print(f"  PASS 1 RESULT: headcount = {headcount_pass1} blocks/peak-day", flush=True)
+    
+    # v5: Lock headcount for Pass 2
+    # If Pass 1 was OPTIMAL, use strict equality (==)
+    # If Pass 1 was only FEASIBLE, use fail-open (<=) to avoid artificial infeasibility
+    if pass1_is_optimal:
+        model.Add(max_day == headcount_pass1)
+        safe_print(f"  HEADCOUNT LOCK: max_day == {headcount_pass1} (strict, pass1 was OPTIMAL)", flush=True)
+    else:
+        model.Add(max_day <= headcount_pass1)
+        safe_print(f"  HEADCOUNT LOCK: max_day <= {headcount_pass1} (fail-open, pass1 was FEASIBLE)", flush=True)
+    
+    # v5: Clear hints and add fresh hints from Pass 1 solution
+    model.ClearHints()
+    for b_idx in range(len(blocks)):
+        model.AddHint(use[b_idx], int(solver_pass1.Value(use[b_idx])))
+    safe_print(f"  HINTS: Cleared and reset from Pass 1 solution", flush=True)
+    
+    # =========================================================================
+    # v5 PASS 2: QUALITY OPTIMIZATION (LEXICOGRAPHIC STAGES)
+    # =========================================================================
+    safe_print(f"\n{'='*60}", flush=True)
+    safe_print("v5 PASS 2: QUALITY OPTIMIZATION (locked headcount)", flush=True)
+    safe_print(f"{'='*60}", flush=True)
     
     # =========================================================================
     # STAGE 1: MAXIMIZE count_3er
@@ -4121,6 +4185,10 @@ def solve_forecast_set_partitioning(
     
     from src.services.set_partition_solver import solve_set_partitioning, convert_rosters_to_assignments
     
+    # Compute deadline for budget enforcement
+    from time import monotonic
+    sp_deadline = monotonic() + time_limit  # Use full time_limit for SP
+    
     t_sp = perf_counter()
     sp_result = solve_set_partitioning(
         blocks=selected_blocks,
@@ -4131,6 +4199,7 @@ def solve_forecast_set_partitioning(
         seed=seed,
         log_fn=log_fn,
         config=config,  # NEW: Pass config for LNS
+        global_deadline=sp_deadline,  # FIX: Enforce time budget
     )
     sp_time = perf_counter() - t_sp
     

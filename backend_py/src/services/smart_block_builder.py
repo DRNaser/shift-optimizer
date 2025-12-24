@@ -61,9 +61,9 @@ def safe_print(msg: str) -> None:
 # =============================================================================
 
 # Two-Zone Pause Model for Block Generation (v5)
-# Zone 1 (Regular): 30-60 min - standard consecutive tours (tighter packing)
-# Zone 2 (Split):  360-480 min - legal split-shift gap (2er only, 6h minimum)
-# Forbidden Zone:  61-359 min - explicitly banned ("half-splits")
+# Zone 1 (Regular): 30-60 min - standard consecutive tours (tight packing)
+# Zone 2 (Split):  360 min exactly - legal split-shift gap (2er only, 6h mandatory)
+# Forbidden Zone:  61-359 and 361+ min - explicitly banned
 
 # Regular pause limits (Zone 1)
 MIN_PAUSE_MINUTES = HARD_CONSTRAINTS.MIN_PAUSE_BETWEEN_TOURS  # 30 min
