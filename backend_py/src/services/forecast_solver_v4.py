@@ -3771,7 +3771,7 @@ def eliminate_pt_drivers(
     Standard "route elimination" move from VRP/LNS.
     """
     from src.services.constraints import can_assign_block
-    from time import perf_counter
+    from time import perf_counter, monotonic
     
     start_time = perf_counter()
     stats = {"eliminated_drivers": 0, "moved_blocks": 0, "iterations": 0}
@@ -4140,6 +4140,9 @@ def solve_forecast_set_partitioning(
     total_hours = sum(t.duration_hours for t in tours)
     logger.info(f"Total hours: {total_hours:.1f}h")
     logger.info(f"Expected drivers: {int(total_hours/53)}-{int(total_hours/40)}")
+
+    # Global deadline for budget enforcement across phases
+    global_deadline = monotonic() + time_limit
     
     # Phase A: Build blocks (reuse existing)
     t_block = perf_counter()
@@ -4183,25 +4186,48 @@ def solve_forecast_set_partitioning(
         safe_print(msg, flush=True)
         logger.info(msg)
     
-    from src.services.set_partition_solver import solve_set_partitioning, convert_rosters_to_assignments
-    
-    # Compute deadline for budget enforcement
-    from time import monotonic
-    sp_deadline = monotonic() + time_limit  # Use full time_limit for SP
-    
-    t_sp = perf_counter()
-    sp_result = solve_set_partitioning(
-        blocks=selected_blocks,
-        max_rounds=100,
-        initial_pool_size=5000,
-        columns_per_round=200,
-        rmp_time_limit=min(60.0, time_limit / 3),
-        seed=seed,
-        log_fn=log_fn,
-        config=config,  # NEW: Pass config for LNS
-        global_deadline=sp_deadline,  # FIX: Enforce time budget
+    from src.services.set_partition_solver import (
+        solve_set_partitioning,
+        convert_rosters_to_assignments,
+        SetPartitionResult,
     )
-    sp_time = perf_counter() - t_sp
+
+    remaining = global_deadline - monotonic()
+    if remaining <= 1.0:
+        logger.warning(
+            f"Time budget exhausted after Phase 1 (remaining={remaining:.2f}s); "
+            "skipping set-partitioning and falling back to greedy."
+        )
+        sp_result = SetPartitionResult(
+            status="TIMEOUT",
+            selected_rosters=[],
+            num_drivers=0,
+            total_hours=0.0,
+            hours_min=0.0,
+            hours_max=0.0,
+            hours_avg=0.0,
+            uncovered_blocks=[b.id for b in selected_blocks],
+            pool_size=0,
+            rounds_used=0,
+            total_time=0.0,
+            rmp_time=0.0,
+            generation_time=0.0,
+        )
+        sp_time = 0.0
+    else:
+        t_sp = perf_counter()
+        sp_result = solve_set_partitioning(
+            blocks=selected_blocks,
+            max_rounds=100,
+            initial_pool_size=5000,
+            columns_per_round=200,
+            rmp_time_limit=min(60.0, remaining / 3),
+            seed=seed,
+            log_fn=log_fn,
+            config=config,  # NEW: Pass config for LNS
+            global_deadline=global_deadline,  # FIX: Enforce time budget
+        )
+        sp_time = perf_counter() - t_sp
     
     # Check result
     if sp_result.status != "OK":

@@ -288,6 +288,13 @@ class RunManager:
                 kpi = result.solution.kpi
                 solution_sig = f"{kpi.get('solver_arch', 'unknown')}_{result.parameters_used.path.value}_{ctx.config.seed}"
             
+            assignments = result.solution.assignments if result.solution else []
+            unique_driver_ids = {
+                getattr(assignment, "driver_id", None)
+                for assignment in assignments
+            }
+            unique_driver_ids.discard(None)
+
             completed_payload = {
                 "status": "COMPLETED",
                 "solution_signature": solution_sig,
@@ -300,8 +307,8 @@ class RunManager:
                     # Primary: Sum of FTE + PT
                     (result.solution.kpi.get("drivers_fte", 0) + result.solution.kpi.get("drivers_pt", 0))
                     if result.solution.kpi and (result.solution.kpi.get("drivers_fte", 0) + result.solution.kpi.get("drivers_pt", 0)) > 0
-                    # Fallback: Count assignments
-                    else len(result.solution.assignments) if hasattr(result.solution, 'assignments') and result.solution.assignments
+                    # Fallback: Count unique drivers from assignments
+                    else len(unique_driver_ids)
                     else 0
                 ),
             }
