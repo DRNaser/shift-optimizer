@@ -33,6 +33,33 @@ LOG_MSG_MAX_CHARS = 500  # Truncate long log messages
 HEARTBEAT_INTERVAL_SEC = 5.0  # SSE heartbeat interval
 
 
+def _compute_drivers_total(result: PortfolioResult) -> int:
+    """Compute drivers_total with safe fallback and observability."""
+    if result.solution and result.solution.kpi:
+        drivers_fte = result.solution.kpi.get("drivers_fte", 0)
+        drivers_pt = result.solution.kpi.get("drivers_pt", 0)
+        if drivers_fte + drivers_pt > 0:
+            return drivers_fte + drivers_pt
+
+    assignments = result.solution.assignments if result.solution else []
+    if assignments:
+        unique_driver_ids = {
+            getattr(assignment, "driver_id", None)
+            for assignment in assignments
+        }
+        unique_driver_ids.discard(None)
+        drivers_total = len(unique_driver_ids)
+        logger.warning(
+            "drivers_total fallback used (unique_driver_ids=%s, assignments=%s)",
+            drivers_total,
+            len(assignments),
+        )
+        return drivers_total
+
+    logger.warning("drivers_total fallback used (no assignments)")
+    return 0
+
+
 class RunStatus(str, Enum):
     QUEUED = "QUEUED"
     RUNNING = "RUNNING"
@@ -288,13 +315,6 @@ class RunManager:
                 kpi = result.solution.kpi
                 solution_sig = f"{kpi.get('solver_arch', 'unknown')}_{result.parameters_used.path.value}_{ctx.config.seed}"
             
-            assignments = result.solution.assignments if result.solution else []
-            unique_driver_ids = {
-                getattr(assignment, "driver_id", None)
-                for assignment in assignments
-            }
-            unique_driver_ids.discard(None)
-
             completed_payload = {
                 "status": "COMPLETED",
                 "solution_signature": solution_sig,
@@ -303,14 +323,7 @@ class RunManager:
                 # FIX: Compute drivers_total correctly from FTE + PT
                 "drivers_fte": result.solution.kpi.get("drivers_fte", 0) if result.solution.kpi else 0,
                 "drivers_pt": result.solution.kpi.get("drivers_pt", 0) if result.solution.kpi else 0,
-                "drivers_total": (
-                    # Primary: Sum of FTE + PT
-                    (result.solution.kpi.get("drivers_fte", 0) + result.solution.kpi.get("drivers_pt", 0))
-                    if result.solution.kpi and (result.solution.kpi.get("drivers_fte", 0) + result.solution.kpi.get("drivers_pt", 0)) > 0
-                    # Fallback: Count unique drivers from assignments
-                    else len(unique_driver_ids)
-                    else 0
-                ),
+                "drivers_total": _compute_drivers_total(result),
             }
             ctx.add_event("run_completed", completed_payload)
 
