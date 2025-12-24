@@ -1,12 +1,13 @@
 """
-PORTFOLIO CONTROLLER - Meta-Orchestrator for Shift Optimizer
-=============================================================
-Orchestrates the complete optimization pipeline:
-1. Profile instance (extract features)
-2. Select path and parameters via policy engine
-3. Execute solver with early-stop monitoring
-4. Fallback on stagnation
-5. Return best solution with full telemetry
+PORTFOLIO CONTROLLER v5 - Linear Pipeline Orchestrator
+=======================================================
+Orchestrates the v5 optimization pipeline (fixed single path):
+
+Phase 0: build_weekly_blocks_smart (v5 priority rules)
+Phase 1: compute_features (telemetry & lower bound)
+Phase 2: solve_capacity_phase (v5 Two-Pass Solver)
+Phase 3: solve_set_partitioning (roster assignment)
+Phase 4: LNS Endgame (hour consolidation)
 
 All execution is deterministic (seeded, num_workers=1).
 """
@@ -29,12 +30,7 @@ from src.services.policy_engine import (
     PathSelection,
     ParameterBundle,
     ReasonCode,
-    PolicyEngine,
-    select_path,
-    select_parameters,
-    should_early_stop,
-    should_fallback,
-    get_fallback_path,
+    # v5: PolicyEngine, select_path, get_fallback_path removed (single path)
 )
 
 # Prometheus metrics (optional - graceful degradation if not available)
@@ -397,61 +393,33 @@ def run_portfolio(
             f"lower_bound={features.lower_bound_drivers}")
         
         # ==========================================================================
-        # PHASE 2: PATH SELECTION
+        # PHASE 2: v5 FIXED SINGLE PATH (Set-Partitioning)
         # ==========================================================================
-        log("PHASE 2: Path selection...")
-        
-        # Phase 2: Path Selection & Strategy
-        # ==========================================================================
-        
-        # MAIN PATH FORCING FOR BEST_BALANCED (Quality/Prod Profile)
-        if config.output_profile == "BEST_BALANCED":
-            log("=" * 70)
-            log("MAIN PATH: BEST_BALANCED -> Phase1+SetPart+LNS")
-            log("=" * 70)
-            
-            # Force Path C (Set-Partitioning)
-            initial_path = PS.C
-            reason_codes = ["MAIN_PATH_QUALITY"]
-            
-            # Manually set parameters for Main Path (High LNS options)
-            from src.services.policy_engine import ParameterBundle
-            params = ParameterBundle(
-                path=PS.C,
-                lns_iterations=150,    # High iterations for quality
-                destroy_fraction=0.15, # Aggressive destroy
-            )
-            
-            # Use RC1 Multi-Solve (standard Phase 1) instead of Two-Pass
-            # This aligns with the "MAIN PATH" definition: Phase 1 -> Set-Part
-            phase1_config = config._replace(time_limit_phase1=budget_slices.phase1)
-            
-        elif solver_mode_override == "SETPART":
-             # Diagnostic override (keep as is)
-            log(f"SOLVER MODE OVERRIDE: Forcing Path C (Set-Partitioning)")
-            initial_path = PS.C
-            reason_codes = ["FORCED_SETPART_MODE"]
-            from src.services.policy_engine import select_parameters
-            params = select_parameters(features, PS.C, "FORCED_SETPART_MODE", time_budget)
-            phase1_config = config._replace(time_limit_phase1=budget_slices.phase1)
-            
-        else:
-            # Normal policy-based selection (FAST / Heuristic flows)
-            log("PHASE 2: Path selection (Policy Engine)...")
-            policy = PolicyEngine()
-            params = policy.select(features, time_budget)
-            
-            initial_path = policy.current_path
-            reason_codes = policy.reason_codes.copy()
-            phase1_config = config._replace(time_limit_phase1=budget_slices.phase1)
-        
-        # S0: MANDATORY PATH SELECTION VISIBILITY
         log("=" * 70)
-        log(f"PORTFOLIO PATH SELECTED: {initial_path.value}")
-        log(f"  Reason: {reason_codes[0]}")
-        log(f"  Solver mode: {config.solver_mode if hasattr(config, 'solver_mode') else 'DEFAULT'}")
-        log(f"  Enable LNS low-hour consolidation: {config.enable_lns_low_hour_consolidation}")
-        log(f"  Parameters: lns_iters={params.lns_iterations}, destroy={params.destroy_fraction:.2f}")
+        log("v5 PIPELINE: Fixed Single Path (Set-Partitioning)")
+        log("=" * 70)
+        
+        # v5: Always use Path C (Set-Partitioning) - no PolicyEngine branching
+        initial_path = PS.C
+        reason_codes = ["V5_FIXED_PIPELINE"]
+        
+        # Parameters from config where possible (Single Source of Truth)
+        lns_iterations = getattr(config, 'lns_max_attempts', 150)
+        destroy_fraction = 0.15
+        
+        params = ParameterBundle(
+            path=PS.C,
+            lns_iterations=lns_iterations,
+            destroy_fraction=destroy_fraction,
+        )
+        
+        phase1_config = config._replace(time_limit_phase1=budget_slices.phase1)
+        
+        # v5: Visibility logging
+        log(f"  Path: {initial_path.value} (Set-Partitioning)")
+        log(f"  LNS iterations: {lns_iterations}")
+        log(f"  Destroy fraction: {destroy_fraction:.2f}")
+        log(f"  DAY_CAP: {getattr(config, 'day_cap_hard', 220)}")
         log("=" * 70)
         
         # ==========================================================================
@@ -554,103 +522,9 @@ def run_portfolio(
         solver_status = result.get("status", "UNKNOWN")
         
         final_path = initial_path
-        fallback_used = False
+        fallback_used = False  # v5: No fallback in single-path mode
         fallback_count = 0
-        rerun_count = 0  # Guard: only allow 1 rerun
-        
-        # ==========================================================================
-        # PHASE 4.5: FEEDBACK LOOP - Auto-trigger Path B on bad block mix
-        # ==========================================================================
-        MIN_RERUN_BUDGET = 15.0  # seconds
-        remaining_after_phase4 = time_budget - (perf_counter() - start_time)
-        
-        if (initial_path == PS.A 
-            and solver_status in ["OK", "FEASIBLE"]
-            and rerun_count == 0 
-            and remaining_after_phase4 > MIN_RERUN_BUDGET):
-            
-            # Calculate quality metrics
-            fte_count = len([a for a in assignments if a.driver_type == "FTE"])
-            pt_count = len([a for a in assignments if a.driver_type == "PT"])
-            underfull = len([a for a in assignments if a.driver_type == "FTE" and a.total_hours < config.min_hours_per_fte])
-            
-            total_drivers = fte_count + pt_count
-            pt_ratio = pt_count / total_drivers if total_drivers > 0 else 0
-            underfull_ratio = underfull / fte_count if fte_count > 0 else 0
-            
-            if pt_ratio > 0.25 or underfull_ratio > 0.15:
-                log(f"BAD_BLOCK_MIX detected: PT={pt_ratio:.0%}, underfull={underfull_ratio:.0%}")
-                log(f"Auto-triggering Path B (rerun_count={rerun_count}, budget={remaining_after_phase4:.1f}s)...")
-                rerun_count += 1
-                
-                # Get Path B parameters and re-execute
-                from src.services.policy_engine import select_parameters
-                new_params = select_parameters(features, PS.B, "BAD_BLOCK_MIX", remaining_after_phase4)
-                
-                result = _execute_path(
-                    path=PS.B,
-                    params=new_params,
-                    selected_blocks=selected_blocks,
-                    tours=tours,
-                    config=config,
-                    block_index=block_index,
-                    features=features,
-                    phase2_budget=budget_slices.phase2,  # S0.2: Reuse original slice
-                    lns_budget=budget_slices.lns,        # S0.2: Reuse original slice
-                    log_fn=log,
-                    seed=seed,
-                    remaining_fn=remaining,  # Global deadline enforcement
-                )
-                
-                phase2_time += result.get("phase2_time", 0.0)
-                lns_time += result.get("lns_time", 0.0)
-                assignments = result.get("assignments", assignments)
-                solver_status = result.get("status", solver_status)
-                final_path = PS.B
-                fallback_used = True
-                fallback_count = 1
-                params = new_params
-        
-        # ==========================================================================
-        # PHASE 5: FALLBACK IF NEEDED
-        # ==========================================================================
-        if solver_status not in ["OK", "OPTIMAL", "FEASIBLE"] and initial_path != PS.C:
-            remaining_budget = time_budget - (perf_counter() - start_time)
-            
-            if remaining_budget > 5.0:  # Only fallback if we have time
-                next_path, fallback_reason = get_fallback_path(initial_path)
-                
-                if next_path:
-                    log(f"FALLBACK: Switching to Path {next_path.value} ({fallback_reason})")
-                    reason_codes.append(fallback_reason)
-                    
-                    # Get new parameters for fallback path
-                    new_params = select_parameters(features, next_path, fallback_reason, remaining_budget)
-                    
-                    result = _execute_path(
-                        path=next_path,
-                        params=new_params,
-                        selected_blocks=selected_blocks,
-                        tours=tours,
-                        config=config,
-                        block_index=block_index,
-                        features=features,
-                        phase2_budget=budget_slices.phase2,  # S0.2: Reuse original slice
-                        lns_budget=budget_slices.lns,        # S0.2: Reuse original slice
-                        log_fn=log,
-                        seed=seed,
-                        remaining_fn=remaining,  # Global deadline enforcement
-                    )
-                    
-                    phase2_time += result.get("phase2_time", 0.0)
-                    lns_time += result.get("lns_time", 0.0)
-                    assignments = result.get("assignments", assignments)
-                    solver_status = result.get("status", solver_status)
-                    final_path = next_path
-                    fallback_used = True
-                    fallback_count = 1
-                    params = new_params
-        
+        # v5: No feedback loop or fallback - single path (Set-Partitioning) is the standard
         # ==========================================================================
         # PHASE 6: BUILD RESULT
         # ==========================================================================
@@ -661,14 +535,12 @@ def run_portfolio(
         lower_bound = features.lower_bound_drivers
         gap_to_lb = (achieved_score - lower_bound) / lower_bound if lower_bound > 0 else 0.0
         
-        # Check early stop conditions
-        early_stopped, early_stop_reason = should_early_stop(
-            achieved_score, lower_bound, 
-            achieved_score <= lower_bound + params.daymin_buffer,
-            params
-        )
-        
+        # v5: Simplified early stop check (no PolicyEngine dependency)
+        # Check if achieved score is at or within buffer of lower bound
+        daymin_buffer = getattr(params, 'daymin_buffer', 2)
+        early_stopped = achieved_score <= lower_bound + daymin_buffer
         if early_stopped:
+            early_stop_reason = "GOOD_ENOUGH"
             reason_codes.append(early_stop_reason)
             log(f"Early stop triggered: {early_stop_reason}")
         
