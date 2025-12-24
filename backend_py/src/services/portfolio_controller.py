@@ -314,6 +314,7 @@ def run_portfolio(
     execution_log = []
     
     def log(msg: str):
+        print(f"[PORTFOLIO DEBUG] {msg}")
         logger.info(msg)
         if log_fn:
             log_fn(msg)
@@ -400,15 +401,58 @@ def run_portfolio(
         # ==========================================================================
         log("PHASE 2: Path selection...")
         
-        policy = PolicyEngine()
-        params = policy.select(features, time_budget)
+        # Phase 2: Path Selection & Strategy
+        # ==========================================================================
         
-        initial_path = policy.current_path
-        reason_codes = policy.reason_codes.copy()
+        # MAIN PATH FORCING FOR BEST_BALANCED (Quality/Prod Profile)
+        if config.output_profile == "BEST_BALANCED":
+            log("=" * 70)
+            log("MAIN PATH: BEST_BALANCED -> Phase1+SetPart+LNS")
+            log("=" * 70)
+            
+            # Force Path C (Set-Partitioning)
+            initial_path = PS.C
+            reason_codes = ["MAIN_PATH_QUALITY"]
+            
+            # Manually set parameters for Main Path (High LNS options)
+            from src.services.policy_engine import ParameterBundle
+            params = ParameterBundle(
+                path=PS.C,
+                lns_iterations=150,    # High iterations for quality
+                destroy_fraction=0.15, # Aggressive destroy
+            )
+            
+            # Use RC1 Multi-Solve (standard Phase 1) instead of Two-Pass
+            # This aligns with the "MAIN PATH" definition: Phase 1 -> Set-Part
+            phase1_config = config._replace(time_limit_phase1=budget_slices.phase1)
+            
+        elif solver_mode_override == "SETPART":
+             # Diagnostic override (keep as is)
+            log(f"SOLVER MODE OVERRIDE: Forcing Path C (Set-Partitioning)")
+            initial_path = PS.C
+            reason_codes = ["FORCED_SETPART_MODE"]
+            from src.services.policy_engine import select_parameters
+            params = select_parameters(features, PS.C, "FORCED_SETPART_MODE", time_budget)
+            phase1_config = config._replace(time_limit_phase1=budget_slices.phase1)
+            
+        else:
+            # Normal policy-based selection (FAST / Heuristic flows)
+            log("PHASE 2: Path selection (Policy Engine)...")
+            policy = PolicyEngine()
+            params = policy.select(features, time_budget)
+            
+            initial_path = policy.current_path
+            reason_codes = policy.reason_codes.copy()
+            phase1_config = config._replace(time_limit_phase1=budget_slices.phase1)
         
-        log(f"Selected Path {initial_path.value}: {reason_codes[0]}")
-        log(f"Parameters: lns_iters={params.lns_iterations}, "
-            f"destroy={params.destroy_fraction:.2f}")
+        # S0: MANDATORY PATH SELECTION VISIBILITY
+        log("=" * 70)
+        log(f"PORTFOLIO PATH SELECTED: {initial_path.value}")
+        log(f"  Reason: {reason_codes[0]}")
+        log(f"  Solver mode: {config.solver_mode if hasattr(config, 'solver_mode') else 'DEFAULT'}")
+        log(f"  Enable LNS low-hour consolidation: {config.enable_lns_low_hour_consolidation}")
+        log(f"  Parameters: lns_iters={params.lns_iterations}, destroy={params.destroy_fraction:.2f}")
+        log("=" * 70)
         
         # ==========================================================================
         # PHASE 3: BLOCK SELECTION (CP-SAT Phase 1)
@@ -416,30 +460,14 @@ def run_portfolio(
         log("PHASE 3: Block selection (CP-SAT)...")
         t_capacity = perf_counter()
         
-        # Profile-specific block selection
-        if config.output_profile == "BEST_BALANCED":
-            # Two-pass solve: minimize headcount first, then optimize balance with cap
-            log(f"Using TWO-PASS solve for BEST_BALANCED (max_extra_driver_pct={config.max_extra_driver_pct})")
-            
-            # S0.2: Allocate 85% of total budget to Two-Pass solve (Pass 1 + Pass 2)
-            # This logic replaces standard Phase 3 (50%) and consumes much of Phase 4/LNS time
-            # because it performs its own internal optimization and assignment steps.
-            best_balanced_budget = time_budget * 0.85
-            
-            selected_blocks, phase1_stats = solve_capacity_twopass_balanced(
-                blocks, tours, block_index, config,
-                block_scores=block_scores, block_props=block_props,
-                total_time_budget=best_balanced_budget
-            )
-            # DEBUG TRACE
-            log(f"DEBUG: Portfolio received phase1_stats: twopass_executed={phase1_stats.get('twopass_executed')}")
-        else:
-            # MIN_HEADCOUNT_3ER: single-pass with standard objective
-            phase1_config = config._replace(time_limit_phase1=budget_slices.phase1)
-            selected_blocks, phase1_stats = solve_capacity_phase(
-                blocks, tours, block_index, phase1_config,
-                block_scores=block_scores, block_props=block_props
-            )
+        # Always use standard solve_capacity_phase (RC1) for consistent Main Path
+        # This replaces the brittle 'solve_capacity_twopass_balanced'
+        selected_blocks, phase1_stats = solve_capacity_phase(
+            blocks, tours, block_index, phase1_config,
+            block_scores=block_scores, block_props=block_props
+        )
+        
+        log(f"PHASE 1 COMPLETE: selected_blocks={len(selected_blocks)}, tours={len(tours)}")
         capacity_time = perf_counter() - t_capacity
         
         # S0.2: Log budget compliance
@@ -450,12 +478,19 @@ def run_portfolio(
             log(f"Phase 1 FAILED: {phase1_stats.get('error', 'Unknown error')}")
             from src.services.forecast_solver_v4 import SolveResultV4
             
+            # Patch 3: Extract missing_tours from phase1_stats if available
+            missing_tours = phase1_stats.get('missing_tours', [])
+            if missing_tours:
+                log(f"  INFEASIBLE: {len(missing_tours)} uncoverable tours: {missing_tours}")
+                reason_codes.append(f"INFEASIBLE_TOURS:{','.join(missing_tours[:10])}")  # Limit to 10 for readability
+            
             fail_solution = SolveResultV4(
-                status="FAILED",
+                status="FAILED" if not missing_tours else "INFEASIBLE",
                 assignments=[],
-                kpi={"error": "Phase 1 failed"},
+                kpi={"error": "Phase 1 failed", "missing_tours": missing_tours},
                 solve_times={"block_building": block_time},
                 block_stats=phase1_stats,
+                missing_tours=missing_tours,  # Patch 3
             )
             
             fail_runtime = perf_counter() - start_time
@@ -708,12 +743,16 @@ def run_portfolio(
         # Build SolveResultV4
         from src.services.forecast_solver_v4 import SolveResultV4
         
+        # Patch 3: Include missing_tours from phase1_stats if any
+        missing_tours = phase1_stats.get('missing_tours', [])
+        
         solution = SolveResultV4(
             status=solver_status if solver_status in ["OK", "OPTIMAL", "FEASIBLE"] else "COMPLETED",
             assignments=assignments,
             kpi=kpi,
             solve_times=solve_times,
             block_stats=phase1_stats,
+            missing_tours=missing_tours,  # Patch 3
         )
         
         log("=" * 70)
@@ -939,6 +978,7 @@ def _execute_path(
                 rmp_time_limit=params.pricing_time_limit_s,
                 seed=seed,
                 log_fn=log_fn,
+                config=config,  # NEW: Pass config for LNS
             )
             
             result["phase2_time"] = perf_counter() - t_phase2

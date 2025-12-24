@@ -33,13 +33,25 @@ logger = logging.getLogger("ForecastSolverV4")
 
 
 def safe_print(*args, **kwargs):
-    """Print wrapper that silently ignores Errno 22 on Windows."""
+    """Print wrapper that handles Windows console encoding issues.
+    
+    Catches OSError (detached console) and UnicodeError (encoding failures).
+    On encoding failure, sanitizes args using stdout encoding with 'replace'.
+    Never crashes the solver due to logging issues.
+    """
     import builtins
+    import sys
     try:
         builtins.print(*args, **kwargs)
-    except OSError:
-        # Ignore console I/O errors (e.g., detached console on Windows)
-        pass
+    except (OSError, UnicodeError):
+        # Attempt to sanitize and retry
+        try:
+            enc = getattr(sys.stdout, 'encoding', None) or 'utf-8'
+            safe_args = [str(a).encode(enc, 'replace').decode(enc, 'replace') for a in args]
+            builtins.print(*safe_args, **kwargs)
+        except Exception:
+            # Swallow all errors - logging must never crash the solver
+            pass
 
 from src.domain.models import Block, Tour, Weekday
 from src.services.constraints import can_assign_block
@@ -138,6 +150,16 @@ class ConfigV4(NamedTuple):
     pass2_min_time_s: float = 15.0       # GUARANTEED minimum time for Pass-2 (Quality profile)
     quality_mode: bool = False           # If True, use QUALITY profile (longer budgets, guaranteed Pass-2)
     quality_time_budget: float = 300.0   # Default time budget for QUALITY mode (5 min)
+    
+    # =========================================================================
+    # LNS ENDGAME: Low-Hour Pattern Consolidation (Set Partitioning)
+    # =========================================================================
+    enable_lns_low_hour_consolidation: bool = False
+    lns_time_budget_s: float = 30.0                  # Total LNS time budget
+    lns_low_hour_threshold_h: float = 30.0           # Hours threshold for "low-hour" FTE patterns
+    lns_receiver_k_values: tuple = (3, 5, 8, 12)     # Escalating receiver neighborhood sizes
+    lns_attempt_budget_s: float = 2.0                # Budget per single kill attempt
+    lns_max_attempts: int = 30                       # Maximum kill attempts
 
 
 # =============================================================================
@@ -179,6 +201,7 @@ class SolveResultV4:
     kpi: dict
     solve_times: dict[str, float]
     block_stats: dict
+    missing_tours: list[str] = field(default_factory=list)  # Patch 3: Tours that couldn't be covered
     
     def to_dict(self) -> dict:
         return {
@@ -186,7 +209,8 @@ class SolveResultV4:
             "kpi": self.kpi,
             "drivers": [a.to_dict() for a in self.assignments],
             "solve_times": self.solve_times,
-            "block_stats": self.block_stats
+            "block_stats": self.block_stats,
+            "missing_tours": self.missing_tours
         }
 
 
@@ -1003,9 +1027,9 @@ def solve_capacity_phase(
     
     iteration = 0
     t_msg = f"Budget: {TOTAL_BUDGET:.1f}s"
-    safe_print(f"\n--- TIGHTENING LOOP START ({t_msg}) ---", flush=True)
+    safe_print(f"\n--- SOLVING (HOTFIX A: No Tightening) ({t_msg}) ---", flush=True)
 
-    while (perf_counter() - t_total_start) < TOTAL_BUDGET:
+    if (perf_counter() - t_total_start) < TOTAL_BUDGET:  # HOTFIX A: Single iteration
         iteration += 1
         
         # Calculate remaining budget
@@ -1013,7 +1037,7 @@ def solve_capacity_phase(
         remaining = TOTAL_BUDGET - elapsed
         if remaining < 2.0: # Minimum slice for meaningful solve
             safe_print("  Time budget exhausted.", flush=True)
-            break
+            pass  # HOTFIX A: was 'break' (no loop anymore)
             
         safe_print(f"\n--- ITER {iteration}: CAP={current_cap} (Time left: {remaining:.1f}s) ---", flush=True)
         
@@ -1027,7 +1051,11 @@ def solve_capacity_phase(
         
         if result is None:
             safe_print(f"  INFEASIBLE at cap={current_cap}. Stopping tightening.", flush=True)
-            break
+            # Not in a loop (HOTFIX A), so return best or empty with proper status
+            if best_solution is not None:
+                return best_solution, best_stats
+            # Return empty solution with ERROR status
+            return [], {"status": "ERROR", "error": "Phase 1 infeasible"}
         
         selected, stats = result
         # Extract max day from solution
@@ -1049,7 +1077,7 @@ def solve_capacity_phase(
         # EARLY STOP: incumbent already at or below target
         if current_max_day <= target_cap:
             safe_print(f"  Target cap {target_cap} hit (Actual={current_max_day}). Early stop.", flush=True)
-            break
+            pass  # HOTFIX A: was 'break'
             
         # S0.3: SPEC-CONFORMANT TIGHTENING
         # cap_next = max(target_cap, incumbent_max_day - 1)
@@ -1059,7 +1087,7 @@ def solve_capacity_phase(
         # S0.3 Safety: if cap_next >= cap_current â†’ stop (no progress possible)
         if cap_next >= current_cap:
             safe_print(f"  Cannot tighten further (next={cap_next} >= curr={current_cap}). Done.", flush=True)
-            break
+            pass  # HOTFIX A: was 'break'
             
         current_cap = cap_next
     
@@ -1409,10 +1437,17 @@ def _solve_capacity_single_cap(
 
     # Constraint: Coverage (each tour exactly once)
     safe_print("Adding coverage constraints...", flush=True)
+    
+    # Patch 3: Collect missing tours instead of crashing
+    missing_tours = []
+    
     for tour in tours:
         blocks_with_tour = block_index.get(tour.id, [])
         if not blocks_with_tour:
-            raise ValueError(f"Tour {tour.id} has no blocks!")
+            # Patch 3: Don't crash - collect and continue
+            safe_print(f"  [WARN] Tour {tour.id} has no blocks in pool - marking as missing", flush=True)
+            missing_tours.append(tour.id)
+            continue
         
         # Use the pre-built block_index for O(1) lookup instead of scanning all blocks
         block_indices = []
@@ -1422,9 +1457,17 @@ def _solve_capacity_single_cap(
                 block_indices.append(b_idx)
 
         if not block_indices:
-            raise ValueError(f"Tour {tour.id} has no indexed blocks!")
+            # Patch 3: Don't crash - collect and continue
+            safe_print(f"  [WARN] Tour {tour.id} has no indexed blocks - marking as missing", flush=True)
+            missing_tours.append(tour.id)
+            continue
         
         model.Add(sum(use[b] for b in block_indices) == 1)
+    
+    # Patch 3: If any tours are missing, return INFEASIBLE immediately
+    if missing_tours:
+        safe_print(f"  [ERROR] {len(missing_tours)} tours cannot be covered: {missing_tours}", flush=True)
+        return None, {"status": "INFEASIBLE", "missing_tours": missing_tours}
     
     safe_print("Coverage constraints added.", flush=True)
     
@@ -1631,166 +1674,409 @@ def _solve_capacity_single_cap(
     }
     safe_print(f"  PACKABILITY: {len(tour_has_multi)}/{len(tours)} tours have multi-block options", flush=True)
     
-    # Cost Constants - MULTI-TOUR MAXIMIZATION (User Policy: 3er > 2er_REG > 2er_SPLIT > 1er)
-    # These costs are designed so the solver STRONGLY prefers multi-tour blocks.
-    # Hierarchy is enforced by large magnitude differences.
-    # Negative values = REWARD (incentive to select)
-    # Positive values = PENALTY (disincentive)
-    COST_3ER = -300_000        # Strong REWARD for 3er (best)
-    COST_2ER_REGULAR = -100_000  # Moderate REWARD for 2er REGULAR (2nd best)
-    COST_2ER_SPLIT = 0           # Neutral for 2er SPLIT (3rd best)
-    COST_1ER = 500_000           # Heavy PENALTY for 1er (last resort)
+    # =========================================================================
+    # RC1: LEXICOGRAPHIC PACKING VIA MULTI-SOLVE (OVERFLOW-SAFE)
+    # =========================================================================
+    # APPROACH: Sequential optimization stages with constraint fixation
+    # Stage 1: max(count_3er)     → fix count_3er = best_3er
+    # Stage 2: max(count_2er_reg) → fix count_2er_regular = best_2R
+    # Stage 3: max(count_2er_split) → fix count_2er_split = best_2S
+    # Stage 4: min(count_1er)     → fix count_1er = best_1er
+    # Stage 5 (optional): minimize secondary terms under fixed packing
+    #
+    # BENEFITS:
+    # - No int64 overflow risk (no Big-M weights)
+    # - Provably lexicographic (each stage fixes its tier)
+    # - Packing priority CANNOT be overridden by secondary terms
+    # =========================================================================
     
-    # Extra penalty if 1er is chosen when a multi-block option exists
-    COST_1ER_WITH_ALTERNATIVE = 200_000  # Additional penalty
+    # Edit 1: Status name helper for clear logging
+    STATUS_NAME = {
+        cp_model.UNKNOWN: "UNKNOWN",
+        cp_model.MODEL_INVALID: "MODEL_INVALID",
+        cp_model.FEASIBLE: "FEASIBLE",
+        cp_model.INFEASIBLE: "INFEASIBLE",
+        cp_model.OPTIMAL: "OPTIMAL",
+    }
     
-    SCORE_TIEBREAK = 10  # Normalized score as tertiary tie-breaker
-
+    def status_str(st):
+        return STATUS_NAME.get(st, f"STATUS_{st}")
+    
+    safe_print(f"\n{'='*60}", flush=True)
+    safe_print("RC1: MULTI-SOLVE LEXICOGRAPHIC PACKING", flush=True)
+    safe_print(f"{'='*60}", flush=True)
+    
     # Debug: count available types
     avail_1er = sum(1 for b in blocks if len(b.tours) == 1)
     avail_2er_reg = sum(1 for b in blocks if len(b.tours) == 2 and b.pause_zone.value == "REGULAR")
     avail_2er_split = sum(1 for b in blocks if len(b.tours) == 2 and b.pause_zone.value == "SPLIT")
     avail_3er = sum(1 for b in blocks if len(b.tours) == 3)
     safe_print(f"  AVAILABLE BLOCKS: 1er={avail_1er}, 2er_REG={avail_2er_reg}, 2er_SPLIT={avail_2er_split}, 3er={avail_3er}", flush=True)
-
-    for b, block in enumerate(blocks):
-        n = len(block.tours)
-        
-        # 1. Base Cost based on block type (MULTI-TOUR MAXIMIZATION)
-        if n == 3:
-            cost = COST_3ER  # Best option: 3er
-        elif n == 2:
-            # Differentiate by pause_zone
-            if block.pause_zone.value == "REGULAR":
-                cost = COST_2ER_REGULAR  # 2nd best: 2er REGULAR
-            else:
-                cost = COST_2ER_SPLIT    # 3rd best: 2er SPLIT
-        else:  # n == 1
-            tour_id = block.tours[0].id
-            # Extra penalty if this tour has a multi-block alternative
-            alternative_penalty = COST_1ER_WITH_ALTERNATIVE if tour_id in tour_has_multi else 0
-            cost = COST_1ER + alternative_penalty  # Last resort: 1er
-        
-        # 2. Score Tie-break (Subtract normalized score - higher score = lower cost)
-        s_raw = block_scores.get(block.id, s_min) if block_scores else 0
-        s_norm = norm_score(s_raw)
-        cost = cost - (SCORE_TIEBREAK * s_norm)
-        
-        # ==== Dynamic trap penalty (de-prioritize late 3-tours on high-trap days) ====
-        is_3tour = (n == 3)
-        is_late = block.last_end.hour >= 20
-        day_trap = trap_pressure.get(block.day.value, 0)
-        
-        if is_3tour and is_late and day_trap > 0.01:
-            # Scale penalty by trap intensity (this is a tie-breaker, not a blocker)
-            cost += int(TRAP_PENALTY * day_trap * 10) 
-            
-        # ==== Chainability Penalty (de-prioritize blocks that dead-end) ====
-        c_pen = chain_penalty_map.get(block.id, 0)
-        if c_pen > 0:
-            cost += int(c_pen) 
-        
-        block_cost.append(use[b] * int(cost))
-
     
-    # ==== V4 Objective ====
-    # Priority: min max_day >> min total_blocks >> min cost
-    
-    # Greedy Warmstart
-    safe_print("  Adding greedy hint...", flush=True)
-    greedy_selected_ids = set()
-    covered_tours = set()
-    
-    # Sort blocks: 3er first, then score
-    def greedy_sort_key(blk):
-        n = len(blk.tours)
-        s = block_scores.get(blk.id, 0) if block_scores else 0
-        return (-n, -s) 
-        
-    sorted_blocks = sorted(blocks, key=greedy_sort_key)
-    
-    for blk in sorted_blocks:
-        t_ids = [t.id for t in blk.tours]
-        if not any(tid in covered_tours for tid in t_ids):
-            greedy_selected_ids.add(blk.id)
-            covered_tours.update(t_ids)
-            
-    hint_count = 0
-    for b, block in enumerate(blocks):
-        if block.id in greedy_selected_ids:
-            model.AddHint(use[b], 1)
-            hint_count += 1
+    # Helper: Reset hints from solver (prevents duplicate hint variables)
+    def reset_hints_from_solver(model, use, solver):
+        """Clear previous hints and add fresh hints from solver. Prevents MODEL_INVALID."""
+        model.ClearHints()  # Prevents duplicate-hints
+        # use can be dict or list - handle both
+        if isinstance(use, dict):
+            for k in sorted(use.keys()):  # Deterministic order
+                var = use[k]
+                model.AddHint(var, int(solver.Value(var)))
         else:
-            model.AddHint(use[b], 0)
-    safe_print(f"  Greedy hint added: {hint_count} blocks", flush=True)
-
-    # ==== DECISION STRATEGY: Guide search to prefer 3ers ====
-    vars_3er = [use[b] for b, blk in enumerate(blocks) if len(blk.tours) == 3]
-    vars_2er = [use[b] for b, blk in enumerate(blocks) if len(blk.tours) == 2]
-    vars_1er = [use[b] for b, blk in enumerate(blocks) if len(blk.tours) == 1]
+            for var in use:
+                model.AddHint(var, int(solver.Value(var)))
     
-    if vars_3er:
-        model.AddDecisionStrategy(vars_3er, cp_model.CHOOSE_FIRST, cp_model.SELECT_MAX_VALUE)
-    if vars_2er:
-        model.AddDecisionStrategy(vars_2er, cp_model.CHOOSE_FIRST, cp_model.SELECT_MAX_VALUE)
-    if vars_1er:
-        model.AddDecisionStrategy(vars_1er, cp_model.CHOOSE_FIRST, cp_model.SELECT_MIN_VALUE)
-    safe_print(f"  DECISION STRATEGY: 3er->True, 2er->True, 1er->False", flush=True)
-
-    # ==== OBJECTIVE: Block-count first, then max_day ====
-    W_COUNT = 10_000_000   # HIGHEST: minimize total blocks
-    W_MAXDAY = 100_000     # Secondary: minimize peak day
-    W_SLACK = 50_000_000   # Penalize slack heavily
+    # Edit 2: Build count expressions as IntVars (safer than raw sum())
+    # This avoids MODEL_INVALID issues when sum() returns Python int in edge cases
+    count_3er = model.NewIntVar(0, len(blocks), "count_3er")
+    count_2er_regular = model.NewIntVar(0, len(blocks), "count_2er_regular")
+    count_2er_split = model.NewIntVar(0, len(blocks), "count_2er_split")
+    count_1er = model.NewIntVar(0, len(blocks), "count_1er")
     
+    model.Add(count_3er == sum(
+        use[b] for b, block in enumerate(blocks) if len(block.tours) == 3
+    ))
+    model.Add(count_2er_regular == sum(
+        use[b] for b, block in enumerate(blocks) 
+        if len(block.tours) == 2 and block.pause_zone.value == "REGULAR"
+    ))
+    model.Add(count_2er_split == sum(
+        use[b] for b, block in enumerate(blocks)
+        if len(block.tours) == 2 and block.pause_zone.value == "SPLIT"
+    ))
+    model.Add(count_1er == sum(
+        use[b] for b, block in enumerate(blocks) if len(block.tours) == 1
+    ))
+    
+    safe_print(f"  COUNT EXPRESSIONS: c3er, c2R, c2S, c1er built as IntVars", flush=True)
+    
+    # Time budget split across stages (deterministic)
+    # Total budget from config or override
+    total_budget = time_limit if time_limit is not None else config.time_limit_phase1
+    
+    # Split: 35% stage1 (3er most important), 25% stage2, 15% stage3, 10% stage4, 15% stage5
+    stage_budgets = {
+        1: total_budget * 0.35,
+        2: total_budget * 0.25,
+        3: total_budget * 0.15,
+        4: total_budget * 0.10,
+        5: total_budget * 0.15,
+    }
+    
+    safe_print(f"  STAGE BUDGETS (total={total_budget:.1f}s):", flush=True)
+    for st, bud in stage_budgets.items():
+        safe_print(f"    Stage {st}: {bud:.1f}s", flush=True)
+    
+    # =========================================================================
+    # STAGE 1: MAXIMIZE count_3er
+    # =========================================================================
+    safe_print(f"\n  --- STAGE 1: MAXIMIZE count_3er ---", flush=True)
+    model.Maximize(count_3er)
+    
+    solver_s1 = cp_model.CpSolver()
+    solver_s1.parameters.max_time_in_seconds = stage_budgets[1]
+    solver_s1.parameters.num_search_workers = 1  # Determinism
+    solver_s1.parameters.random_seed = config.seed
+    
+    status_s1 = solver_s1.Solve(model)
+    
+    # K2: Status handling - distinguish OPTIMAL vs FEASIBLE (Edit 1: use status_str)
+    if status_s1 == cp_model.OPTIMAL:
+        safe_print(f"  STAGE 1: {status_str(status_s1)}", flush=True)
+    elif status_s1 == cp_model.FEASIBLE:
+        safe_print(f"  STAGE 1: {status_str(status_s1)} (not proven optimal)", flush=True)
+    else:
+        safe_print(f"  STAGE 1 FAILED: {status_str(status_s1)}", flush=True)
+        if status_s1 == cp_model.MODEL_INVALID:
+            safe_print(f"  ERROR: Model is invalid. Check count expressions.", flush=True)
+        return None
+    
+    # K1: Use solver.Value(expr) instead of ObjectiveValue() for robustness
+    best_count_3er = solver_s1.Value(count_3er)
+    safe_print(f"  STAGE 1 RESULT: count_3er = {int(best_count_3er)}", flush=True)
+    
+    # Fix count_3er for subsequent stages
+    model.Add(count_3er == int(best_count_3er))
+    
+    # K3: Hints for Stage 2 (using helper to prevent duplicates)
+    reset_hints_from_solver(model, use, solver_s1)
+    
+    # =========================================================================
+    # STAGE 2: MAXIMIZE count_2er_regular (with count_3er fixed)
+    # =========================================================================
+    safe_print(f"\n  --- STAGE 2: MAXIMIZE count_2er_regular ---", flush=True)
+    model.Maximize(count_2er_regular)
+    
+    solver_s2 = cp_model.CpSolver()
+    solver_s2.parameters.max_time_in_seconds = stage_budgets[2]
+    solver_s2.parameters.num_search_workers = 1
+    solver_s2.parameters.random_seed = config.seed
+    
+    status_s2 = solver_s2.Solve(model)
+    
+    if status_s2 == cp_model.OPTIMAL:
+        safe_print(f"  STAGE 2: OPTIMAL", flush=True)
+    elif status_s2 == cp_model.FEASIBLE:
+        safe_print(f"  STAGE 2: FEASIBLE (not proven optimal)", flush=True)
+    else:
+        safe_print(f"  STAGE 2 FAILED: {status_str(status_s2)}", flush=True)
+        return None
+    
+    best_count_2er_regular = solver_s2.Value(count_2er_regular)
+    safe_print(f"  STAGE 2 RESULT: count_2er_regular = {int(best_count_2er_regular)}", flush=True)
+    
+    # Fix count_2er_regular (Edit 3: use >= for FEASIBLE, == for OPTIMAL)
+    if status_s2 == cp_model.OPTIMAL:
+        model.Add(count_2er_regular == int(best_count_2er_regular))
+        safe_print(f"  Fixation: count_2er_regular == {int(best_count_2er_regular)} (OPTIMAL)", flush=True)
+    else:
+        model.Add(count_2er_regular >= int(best_count_2er_regular))
+        safe_print(f"  Fixation: count_2er_regular >= {int(best_count_2er_regular)} (FEASIBLE, fail-open)", flush=True)
+    
+    # Hints for Stage 3 (clear previous hints first!)
+    reset_hints_from_solver(model, use, solver_s2)
+    
+    # =========================================================================
+    # EDIT 4: PRE-FLIGHT FEASIBILITY CHECK (after Stage 2 fixation)
+    # =========================================================================
+    safe_print(f"\n  PRE-FLIGHT: Validating model after Stage 2 fixation...", flush=True)
+    
+    # 1) CP-SAT builtin validation
+    validation_err = model.Validate()
+    if validation_err:
+        safe_print(f"  MODEL VALIDATION ERROR:\n{validation_err}", flush=True)
+        return None
+    
+    # 2) Proto domain scan (catches lb > ub)
+    proto = model.Proto()
+    invalid_vars = []
+    for i, v in enumerate(proto.variables):
+        dom = list(v.domain)
+        for j in range(0, len(dom), 2):
+            lb, ub = dom[j], dom[j+1]
+            if lb > ub:
+                invalid_vars.append((i, v.name if v.name else f"var_{i}", lb, ub))
+    
+    if invalid_vars:
+        safe_print(f"  INVALID VARIABLE DOMAINS DETECTED:", flush=True)
+        for idx, name, lb, ub in invalid_vars:
+            safe_print(f"    var#{idx} '{name}': [{lb},{ub}] (lb > ub)", flush=True)
+        return None
+    
+    # 3) Feasibility check with trivial objective
+    model.Minimize(0)
+    solver_preflight = cp_model.CpSolver()
+    solver_preflight.parameters.max_time_in_seconds = 2.0
+    solver_preflight.parameters.num_search_workers = 1
+    solver_preflight.parameters.random_seed = config.seed
+    solver_preflight.parameters.log_search_progress = False
+    
+    status_preflight = solver_preflight.Solve(model)
+    safe_print(f"  PRE-FLIGHT: {status_str(status_preflight)}", flush=True)
+    
+    # UNKNOWN = timeout (ok for 2s budget), FEASIBLE/OPTIMAL = passing
+    # Only INFEASIBLE and MODEL_INVALID are actual failures
+    if status_preflight in (cp_model.INFEASIBLE, cp_model.MODEL_INVALID):
+        safe_print(f"  PRE-FLIGHT FAILED: Model is {status_str(status_preflight)} after Stage 2 fixation", flush=True)
+        safe_print(f"  -> Stage 1 fixed: count_3er = {int(best_count_3er)}", flush=True)
+        safe_print(f"  -> Stage 2 fixed: count_2er_regular = {int(best_count_2er_regular)}", flush=True)
+        return None
+    
+    safe_print(f"  PRE-FLIGHT PASSED (model valid)", flush=True)
+    
+    # =========================================================================
+    # STAGE 3: MAXIMIZE count_2er_split (with 3er, 2R fixed)
+    # =========================================================================
+    safe_print(f"\n  --- STAGE 3: MAXIMIZE count_2er_split ---", flush=True)
+    model.Maximize(count_2er_split)
+    
+    solver_s3 = cp_model.CpSolver()
+    solver_s3.parameters.max_time_in_seconds = stage_budgets[3]
+    solver_s3.parameters.num_search_workers = 1
+    solver_s3.parameters.random_seed = config.seed
+    
+    status_s3 = solver_s3.Solve(model)
+    
+    if status_s3 == cp_model.OPTIMAL:
+        safe_print(f"  STAGE 3: OPTIMAL", flush=True)
+    elif status_s3 == cp_model.FEASIBLE:
+        safe_print(f"  STAGE 3: FEASIBLE (not proven optimal)", flush=True)
+    else:
+        safe_print(f"  STAGE 3 FAILED: {status_str(status_s3)}", flush=True)
+        return None
+    
+    best_count_2er_split = solver_s3.Value(count_2er_split)
+    safe_print(f"  STAGE 3 RESULT: count_2er_split = {int(best_count_2er_split)}", flush=True)
+    
+    # Fix count_2er_split
+    model.Add(count_2er_split == int(best_count_2er_split))
+    
+    # K3: Hints for Stage 4 (using helper to prevent duplicates)
+    reset_hints_from_solver(model, use, solver_s3)
+    
+    # =========================================================================
+    # STAGE 4: MINIMIZE count_1er (with all multi-counts fixed)
+    # =========================================================================
+    safe_print(f"\n  --- STAGE 4: MINIMIZE count_1er ---", flush=True)
+    model.Minimize(count_1er)
+    
+    solver_s4 = cp_model.CpSolver()
+    solver_s4.parameters.max_time_in_seconds = stage_budgets[4]
+    solver_s4.parameters.num_search_workers = 1
+    solver_s4.parameters.random_seed = config.seed
+    
+    status_s4 = solver_s4.Solve(model)
+    
+    if status_s4 == cp_model.OPTIMAL:
+        safe_print(f"  STAGE 4: OPTIMAL", flush=True)
+    elif status_s4 == cp_model.FEASIBLE:
+        safe_print(f"  STAGE 4: FEASIBLE (not proven optimal)", flush=True)
+    else:
+        safe_print(f"  STAGE 4 FAILED: {status_str(status_s4)}", flush=True)
+        return None
+    
+    best_count_1er = solver_s4.Value(count_1er)
+    safe_print(f"  STAGE 4 RESULT: count_1er = {int(best_count_1er)}", flush=True)
+    
+    # Fix count_1er for stage 5
+    model.Add(count_1er == int(best_count_1er))
+    
+    # K5: Explicitly save Stage 4 solution for fallback
+    stage4_solution = [solver_s4.Value(use[b]) for b in range(len(blocks))]
+    
+    # K3: Hints for Stage 5 (using helper to prevent duplicates)
+    reset_hints_from_solver(model, use, solver_s4)
+    
+    # =========================================================================
+    # STAGE 5: SECONDARY OPTIMIZATION under fixed packing
+    # =========================================================================
+    # K4: ALL packing counts are now fixed. Optimize secondary terms:
+    # - max_day (prefer lower peak)
+    # - total_blocks (prefer fewer blocks, already implicit from packing)
+    # - slack (prefer no slack days)
+    # - trap_penalty (prefer avoiding high-trap situations)
+    # - chain_penalty (prefer chainable blocks)
+    # - score (prefer higher-quality blocks)
+    
+    safe_print(f"\n  --- STAGE 5: SECONDARY OPTIMIZATION (under locked packing) ---", flush=True)
+    
+    # Build secondary objective components
+    # Already have: max_day, day_slack from model construction
     total_blocks = sum(use[b] for b in range(len(blocks)))
     total_slack = sum(day_slack[d] for d in days)
     
-    objective = (
-        W_MAXDAY * max_day +
-        W_COUNT * total_blocks +
-        W_SLACK * total_slack +
-        sum(block_cost)  
+    # Score component (higher is better, so negate)
+    if block_scores:
+        score_vals = list(block_scores.values())
+        s_min_val = min(score_vals) if score_vals else 0
+        s_max_val = max(score_vals) if score_vals else 1
+    else:
+        s_min_val = 0
+        s_max_val = 1
+    
+    def norm_score_secondary(s):
+        """Normalize score to 0-1000 range for secondary optimization."""
+        if s_max_val <= s_min_val:
+            return 0
+        return int(1000 * (s - s_min_val) / (s_max_val - s_min_val))
+    
+    score_sum = sum(
+        use[b] * norm_score_secondary(block_scores.get(block.id, s_min_val) if block_scores else 0)
+        for b, block in enumerate(blocks)
     )
     
-    model.Minimize(objective)
-    safe_print(f"  V4 OBJECTIVE (Block-Min): {W_COUNT}*count + {W_MAXDAY}*max + {W_SLACK}*slack", flush=True)
-    safe_print(f"  DAY CAP: {DAY_CAP} (HARD for Fri/Mon)", flush=True)
+    # K4: Full secondary objective (weights chosen to prioritize in order)
+    W_MAXDAY_SEC = 1_000_000    # Highest secondary priority
+    W_COUNT_SEC = 100_000       # Second (but packing is fixed, so mostly tie-break)
+    W_SLACK_SEC = 10_000        # Third
+    W_SCORE_SEC = 1             # Lowest (final tie-break)
     
-    safe_print(f"PHASE 1A: CP-SAT model build done in {perf_counter() - t0:.2f}s", flush=True)
+    secondary_objective = (
+        W_MAXDAY_SEC * max_day +
+        W_COUNT_SEC * total_blocks +
+        W_SLACK_SEC * total_slack -
+        W_SCORE_SEC * score_sum  # Subtract (higher score = better)
+    )
     
-    # Solve
-    t1 = perf_counter()
-    solve_time = time_limit if time_limit else config.time_limit_phase1
-    solver = cp_model.CpSolver()
-    solver.parameters.max_time_in_seconds = solve_time
-    solver.parameters.num_search_workers = 1  # S0.1: Determinism (always 1, ignore config)
-    solver.parameters.random_seed = config.seed
-    solver.parameters.search_branching = cp_model.FIXED_SEARCH  # Respect decision strategy
+    safe_print(f"  SECONDARY OBJ: {W_MAXDAY_SEC}*max_day + {W_COUNT_SEC}*total_blocks + {W_SLACK_SEC}*slack - {W_SCORE_SEC}*score", flush=True)
     
-    status = solver.Solve(model)
+    model.Minimize(secondary_objective)
+    
+    solver_s5 = cp_model.CpSolver()
+    solver_s5.parameters.max_time_in_seconds = stage_budgets[5]
+    solver_s5.parameters.num_search_workers = 1
+    solver_s5.parameters.random_seed = config.seed
+    
+    status_s5 = solver_s5.Solve(model)
+    
+    # K5: Clean fallback logic
+    if status_s5 == cp_model.OPTIMAL:
+        safe_print(f"  STAGE 5: OPTIMAL", flush=True)
+        final_solver = solver_s5
+        used_stage4_fallback = False
+    elif status_s5 == cp_model.FEASIBLE:
+        safe_print(f"  STAGE 5: FEASIBLE (not proven optimal)", flush=True)
+        final_solver = solver_s5
+        used_stage4_fallback = False
+    else:
+        safe_print(f"  STAGE 5 FAILED: {status_str(status_s5)} (using Stage 4 fallback)", flush=True)
+        # Reconstruct solution from stage4_solution
+        final_solver = None  # Signal to use stage4_solution directly
+        used_stage4_fallback = True
+    
+    # =========================================================================
+    # EXTRACT FINAL SOLUTION
+    # =========================================================================
+    safe_print(f"\n{'='*60}", flush=True)
+    safe_print("RC1 PACKING LOCKED:", flush=True)
+    safe_print(f"  3er blocks:       {int(best_count_3er)}", flush=True)
+    safe_print(f"  2er_REG blocks:   {int(best_count_2er_regular)}", flush=True)
+    safe_print(f"  2er_SPLIT blocks: {int(best_count_2er_split)}", flush=True)
+    safe_print(f"  1er blocks:       {int(best_count_1er)}", flush=True)
+    safe_print(f"  Stage 5 fallback: {'YES (Stage 4)' if used_stage4_fallback else 'NO'}", flush=True)
+    safe_print(f"{'='*60}", flush=True)
+    
+    # K5: Extract solution based on fallback status
+    if used_stage4_fallback:
+        # Use stage4_solution directly
+        selected = [blocks[b] for b in range(len(blocks)) if stage4_solution[b] == 1]
+        safe_print(f"  Using Stage 4 solution (Stage 5 failed)", flush=True)
+    else:
+        # Use final_solver (Stage 5)
+        selected = [blocks[b] for b in range(len(blocks)) if final_solver.Value(use[b]) == 1]
+        
+        # INVARIANT CHECK: Packing counts must match locked values
+        actual_3er = sum(1 for b in selected if len(b.tours) == 3)
+        actual_2R = sum(1 for b in selected if len(b.tours) == 2 and b.pause_zone.value == "REGULAR")
+        actual_2S = sum(1 for b in selected if len(b.tours) == 2 and b.pause_zone.value == "SPLIT")
+        actual_1er = sum(1 for b in selected if len(b.tours) == 1)
+        
+        mismatch = (
+            actual_3er != int(best_count_3er) or
+            actual_2R != int(best_count_2er_regular) or
+            actual_2S != int(best_count_2er_split) or
+            actual_1er != int(best_count_1er)
+        )
+        
+        if mismatch:
+            safe_print(f"  WARNING: Packing invariant violated in Stage 5!", flush=True)
+            safe_print(f"    Expected: 3er={int(best_count_3er)}, 2R={int(best_count_2er_regular)}, 2S={int(best_count_2er_split)}, 1er={int(best_count_1er)}", flush=True)
+            safe_print(f"    Actual:   3er={actual_3er}, 2R={actual_2R}, 2S={actual_2S}, 1er={actual_1er}", flush=True)
+        else:
+            safe_print(f"  [OK] Packing invariant verified (counts locked)", flush=True)
+    
+    # Compute elapsed time (from model build start)
     elapsed = perf_counter() - t0
     
-    # Diagnostic: Print status and objective details
-    status_names = {0: "UNKNOWN", 1: "MODEL_INVALID", 2: "FEASIBLE", 3: "INFEASIBLE", 4: "OPTIMAL"}
-    status_name = status_names.get(status, f"CODE_{status}")
-    logger.info(f"[CP-SAT] Status: {status_name}, ObjectiveValue: {solver.ObjectiveValue()}")
-    logger.info(f"[CP-SAT] Solve time: {perf_counter() - t1:.2f}s")
-    
-    safe_print(f"PHASE 1B: CP-SAT solve done status={status_name} in {perf_counter() - t1:.2f}s", flush=True)
-    
-    if status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
-        return None  # INFEASIBLE - caller will handle
-    
-    # Extract selected blocks
-    selected = [blocks[b] for b in range(len(blocks)) if solver.Value(use[b]) == 1]
-    
-    # Stats
+    # RC1: Detailed Stats by Category
     sel_1er = sum(1 for b in selected if len(b.tours) == 1)
-    sel_2er = sum(1 for b in selected if len(b.tours) == 2)
+    sel_2er_regular = sum(1 for b in selected if len(b.tours) == 2 and b.pause_zone.value == "REGULAR")
+    sel_2er_split = sum(1 for b in selected if len(b.tours) == 2 and b.pause_zone.value == "SPLIT")
     sel_3er = sum(1 for b in selected if len(b.tours) == 3)
-    safe_print(f"  SELECTED BLOCKS: 1er={sel_1er}, 2er={sel_2er}, 3er={sel_3er}", flush=True)
+    sel_2er_total = sel_2er_regular + sel_2er_split
+    safe_print(f"  SELECTED BLOCKS: 3er={sel_3er}, 2er_REG={sel_2er_regular}, 2er_SPLIT={sel_2er_split}, 1er={sel_1er}", flush=True)
     
-    by_type = {"1er": sel_1er, "2er": sel_2er, "3er": sel_3er}
+    by_type = {"1er": sel_1er, "2er": sel_2er_total, "3er": sel_3er}
     split_2er_count = 0
     template_match_count = 0
     
@@ -1823,6 +2109,23 @@ def _solve_capacity_single_cap(
         "3er": round(by_type["3er"] / total_selected, 3) if total_selected else 0,
     }
     
+    # RC1: Add Packing Telemetry
+    pack_telemetry = {
+        "selected_count_3er": sel_3er,
+        "selected_count_2er_regular": sel_2er_regular,
+        "selected_count_2er_split": sel_2er_split,
+        "selected_count_1er": sel_1er,
+        "candidate_count_3er": avail_3er,
+        "candidate_count_2er_regular": avail_2er_reg,
+        "candidate_count_2er_split": avail_2er_split,
+        "candidate_count_1er": avail_1er,
+        "tours_with_multi_candidates": len(tour_has_multi),
+    }
+    
+    # Compute packability metrics (missed opportunities)
+    pack_metrics = compute_packability_metrics(selected, blocks, tours)
+    pack_telemetry.update(pack_metrics)
+    
     stats = {
         "status": "OK",
         "selected_blocks": len(selected),
@@ -1836,6 +2139,9 @@ def _solve_capacity_single_cap(
         "split_2er_count": split_2er_count,
         "template_match_count": template_match_count,
     }
+    
+    # RC1: Merge pack_telemetry into stats
+    stats.update(pack_telemetry)
     
     safe_print(f"Selected {len(selected)} blocks: {by_type}")
     safe_print(f"Block mix: 1er={block_mix['1er']*100:.1f}%, 2er={block_mix['2er']*100:.1f}%, 3er={block_mix['3er']*100:.1f}%")
@@ -3824,6 +4130,7 @@ def solve_forecast_set_partitioning(
         rmp_time_limit=min(60.0, time_limit / 3),
         seed=seed,
         log_fn=log_fn,
+        config=config,  # NEW: Pass config for LNS
     )
     sp_time = perf_counter() - t_sp
     

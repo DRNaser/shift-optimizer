@@ -61,6 +61,38 @@ TUNABLE_FIELDS = {
     "max_hours_per_fte": {"type": "float", "default": 53.0, "min": 40.0, "max": 56.0},
     "min_hours_per_fte": {"type": "float", "default": 42.0, "min": 35.0, "max": 50.0},
     "fte_hours_target": {"type": "float", "default": 49.5, "min": 42.0, "max": 55.0},
+    
+    # =========================================================================
+    # DIAGNOSTIC: Solver Mode Override
+    # =========================================================================
+    "solver_mode": {"type": "str", "default": "HEURISTIC",
+                    "allowed": ["GREEDY", "CPSAT", "SETPART", "HEURISTIC"]},
+    
+    # =========================================================================
+    # LNS ENDGAME: Low-Hour Pattern Consolidation
+    # =========================================================================
+    "enable_lns_low_hour_consolidation": {"type": "bool", "default": False},
+    "lns_time_budget_s": {"type": "float", "default": 60.0, "min": 0.0, "max": 300.0},
+    "lns_low_hour_threshold_h": {"type": "float", "default": 40.0, "min": 0.0, "max": 50.0},
+    
+    # =========================================================================
+    # OUTPUT PROFILES: MIN_HEADCOUNT_3ER vs BEST_BALANCED
+    # =========================================================================
+    "output_profile": {"type": "str", "default": "BEST_BALANCED",
+                       "allowed": ["MIN_HEADCOUNT_3ER", "BEST_BALANCED"]},
+    
+    # 3er Gap Constraints (MIN_HEADCOUNT_3ER)
+    "gap_3er_min_minutes": {"type": "int", "default": 30, "min": 0, "max": 180},
+    "cap_quota_3er": {"type": "float", "default": 0.25, "min": 0.0, "max": 0.50},
+    "pass2_min_time_s": {"type": "float", "default": 30.0, "min": 1.0, "max": 600.0},
+    "w_choice_1er": {"type": "float", "default": 1.0, "min": 0.0, "max": 32.0},
+    "w_3er_bonus": {"type": "float", "default": 10.0, "min": 0.0, "max": 100.0},
+    
+    # BEST_BALANCED weights
+    "max_extra_driver_pct": {"type": "float", "default": 0.05, "min": 0.0, "max": 0.20},
+    "w_balance_underfull": {"type": "float", "default": 100.0, "min": 0.0, "max": 1000.0},
+    "w_pt_penalty": {"type": "float", "default": 500.0, "min": 0.0, "max": 5000.0},
+    "w_balance_variance": {"type": "float", "default": 50.0, "min": 0.0, "max": 500.0},
 }
 
 
@@ -134,6 +166,16 @@ def validate_and_apply_overrides(
             rejected[key] = f"TYPE_ERROR:expected_int"
             reason_codes.append(f"TYPE_ERROR:{key}")
             continue
+        elif expected_type == "str":
+            if not isinstance(value, str):
+                rejected[key] = f"TYPE_ERROR:expected_str"
+                reason_codes.append(f"TYPE_ERROR:{key}")
+                continue
+            # Check enum values if specified
+            if "allowed" in spec and value not in spec["allowed"]:
+                rejected[key] = f"ENUM_ERROR:must_be_one_of_{spec['allowed']}"
+                reason_codes.append(f"ENUM_ERROR:{key}")
+                continue
             
         # Convert int to float if needed
         if expected_type == "float" and isinstance(value, int):

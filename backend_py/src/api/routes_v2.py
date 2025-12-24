@@ -137,7 +137,8 @@ async def create_run(request: RunCreateRequest):
         week_start = parse_date(request.week_start)
         
         # Validate and apply config overrides
-        overrides = request.run.config_overrides.dict(exclude_unset=True)
+        # Use model_dump for Pydantic v2 to capture extra fields from ConfigDict(extra='allow')
+        overrides = request.run.config_overrides.model_dump(exclude_unset=True)
         validation_result = validate_and_apply_overrides(
             base_config=ConfigV4(),
             overrides=overrides,
@@ -295,10 +296,34 @@ async def stream_run_events(run_id: str, request: Request):
 
 @router_v2.get("/runs/{run_id}/report")
 async def get_run_report(run_id: str):
-    """Get full JSON run report including config snapshot."""
+    """Get full JSON run report including config snapshot.
+    
+    Returns config snapshot even for FAILED runs to show overrides_rejected.
+    """
     ctx = run_manager.get_run(run_id)
-    if not ctx or not ctx.result:
-        raise HTTPException(status_code=404, detail="Run report not available")
+    if not ctx:
+        raise HTTPException(status_code=404, detail="Run not found")
+    
+    # Build base response with config snapshot (even for FAILED runs)
+    response = {
+        "run_id": run_id,
+        "status": ctx.status.value if hasattr(ctx.status, 'value') else str(ctx.status),
+    }
+    
+    # Always include config snapshot if available (critical for debugging FAILED runs)
+    if ctx.config_snapshot:
+        response["config"] = {
+            "effective_hash": ctx.config_snapshot.config_effective_hash,
+            "overrides_applied": ctx.config_snapshot.overrides_applied,
+            "overrides_rejected": ctx.config_snapshot.overrides_rejected,
+            "overrides_clamped": ctx.config_snapshot.overrides_clamped
+        }
+    
+    # If result is not available (FAILED or still running), return partial report
+    if not ctx.result:
+        response["input_summary"] = ctx.input_summary if hasattr(ctx, 'input_summary') else {}
+        response["error"] = "Result not available (run may have FAILED or is still running)"
+        return response
     
     result = ctx.result  # PortfolioResult
     
@@ -308,9 +333,8 @@ async def get_run_report(run_id: str):
         kpi = result.solution.kpi
         solution_sig = f"{kpi.get('solver_arch', 'unknown')}_{result.parameters_used.path.value}_{ctx.config.seed}"
     
-    # Build response from PortfolioResult attributes
-    response = {
-        "run_id": run_id,
+    # Build full response from PortfolioResult attributes
+    response.update({
         "input_summary": ctx.input_summary,
         "features": {
             "n_tours": result.features.n_tours,
@@ -339,17 +363,9 @@ async def get_run_report(run_id: str):
             "gap_to_lb": result.gap_to_lb,
             "early_stopped": result.early_stopped,
             "early_stop_reason": result.early_stop_reason,
-        }
-    }
-    
-    # Add config snapshot if available
-    if ctx.config_snapshot:
-        response["config"] = {
-            "effective_hash": ctx.config_snapshot.config_effective_hash,
-            "overrides_applied": ctx.config_snapshot.overrides_applied,
-            "overrides_rejected": ctx.config_snapshot.overrides_rejected,
-            "overrides_clamped": ctx.config_snapshot.overrides_clamped
-        }
+        },
+        "kpi": result.solution.kpi if result.solution and result.solution.kpi else {},
+    })
     
     return response
 
@@ -427,6 +443,16 @@ async def get_run_plan(run_id: str):
             elif len(block.tours) == 3:
                 block_type_str = "triple"
             
+            # Determine pause_zone with explicit default if missing
+            p_zone = "REGULAR"
+            if hasattr(block, "pause_zone"):
+                # Handle enum or string
+                val = block.pause_zone
+                if hasattr(val, "value"):
+                    p_zone = val.value
+                else:
+                    p_zone = str(val)
+            
             output_assignments.append(AssignmentOutput(
                 driver_id=driver_asgn.driver_id,
                 driver_name=f"{driver_asgn.driver_type} {driver_asgn.driver_id}",
@@ -438,31 +464,36 @@ async def get_run_plan(run_id: str):
                     tours=tours_output,
                     driver_id=driver_asgn.driver_id,
                     total_work_hours=block.total_work_hours,
-                    span_hours=block.span_hours
+                    span_hours=block.span_hours,
+                    pause_zone=p_zone
                 )
             ))
     
     # Build stats from solution.kpi
     kpi = solution.kpi or {}
     
-    # Compute tour count from assignments
-    # input_summary.tours might be either a list of tours or a count (int)
+    # Count ACTUAL tours assigned (sum of tours across all blocks)
+    total_tours_assigned_actual = sum(
+        len(a.block.tours) for a in output_assignments
+    )
+    
+    # Get input tour count from context
     tours_value = ctx.input_summary.get("tours", 0) if hasattr(ctx, 'input_summary') else 0
-    total_tours = tours_value if isinstance(tours_value, int) else len(tours_value) if tours_value else 0
+    total_tours_input = tours_value if isinstance(tours_value, int) else len(tours_value) if tours_value else total_tours_assigned_actual
     
     # Calculate total drivers from KPI (correct keys from portfolio_controller)
     drivers_fte = kpi.get("drivers_fte", 0)
     drivers_pt = kpi.get("drivers_pt", 0)
     total_drivers = drivers_fte + drivers_pt
     
-    # Calculate assignment rate
-    assignment_rate = 1.0  # v4 assigns all tours
+    # Calculate assignment rate based on actual tours
+    assignment_rate = total_tours_assigned_actual / total_tours_input if total_tours_input > 0 else 1.0
     
     stats = StatsOutput(
         total_drivers=total_drivers,
-        total_tours_input=kpi.get("total_hours", 0) / 4.5 if kpi.get("total_hours") else len(output_assignments),  # Estimate
-        total_tours_assigned=len(output_assignments),
-        total_tours_unassigned=0,
+        total_tours_input=total_tours_input,
+        total_tours_assigned=total_tours_assigned_actual,  # FIXED: actual tour count
+        total_tours_unassigned=max(0, total_tours_input - total_tours_assigned_actual),
         block_counts={
             "1er": kpi.get("blocks_1er", 0),
             "2er": kpi.get("blocks_2er", 0),
@@ -470,7 +501,35 @@ async def get_run_plan(run_id: str):
         },
         assignment_rate=assignment_rate,
         average_driver_utilization=kpi.get("fte_hours_avg", 0.0) / 53.0 if kpi.get("fte_hours_avg") else 0.0,
-        average_work_hours=kpi.get("fte_hours_avg", 0.0)
+        average_work_hours=kpi.get("fte_hours_avg", 0.0),
+        # Driver metrics (Patch 2 - Reporting Sync)
+        drivers_fte=drivers_fte,
+        drivers_pt=drivers_pt,
+        total_hours=kpi.get("total_hours"),
+        fte_hours_avg=kpi.get("fte_hours_avg"),
+        # Packability Diagnostics
+        forced_1er_rate=kpi.get("forced_1er_rate"),
+        forced_1er_count=kpi.get("forced_1er_count"),
+        missed_3er_opps_count=kpi.get("missed_3er_opps_count"),
+        missed_2er_opps_count=kpi.get("missed_2er_opps_count"),
+        missed_multi_opps_count=kpi.get("missed_multi_opps_count"),
+        # Output Profile Info (FROM KPI, not ctx.config)
+        output_profile=kpi.get("output_profile"),
+        gap_3er_min_minutes=kpi.get("gap_3er_min_minutes"),
+        # Tour Share Metrics (computed from block counts)
+        tour_share_1er=kpi.get("blocks_1er", 0) / total_tours_assigned_actual if total_tours_assigned_actual > 0 else None,
+        tour_share_2er=(kpi.get("blocks_2er", 0) * 2) / total_tours_assigned_actual if total_tours_assigned_actual > 0 else None,
+        tour_share_3er=(kpi.get("blocks_3er", 0) * 3) / total_tours_assigned_actual if total_tours_assigned_actual > 0 else None,
+        # BEST_BALANCED two-pass metrics (FROM KPI, not block_stats)
+        D_min=kpi.get("D_min"),
+        driver_cap=kpi.get("driver_cap"),
+        day_spread=kpi.get("day_spread"),
+        # Two-pass execution proof fields
+        twopass_executed=kpi.get("twopass_executed"),
+        pass1_time_s=kpi.get("pass1_time_s"),
+        pass2_time_s=kpi.get("pass2_time_s"),
+        drivers_total_pass1=kpi.get("drivers_total_pass1"),
+        drivers_total_pass2=kpi.get("drivers_total_pass2"),
     )
     
     validation = ValidationOutput(
@@ -479,15 +538,44 @@ async def get_run_plan(run_id: str):
         warnings=[]
     )
     
+    # Patch 3: Build unassigned_tours from solution.missing_tours
+    unassigned_output = []
+    if hasattr(solution, 'missing_tours') and solution.missing_tours:
+        # Create a lookup for tours by ID
+        tour_lookup = {t.id: t for t in ctx.tours} if hasattr(ctx, 'tours') else {}
+        
+        for tid in solution.missing_tours:
+            tour = tour_lookup.get(tid)
+            if tour:
+                unassigned_output.append(UnassignedTourOutput(
+                    tour=tour_to_output(tour),
+                    reason_codes=["NO_BLOCK_CANDIDATES"],
+                    details="Kein valider Block unter Pausenregeln gefunden."
+                ))
+            else:
+                # Tour not in context - create minimal output
+                unassigned_output.append(UnassignedTourOutput(
+                    tour=TourOutput(
+                        id=tid,
+                        day="Unknown",
+                        start_time="00:00",
+                        end_time="00:00",
+                        duration_hours=0.0
+                    ),
+                    reason_codes=["NO_BLOCK_CANDIDATES", "TOUR_NOT_FOUND"],
+                    details=f"Tour {tid} konnte nicht zugeordnet werden."
+                ))
+    
     return ScheduleResponse(
         id=run_id,
         week_start=ctx.input_summary.get("week_start", "2024-01-01") if hasattr(ctx, 'input_summary') else "2024-01-01",
         assignments=output_assignments,
-        unassigned_tours=[],  # v4 assigns all tours
+        unassigned_tours=unassigned_output,  # Patch 3: From solution.missing_tours
         validation=validation,
         stats=stats,
         version="4.0",
-        solver_type="portfolio_v4"
+        solver_type="portfolio_v4",
+        schema_version="2.0"
     )
 
 

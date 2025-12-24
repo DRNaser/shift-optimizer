@@ -5,7 +5,7 @@ Pydantic schemas for FastAPI request/response models.
 """
 
 from datetime import date, time
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from src.domain.models import (
     BlockType,
@@ -101,6 +101,7 @@ class BlockOutput(BaseModel):
     driver_id: str | None
     total_work_hours: float
     span_hours: float
+    pause_zone: str = Field(..., description="Pause zone: REGULAR or SPLIT")
 
 
 class AssignmentOutput(BaseModel):
@@ -129,6 +130,40 @@ class StatsOutput(BaseModel):
     average_driver_utilization: float
     average_work_hours: float = Field(default=0.0, description="Average work hours per driver")
 
+    # Driver metrics (Patch 2 - Reporting Sync)
+    drivers_fte: int | None = Field(default=None, description="Number of FTE drivers")
+    drivers_pt: int | None = Field(default=None, description="Number of PT drivers")
+    total_hours: float | None = Field(default=None, description="Total work hours across all drivers")
+    fte_hours_avg: float | None = Field(default=None, description="Average hours per FTE driver")
+
+    # Packability Diagnostics
+    forced_1er_rate: float | None = None
+    forced_1er_count: int | None = None
+    missed_3er_opps_count: int | None = None
+    missed_2er_opps_count: int | None = None
+    missed_multi_opps_count: int | None = None
+    
+    # Output Profile Info
+    output_profile: str | None = None
+    gap_3er_min_minutes: int | None = None
+    
+    # Tour Share Metrics (by tours, not blocks)
+    tour_share_1er: float | None = None
+    tour_share_2er: float | None = None
+    tour_share_3er: float | None = None
+    
+    # BEST_BALANCED two-pass metrics
+    D_min: int | None = None  # Minimum headcount from pass 1
+    driver_cap: int | None = None  # Cap = ceil(1.05 * D_min)
+    day_spread: int | None = None  # Variance proxy (max_day - min_day)
+    
+    # Two-pass execution proof fields
+    twopass_executed: bool | None = None  # True if pass 2 ran successfully
+    pass1_time_s: float | None = None  # Pass 1 execution time
+    pass2_time_s: float | None = None  # Pass 2 execution time
+    drivers_total_pass1: int | None = None  # D_min = drivers from pass 1
+    drivers_total_pass2: int | None = None  # Drivers from pass 2 (may differ)
+
 
 class ValidationOutput(BaseModel):
     """Output schema for validation result."""
@@ -147,6 +182,7 @@ class ScheduleResponse(BaseModel):
     stats: StatsOutput
     version: str
     solver_type: str = Field(default="greedy", description="Solver used: 'greedy' or 'cpsat'")
+    schema_version: str = Field(..., description="JSON schema version for contract compliance")
 
 
 class HealthResponse(BaseModel):
@@ -168,7 +204,11 @@ class ConfigOverrides(BaseModel):
     """
     Client-provided configuration overrides.
     Only allows specific tunable fields. Locked fields are server-enforced.
+    Unknown fields are accepted but tracked in overrides_rejected.
     """
+    # Allow unknown fields to pass through (tracked in validator as rejected)
+    model_config = ConfigDict(extra="allow")
+    
     enable_fill_to_target_greedy: bool | None = None
     enable_bad_block_mix_rerun: bool | None = None
     enable_packability_costs: bool | None = None
@@ -198,12 +238,26 @@ class ConfigOverrides(BaseModel):
     # Block Generation Controls
     enable_diag_block_caps: bool | None = None
     cap_quota_2er: float | None = Field(default=None, ge=0.0, le=1.0)
+    
+    # Output Profile Selection
+    output_profile: str | None = Field(default=None, description="MIN_HEADCOUNT_3ER or BEST_BALANCED")
+    gap_3er_min_minutes: int | None = Field(default=None, ge=15, le=90)
+    cap_quota_3er: float | None = Field(default=None, ge=0.0, le=1.0)
+    pass2_min_time_s: float | None = Field(default=None, ge=1.0, description="Minimum time guarantee for Pass-2 optimization")
+
+    # DIAGNOSTIC: Solver Mode Override
+    solver_mode: str | None = Field(default=None, description="Force specific solver path: GREEDY, CPSAT, SETPART, HEURISTIC")
+    
+    # LNS ENDGAME: Low-Hour Pattern Consolidation
+    enable_lns_low_hour_consolidation: bool | None = None
+    lns_time_budget_s: float | None = Field(default=None, ge=1.0)
+    lns_low_hour_threshold_h: float | None = Field(default=None, ge=10.0)
 
 
 class RunConfig(BaseModel):
     """Run execution configuration."""
     seed: int | None = Field(default=42, description="Seed for reproducibility")
-    time_budget_seconds: float = Field(default=180.0, ge=5.0, le=600.0, description="Time budget: 120=FAST, 180=QUALITY (default), 300=PREMIUM")
+    time_budget_seconds: float = Field(default=180.0, ge=5.0, le=36000.0, description="Time budget: 120=FAST, 180=QUALITY (default), 300=PREMIUM, >3600=UNBOUNDED")
     preset_id: str = Field(default="default", description="Configuration preset")
     config_overrides: ConfigOverrides = Field(default_factory=ConfigOverrides)
 
