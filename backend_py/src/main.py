@@ -13,7 +13,6 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from src.api.routes import router
 from src.api.routes_v2 import router_v2
-from src.api.forecast_router import router as forecast_router
 
 
 # =============================================================================
@@ -81,6 +80,7 @@ if os.getenv("ENABLE_FORECAST_ROUTER", "").lower() in ("1", "true", "yes"):
         "forecast_router is deprecated and may collide with /api/v1/runs. "
         "Disable in production."
     )
+    from src.api.forecast_router import router as forecast_router
     app.include_router(forecast_router, tags=["forecast"])
 
 

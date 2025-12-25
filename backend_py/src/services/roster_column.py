@@ -10,7 +10,7 @@ Hard Constraints (checked in validate_roster):
 - Max 3 tours per day
 - Min 11h rest between consecutive working days
 - Heavy day (3 tours): 14h rest + next day max 2 tours
-- Week hours: 42h <= total_hours <= 53h
+- Week hours: total_hours <= 55h (minimum hours are treated as a soft cost)
 """
 
 from dataclasses import dataclass
@@ -20,8 +20,8 @@ import logging
 logger = logging.getLogger("RosterColumn")
 
 # Constants
-MIN_WEEK_HOURS = 42.0
-MAX_WEEK_HOURS = 56.0
+MIN_WEEK_HOURS = 40.0  # Soft target for FTE hours (penalized in objective, not hard)
+MAX_WEEK_HOURS = 55.0
 MIN_REST_MINUTES = 660  # 11h
 HEAVY_REST_MINUTES = 840  # 14h
 DAY_MINUTES = 1440  # 24h
@@ -42,7 +42,7 @@ class RosterColumn:
         is_valid: Whether roster passes all hard constraints
         violations: Tuple of violation descriptions (for debugging)
         signature: Canonical tuple for deduplication
-        roster_type: "FTE" (40-53h) or "PT" (0-40h)
+        roster_type: "FTE" (preferred) or "PT" (overflow)
     """
     roster_id: str
     block_ids: frozenset
@@ -170,7 +170,7 @@ def validate_roster_constraints(
     2. Max 3 tours per day
     3. Min 11h rest between consecutive working days
     4. Heavy day: 14h rest + next day max 2 tours
-    5. Week hours: 42-53h (or 0-53h if allow_pt=True)
+    5. Week hours: <= max hours (minimum hours handled as soft cost)
     
     Args:
         allow_pt: If True, skip minimum hours check (allow 0-40h PT rosters)
@@ -262,14 +262,9 @@ def validate_roster_constraints(
                     )
     
     # =========================================================================
-    # 5. WEEK HOURS: 42-53h (or skip min check if allow_pt)
+    # 5. WEEK HOURS: enforce max hours only (min handled in objective)
     # =========================================================================
     total_hours = total_minutes / 60.0
-    
-    if not allow_pt and total_hours < MIN_WEEK_HOURS:
-        violations.append(
-            f"Week hours {total_hours:.1f}h < min {MIN_WEEK_HOURS}h"
-        )
     
     if total_hours > MAX_WEEK_HOURS:
         violations.append(

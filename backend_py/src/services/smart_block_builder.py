@@ -62,17 +62,17 @@ def safe_print(msg: str) -> None:
 
 # Two-Zone Pause Model for Block Generation (v5)
 # Zone 1 (Regular): 30-60 min - standard consecutive tours (tight packing)
-# Zone 2 (Split):  360 min exactly - legal split-shift gap (2er only, 6h mandatory)
-# Forbidden Zone:  61-359 and 361+ min - explicitly banned
+# Zone 2 (Split):  240-360 min - legal split-shift gap (2er only)
+# Forbidden Zone:  61-239 and 361+ min - explicitly banned
 
 # Regular pause limits (Zone 1)
 MIN_PAUSE_MINUTES = HARD_CONSTRAINTS.MIN_PAUSE_BETWEEN_TOURS  # 30 min
-MAX_PAUSE_REGULAR = HARD_CONSTRAINTS.MAX_PAUSE_BETWEEN_TOURS  # 120 min
+MAX_PAUSE_REGULAR = HARD_CONSTRAINTS.MAX_PAUSE_BETWEEN_TOURS  # 60 min
 
 # Split pause limits (Zone 2)
 SPLIT_PAUSE_MIN = HARD_CONSTRAINTS.SPLIT_PAUSE_MIN   # 240 min (4h)
 SPLIT_PAUSE_MAX = HARD_CONSTRAINTS.SPLIT_PAUSE_MAX   # 360 min (6h)
-MAX_SPREAD_SPLIT = HARD_CONSTRAINTS.MAX_SPREAD_SPLIT_MINUTES  # 840 min (14h)
+MAX_SPREAD_SPLIT = HARD_CONSTRAINTS.MAX_SPREAD_SPLIT_MINUTES  # 900 min (15h)
 
 # Feature flag for split-shift generation
 ENABLE_SPLIT_SHIFTS = True  # Can be overridden via config
@@ -81,7 +81,7 @@ ENABLE_SPLIT_SHIFTS = True  # Can be overridden via config
 # Each tour retains its own Top-K per class to prevent multi-option starvation
 # Values chosen for N≈1385 tours to stay under GLOBAL_TOP_N=40k:
 # Worst case: (6+8+4+2) × 1385 = ~27,700 before dedup (safe under 40k)
-K_3ER_PER_TOUR = 6       # Top 6 3er blocks per tour
+K_3ER_PER_TOUR = 9       # Top 9 3er blocks per tour
 K_2ER_REG_PER_TOUR = 8   # Top 8 regular 2er blocks per tour  
 K_2ER_SPLIT_PER_TOUR = 4 # Top 4 split 2er blocks per tour (MUST survive pruning)
 K_1ER_PER_TOUR = 2       # Top 2 1er blocks per tour
@@ -263,12 +263,39 @@ def build_weekly_blocks_smart(
     count_1er = sum(1 for b in all_blocks if len(b.tours) == 1)
     count_2er = sum(1 for b in all_blocks if len(b.tours) == 2)
     count_3er = sum(1 for b in all_blocks if len(b.tours) == 3)
+    count_2er_regular = sum(
+        1 for b in all_blocks
+        if len(b.tours) == 2 and getattr(b, "pause_zone", "REGULAR") == "REGULAR"
+    )
+    count_2er_split = sum(
+        1 for b in all_blocks
+        if len(b.tours) == 2 and getattr(b, "pause_zone", "REGULAR") == "SPLIT"
+    )
+    per_day_3er = defaultdict(lambda: {"candidates_3er_total": 0, "unique_tours": set()})
+    for b in all_blocks:
+        if len(b.tours) == 3:
+            bucket = per_day_3er[b.day]
+            bucket["candidates_3er_total"] += 1
+            for t in b.tours:
+                bucket["unique_tours"].add(t.id)
+    for day, stats_day in per_day_3er.items():
+        safe_log(
+            f"[DIAG] {day.value if hasattr(day, 'value') else day}: "
+            f"candidates_3er_total={stats_day['candidates_3er_total']}, "
+            f"unique_tours_covered_by_3er_candidates={len(stats_day['unique_tours'])}"
+        )
+    unique_tours_covered_by_3er = sum(
+        len(stats_day["unique_tours"]) for stats_day in per_day_3er.values()
+    )
     
     safe_log(f"[SmartBuilder] Generated {len(all_blocks)} blocks in {gen_time:.2f}s")
     if enable_diag:
         safe_print(f"[DIAG] candidates_raw{{size=1}}: {count_1er}")
         safe_print(f"[DIAG] candidates_raw{{size=2}}: {count_2er}")
         safe_print(f"[DIAG] candidates_raw{{size=3}}: {count_3er}")
+        safe_print(f"[DIAG] candidates_2er_regular_total: {count_2er_regular}")
+        safe_print(f"[DIAG] candidates_2er_split_total: {count_2er_split}")
+        safe_print(f"[DIAG] unique_tours_covered_by_3er_candidates: {unique_tours_covered_by_3er}")
     
     # Step 1.5: Apply 3er gap filter for MIN_HEADCOUNT_3ER profile
     if output_profile == "MIN_HEADCOUNT_3ER":
@@ -366,6 +393,16 @@ def build_weekly_blocks_smart(
     stats["raw_1er"] = count_1er
     stats["raw_2er"] = count_2er
     stats["raw_3er"] = count_3er
+    stats["candidates_2er_regular_total"] = count_2er_regular
+    stats["candidates_2er_split_total"] = count_2er_split
+    stats["unique_tours_covered_by_3er_candidates"] = unique_tours_covered_by_3er
+    stats["candidates_3er_per_day"] = {
+        (day.value if hasattr(day, "value") else str(day)): {
+            "candidates_3er_total": values["candidates_3er_total"],
+            "unique_tours_covered_by_3er_candidates": len(values["unique_tours"]),
+        }
+        for day, values in per_day_3er.items()
+    }
     stats["candidates_3er_pre_cap"] = cap_stats.get("pre_cap_3er", 0)
     
     safe_print(f"[SmartBuilder] Final: {len(final_blocks)} blocks in {elapsed:.2f}s")
@@ -532,6 +569,55 @@ def _generate_all_blocks(tours: list[Tour], enable_splits: bool = True) -> list[
                             max_pause_minutes=max(gap1, gap2),
                             pause_zone="REGULAR"
                         ))
+
+        # 3er coverage guarantee: ensure each tour can appear as middle when possible
+        existing_triples = {
+            tuple(sorted(t.id for t in b.tours))
+            for b in all_blocks
+            if len(b.tours) == 3 and b.day == day
+        }
+
+        def tour_minutes(tour: Tour) -> int:
+            return ((tour.end_time.hour * 60 + tour.end_time.minute) -
+                    (tour.start_time.hour * 60 + tour.start_time.minute))
+
+        for mid_idx, mid in enumerate(day_tours):
+            preds = [i for i in range(len(day_tours)) if mid_idx in can_follow_regular[i]]
+            succs = can_follow_regular.get(mid_idx, [])
+            if not preds or not succs:
+                continue
+            candidates = []
+            for i in preds:
+                t1 = day_tours[i]
+                if not _span_ok([t1, mid]):
+                    continue
+                for k in succs:
+                    if k == i:
+                        continue
+                    t3 = day_tours[k]
+                    if not _span_ok([t1, mid, t3]):
+                        continue
+                    total_work = tour_minutes(t1) + tour_minutes(mid) + tour_minutes(t3)
+                    span = _calc_span([t1, mid, t3])
+                    candidates.append((total_work, span, t1, t3))
+            if not candidates:
+                continue
+            candidates.sort(key=lambda item: (-item[0], item[1], item[2].id, item[3].id))
+            for total_work, _span, t1, t3 in candidates[:K_3ER_PER_TOUR]:
+                triple_key = tuple(sorted((t1.id, mid.id, t3.id)))
+                if triple_key in existing_triples:
+                    continue
+                gap1 = _calc_gap(t1, mid)
+                gap2 = _calc_gap(mid, t3)
+                all_blocks.append(Block(
+                    id=f"B3-{t1.id}-{mid.id}-{t3.id}",
+                    day=day,
+                    tours=[t1, mid, t3],
+                    is_split=False,
+                    max_pause_minutes=max(gap1, gap2),
+                    pause_zone="REGULAR"
+                ))
+                existing_triples.add(triple_key)
     
     return all_blocks
 
@@ -751,8 +837,16 @@ def _smart_cap_with_1er_guarantee(
         # B2: Consistent split classification - use pause_zone.value consistently
         # Separate blocks by class
         blocks_3er = [sb for sb in tour_blocks if len(sb.block.tours) == 3]
-        blocks_2er_reg = [sb for sb in tour_blocks if len(sb.block.tours) == 2 and sb.block.pause_zone.value == "REGULAR"]
-        blocks_2er_split = [sb for sb in tour_blocks if len(sb.block.tours) == 2 and sb.block.pause_zone.value == "SPLIT"]
+        blocks_2er_reg = [
+            sb for sb in tour_blocks
+            if len(sb.block.tours) == 2
+            and (sb.block.pause_zone.value if hasattr(sb.block.pause_zone, "value") else sb.block.pause_zone) == "REGULAR"
+        ]
+        blocks_2er_split = [
+            sb for sb in tour_blocks
+            if len(sb.block.tours) == 2
+            and (sb.block.pause_zone.value if hasattr(sb.block.pause_zone, "value") else sb.block.pause_zone) == "SPLIT"
+        ]
         blocks_1er = [sb for sb in tour_blocks if len(sb.block.tours) == 1]
         
         # Deterministic sort: (-score, block.id) for stability

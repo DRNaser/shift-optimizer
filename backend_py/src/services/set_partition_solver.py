@@ -19,7 +19,8 @@ from time import monotonic
 from dataclasses import dataclass
 from typing import Optional
 
-from src.services.roster_column import RosterColumn, BlockInfo
+from src.services.roster_column import RosterColumn, BlockInfo, create_roster_from_blocks_pt
+from src.services.roster_column import can_add_block_to_roster
 from src.services.roster_column_generator import (
     RosterColumnGenerator, create_block_infos_from_blocks
 )
@@ -126,27 +127,130 @@ def solve_set_partitioning(
     log_fn(f"\nInitial FTE pool stats:")
     log_fn(f"  Pool size: {stats.get('size', 0)}")
     log_fn(f"  Uncovered blocks: {stats.get('uncovered_blocks', 0)}")
-    
+
     # =========================================================================
-    # STEP 2B: Generate PT columns for hard-to-cover blocks
+    # STEP 2B: FTE-ONLY RMP (PT-first gate)
+    # =========================================================================
+    log_fn("\nFTE-FIRST: Attempting RMP with FTE-only columns...")
+    fte_columns = [c for c in generator.pool.values() if getattr(c, "roster_type", "FTE") != "PT"]
+    fte_rmp_result = solve_rmp(
+        columns=fte_columns,
+        all_block_ids=all_block_ids,
+        time_limit=min(10.0, rmp_time_limit),
+        log_fn=log_fn,
+    )
+    if fte_rmp_result["status"] in ("OPTIMAL", "FEASIBLE") and not fte_rmp_result["uncovered_blocks"]:
+        log_fn(f"[FTE-FIRST] Full coverage achieved with {fte_rmp_result['num_drivers']} FTE drivers.")
+        selected = fte_rmp_result["selected_rosters"]
+        hours = [r.total_hours for r in selected]
+        return SetPartitionResult(
+            status="OK",
+            selected_rosters=selected,
+            num_drivers=len(selected),
+            total_hours=sum(hours),
+            hours_min=min(hours) if hours else 0,
+            hours_max=max(hours) if hours else 0,
+            hours_avg=sum(hours) / len(hours) if hours else 0,
+            uncovered_blocks=[],
+            pool_size=len(generator.pool),
+            rounds_used=0,
+            total_time=time.time() - start_time,
+            rmp_time=0,
+            generation_time=generation_time,
+        )
+
+    log_fn("[FTE-FIRST] Infeasible or uncovered with FTE-only pool; diagnosing gaps...")
+    relaxed_fte = solve_relaxed_rmp(
+        columns=fte_columns,
+        all_block_ids=all_block_ids,
+        time_limit=10.0,
+        log_fn=log_fn,
+    )
+    under_blocks = relaxed_fte.get("under_blocks", [])
+    log_fn(f"[FTE-FIRST] Undercovered blocks: {len(under_blocks)}")
+
+    # =========================================================================
+    # STEP 2C: Inject PT only for uncovered blocks (incremental)
     # =========================================================================
     pt_gen_start = time.time()
-    pt_count = generator.generate_pt_pool(target_size=500)
+    pt_added = 0
+    for block_id in under_blocks[:columns_per_round]:
+        col = generator.build_pt_column(block_id, max_blocks=3)
+        if col and generator.add_column(col):
+            pt_added += 1
     generation_time += time.time() - pt_gen_start
-    
+    log_fn(f"\nPT incremental pool: added {pt_added} PT columns for uncovered blocks")
+
+    if pt_added < 50:
+        # Bin-pack PT rosters before broad PT generation
+        max_pt_hours = getattr(config, "pt_max_week_hours", 30.0) if config else 30.0
+        max_pt_minutes = int(max_pt_hours * 60)
+        pt_seed_reason = ""
+        seed_ids = []
+        if under_blocks:
+            pt_seed_reason = "under_blocks"
+            seed_ids = under_blocks
+        else:
+            coverage_freq = relaxed_fte.get("coverage_freq", {})
+            rare_ids = [bid for bid, freq in coverage_freq.items() if freq <= 2]
+            if rare_ids:
+                pt_seed_reason = "rare_blocks"
+                seed_ids = rare_ids
+            else:
+                pt_seed_reason = "none"
+        seed_blocks = [b for b in block_infos if b.block_id in set(seed_ids)]
+        seed_blocks.sort(key=lambda b: (-b.work_min, b.block_id))
+        pt_bins: list[list[BlockInfo]] = []
+        seed_blocks = seed_blocks[:100]
+        for block in seed_blocks:
+            placed = False
+            for bin_blocks in pt_bins:
+                cur_minutes = sum(b.work_min for b in bin_blocks)
+                if cur_minutes + block.work_min > max_pt_minutes:
+                    continue
+                can_add, _ = can_add_block_to_roster(bin_blocks, block, cur_minutes)
+                if can_add:
+                    bin_blocks.append(block)
+                    placed = True
+                    break
+            if not placed:
+                pt_bins.append([block])
+            if len(pt_bins) >= 200:
+                break
+        pt_bin_added = 0
+        for bin_blocks in pt_bins:
+            column = create_roster_from_blocks_pt(
+                roster_id=generator._get_next_roster_id(),
+                block_infos=bin_blocks,
+            )
+            if column and generator.add_column(column):
+                pt_bin_added += 1
+        log_fn(
+            f"PT bin-pack: reason={pt_seed_reason}, seed_size={len(seed_blocks)}, "
+            f"sample={seed_ids[:5]}"
+        )
+        log_fn(f"PT bin-pack: added {pt_bin_added} packed PT columns")
+
+        pt_gen_start = time.time()
+        pt_count = generator.generate_pt_pool(target_size=500)
+        generation_time += time.time() - pt_gen_start
+        log_fn(f"PT broad pool: added {pt_count} PT columns")
+    else:
+        pt_count = pt_added
+
     stats = generator.get_pool_stats()
     log_fn(f"\nPool after PT generation:")
     log_fn(f"  Pool size: {stats.get('size', 0)} ({pt_count} PT columns)")
     log_fn(f"  Uncovered blocks: {stats.get('uncovered_blocks', 0)}")
-    
+
     # =========================================================================
-    # STEP 2C: Generate SINGLETON columns (Feasibility Net)
+    # STEP 2D: Generate SINGLETON columns (Feasibility Net)
     # One column per block with HIGH COST → ensures RMP always finds a solution
     # =========================================================================
     singleton_start = time.time()
     singleton_count = generator.generate_singleton_columns(penalty_factor=100.0)
     generation_time += time.time() - singleton_start
-    
+
     stats = generator.get_pool_stats()
     log_fn(f"\nPool after singleton fallback:")
     log_fn(f"  Pool size: {stats.get('size', 0)} (+{singleton_count} singleton)")

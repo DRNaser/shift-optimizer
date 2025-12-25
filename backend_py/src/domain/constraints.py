@@ -70,14 +70,14 @@ class HardConstraints:
     """Maximum gap between consecutive tours for REGULAR blocks (1 hour - v5 tighter packing)."""
     
     # Split-shift configuration (Two-Zone Pause Model - v5 Updated)
-    SPLIT_PAUSE_MIN: int = 360
-    """Gap for split-shift blocks (exactly 6 hours)."""
+    SPLIT_PAUSE_MIN: int = 240
+    """Minimum gap for split-shift blocks (4 hours)."""
     
     SPLIT_PAUSE_MAX: int = 360
-    """Gap for split-shift blocks (exactly 6 hours - same as MIN for exact match)."""
+    """Maximum gap for split-shift blocks (6 hours)."""
     
-    MAX_SPREAD_SPLIT_MINUTES: int = 840
-    """Maximum spread (first_start -> last_end) for split blocks (14 hours)."""
+    MAX_SPREAD_SPLIT_MINUTES: int = 900
+    """Maximum spread (first_start -> last_end) for split blocks (15 hours)."""
     
     # Note: Gaps 61-359 and 361+ are FORBIDDEN (neither regular nor split)
 
@@ -242,4 +242,3 @@ class SoftPenaltyConfig:
 
 
 SOFT_PENALTY_CONFIG: Final[SoftPenaltyConfig] = SoftPenaltyConfig()
-
