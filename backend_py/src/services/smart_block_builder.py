@@ -90,6 +90,7 @@ K_3ER_PER_TOUR = 6       # Top 6 3er blocks per tour
 K_2ER_REG_PER_TOUR = 8   # Top 8 regular 2er blocks per tour  
 K_2ER_SPLIT_PER_TOUR = 4 # Top 4 split 2er blocks per tour (MUST survive pruning)
 K_1ER_PER_TOUR = 2       # Top 2 1er blocks per tour
+K_3ER_GUARANTEE_PER_TOUR = 1  # Ensure at least 1 3er per tour when available
 GLOBAL_TOP_N = 40_000    # Global limit (increased for class diversity)
 
 # Legacy compatibility
@@ -372,12 +373,14 @@ def build_weekly_blocks_smart(
     stats["raw_2er"] = count_2er
     stats["raw_3er"] = count_3er
     stats["candidates_3er_pre_cap"] = cap_stats.get("pre_cap_3er", 0)
+    stats["missing_3er_for_tour"] = cap_stats.get("missing_3er_for_tour", 0)
     stats["reject_reasons"] = reject_stats.get("total", {})
     stats["reject_reasons_by_day"] = reject_stats.get("by_day", {})
     stats["reject_midnight_examples"] = reject_stats.get("midnight_examples", [])
     stats["reject_pruned_by_score"] = pruned_by_score
     
     safe_print(f"[SmartBuilder] Final: {len(final_blocks)} blocks in {elapsed:.2f}s")
+    safe_print(f"[SmartBuilder] missing_3er_for_tour: {cap_stats.get('missing_3er_for_tour', 0)}")
     if enable_diag:
         safe_print(f"[DIAG] candidates_3er_pre_cap: {stats['candidates_3er_pre_cap']}")
     reject_stats["total"]["reject_pruned_by_score"] = pruned_by_score
@@ -729,6 +732,7 @@ def _smart_cap_with_1er_guarantee(
         for t in sb.block.tours:
             tour_to_blocks[t.id].append(sb)
     
+    missing_3er_for_tour = 0
     # S0.4: For each tour (deterministic order), find best 1er or fallback
     for tour in sorted(tours, key=lambda t: t.id):
         tour_blocks = tour_to_blocks.get(tour.id, [])
@@ -752,6 +756,15 @@ def _smart_cap_with_1er_guarantee(
                 reason_codes.append(f"MISSING_1ER_FOR_TOUR:{tour.id}")
             else:
                 reason_codes.append(f"NO_BLOCKS_FOR_TOUR:{tour.id}")
+
+        # Guarantee: keep at least one 3er candidate per tour if available
+        threes = [sb for sb in tour_blocks if len(sb.block.tours) == 3]
+        if threes:
+            threes_sorted = sorted(threes, key=lambda sb: (-sb.score, sb.block.id))
+            for sb in threes_sorted[:K_3ER_GUARANTEE_PER_TOUR]:
+                protected_ids.add(sb.block.id)
+        else:
+            missing_3er_for_tour += 1
     
     # =========================================================================
     # B) DYNAMIC K: Scarce tours get more slots
@@ -985,6 +998,7 @@ def _smart_cap_with_1er_guarantee(
         "reason_codes": reason_codes,
         "reject_pruned_by_cap": max(0, len(dominance_kept_ids) - len(result_blocks)),
         "unknown_pause_zone": unknown_pause_zone,
+        "missing_3er_for_tour": missing_3er_for_tour,
     }
     
     return result_blocks, cap_stats
