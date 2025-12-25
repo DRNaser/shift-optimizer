@@ -26,6 +26,7 @@ import logging
 
 from src.domain.models import Block, Tour, Weekday
 from src.domain.constraints import HARD_CONSTRAINTS
+from src.services.pause_zone import normalize_pause_zone
 
 # Setup logger
 logger = logging.getLogger("SmartBlockBuilder")
@@ -841,8 +842,14 @@ def _smart_cap_with_1er_guarantee(
         # B2: Consistent split classification - use pause_zone string consistently
         # Separate blocks by class
         blocks_3er = [sb for sb in tour_blocks if len(sb.block.tours) == 3]
-        blocks_2er_reg = [sb for sb in tour_blocks if len(sb.block.tours) == 2 and sb.block.pause_zone == "REGULAR"]
-        blocks_2er_split = [sb for sb in tour_blocks if len(sb.block.tours) == 2 and sb.block.pause_zone == "SPLIT"]
+        blocks_2er_reg = [
+            sb for sb in tour_blocks
+            if len(sb.block.tours) == 2 and normalize_pause_zone(sb.block.pause_zone) == "REGULAR"
+        ]
+        blocks_2er_split = [
+            sb for sb in tour_blocks
+            if len(sb.block.tours) == 2 and normalize_pause_zone(sb.block.pause_zone) == "SPLIT"
+        ]
         blocks_1er = [sb for sb in tour_blocks if len(sb.block.tours) == 1]
         
         # Deterministic sort: (-score, block.id) for stability

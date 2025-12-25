@@ -55,6 +55,7 @@ def safe_print(*args, **kwargs):
 
 from src.domain.models import Block, Tour, Weekday
 from src.services.constraints import can_assign_block
+from src.services.pause_zone import normalize_pause_zone, pause_zone_distribution
 from src.services.smart_block_builder import (
     build_weekly_blocks_smart,
     build_block_index,
@@ -979,6 +980,35 @@ def solve_capacity_phase(
     safe_print("PHASE 1: Capacity Planning (use_block model)", flush=True)
     safe_print(f"{'='*60}", flush=True)
     safe_print(f"Blocks: {len(blocks)}, Tours: {len(tours)}", flush=True)
+
+    blocks_1er = sum(1 for b in blocks if len(b.tours) == 1)
+    blocks_2er = sum(1 for b in blocks if len(b.tours) == 2)
+    blocks_3er = sum(1 for b in blocks if len(b.tours) == 3)
+    safe_print(
+        f"Block pool sizes: 1er={blocks_1er}, 2er={blocks_2er}, 3er={blocks_3er}",
+        flush=True,
+    )
+
+    blocks_by_day = defaultdict(int)
+    for block in blocks:
+        blocks_by_day[block.day.value] += 1
+    safe_print(
+        "Blocks by day: "
+        + ", ".join(f"{day}={count}" for day, count in sorted(blocks_by_day.items())),
+        flush=True,
+    )
+
+    cover_counts = {tour.id: len(block_index.get(tour.id, [])) for tour in tours}
+    min_cover = min(cover_counts.values()) if cover_counts else 0
+    zero_cover = [tour_id for tour_id, count in cover_counts.items() if count == 0][:20]
+    safe_print(f"Coverage min blocks per tour: {min_cover}", flush=True)
+    if zero_cover:
+        safe_print(f"Coverage gaps (first 20 tours): {zero_cover}", flush=True)
+
+    zone_counter = pause_zone_distribution(block.pause_zone for block in blocks)
+    if zone_counter:
+        zone_summary = ", ".join(f"{zone}={count}" for zone, count in zone_counter.most_common(10))
+        safe_print(f"Pause zone distribution: {zone_summary}", flush=True)
     
     # ==== DAY-MIN-SOLVE: Find TRUE lower bound per peak day ====
     # This tells us if 140 FTE is even mathematically achievable
@@ -1711,8 +1741,12 @@ def _solve_capacity_single_cap(
     
     # Debug: count available types
     avail_1er = sum(1 for b in blocks if len(b.tours) == 1)
-    avail_2er_reg = sum(1 for b in blocks if len(b.tours) == 2 and b.pause_zone == "REGULAR")
-    avail_2er_split = sum(1 for b in blocks if len(b.tours) == 2 and b.pause_zone == "SPLIT")
+    avail_2er_reg = sum(
+        1 for b in blocks if len(b.tours) == 2 and normalize_pause_zone(b.pause_zone) == "REGULAR"
+    )
+    avail_2er_split = sum(
+        1 for b in blocks if len(b.tours) == 2 and normalize_pause_zone(b.pause_zone) == "SPLIT"
+    )
     avail_3er = sum(1 for b in blocks if len(b.tours) == 3)
     safe_print(f"  AVAILABLE BLOCKS: 1er={avail_1er}, 2er_REG={avail_2er_reg}, 2er_SPLIT={avail_2er_split}, 3er={avail_3er}", flush=True)
     
@@ -1741,11 +1775,11 @@ def _solve_capacity_single_cap(
     ))
     model.Add(count_2er_regular == sum(
         use[b] for b, block in enumerate(blocks) 
-        if len(block.tours) == 2 and block.pause_zone == "REGULAR"
+        if len(block.tours) == 2 and normalize_pause_zone(block.pause_zone) == "REGULAR"
     ))
     model.Add(count_2er_split == sum(
         use[b] for b, block in enumerate(blocks)
-        if len(block.tours) == 2 and block.pause_zone == "SPLIT"
+        if len(block.tours) == 2 and normalize_pause_zone(block.pause_zone) == "SPLIT"
     ))
     model.Add(count_1er == sum(
         use[b] for b, block in enumerate(blocks) if len(block.tours) == 1
@@ -2111,8 +2145,12 @@ def _solve_capacity_single_cap(
         
         # INVARIANT CHECK: Packing counts must match locked values
         actual_3er = sum(1 for b in selected if len(b.tours) == 3)
-        actual_2R = sum(1 for b in selected if len(b.tours) == 2 and b.pause_zone == "REGULAR")
-        actual_2S = sum(1 for b in selected if len(b.tours) == 2 and b.pause_zone == "SPLIT")
+        actual_2R = sum(
+            1 for b in selected if len(b.tours) == 2 and normalize_pause_zone(b.pause_zone) == "REGULAR"
+        )
+        actual_2S = sum(
+            1 for b in selected if len(b.tours) == 2 and normalize_pause_zone(b.pause_zone) == "SPLIT"
+        )
         actual_1er = sum(1 for b in selected if len(b.tours) == 1)
         
         mismatch = (
@@ -2134,8 +2172,12 @@ def _solve_capacity_single_cap(
     
     # RC1: Detailed Stats by Category
     sel_1er = sum(1 for b in selected if len(b.tours) == 1)
-    sel_2er_regular = sum(1 for b in selected if len(b.tours) == 2 and b.pause_zone == "REGULAR")
-    sel_2er_split = sum(1 for b in selected if len(b.tours) == 2 and b.pause_zone == "SPLIT")
+    sel_2er_regular = sum(
+        1 for b in selected if len(b.tours) == 2 and normalize_pause_zone(b.pause_zone) == "REGULAR"
+    )
+    sel_2er_split = sum(
+        1 for b in selected if len(b.tours) == 2 and normalize_pause_zone(b.pause_zone) == "SPLIT"
+    )
     sel_3er = sum(1 for b in selected if len(b.tours) == 3)
     sel_2er_total = sel_2er_regular + sel_2er_split
     safe_print(f"  SELECTED BLOCKS: 3er={sel_3er}, 2er_REG={sel_2er_regular}, 2er_SPLIT={sel_2er_split}, 1er={sel_1er}", flush=True)
