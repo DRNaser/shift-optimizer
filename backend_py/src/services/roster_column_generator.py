@@ -687,6 +687,41 @@ class RosterColumnGenerator:
         self.log_fn(f"Seeded {added} columns from greedy solution")
         return added
 
+    def generate_singleton_columns(self, penalty_factor: float = 100.0) -> int:
+        """
+        Generate one singleton column per block (emergency coverage).
+        
+        These columns cover exactly ONE block each and have very high cost.
+        This guarantees RMP always finds a feasible solution (worst case:
+        use all singleton columns = one driver per block).
+        
+        Note: penalty_factor is informational - actual penalty is set in solve_rmp
+        by detecting singleton columns (those with exactly 1 block).
+        
+        Args:
+            penalty_factor: Documentation only - penalty multiplier for RMP objective
+            
+        Returns:
+            Number of singleton columns added
+        """
+        self.log_fn(f"Generating singleton fallback columns (penalty={penalty_factor}x)...")
+        
+        added = 0
+        for block_info in self.block_infos:
+            # Create minimal PT column with just this one block
+            column = create_roster_from_blocks_pt(
+                roster_id=self._get_next_roster_id(),
+                block_infos=[block_info],
+            )
+            
+            if column and column.is_valid:
+                # Singleton columns are identified by num_blocks == 1 in solve_rmp
+                if self.add_column(column):
+                    added += 1
+        
+        self.log_fn(f"Singleton columns added: {added}")
+        return added
+
 
 def create_block_infos_from_blocks(blocks: list) -> list[BlockInfo]:
     """

@@ -124,6 +124,35 @@ class RunContext:
             return [e for e in self.events if e["seq"] >= start_seq]
 
 
+def _compute_drivers_total(solution) -> int:
+    """Compute drivers_total with robust fallback and logging.
+    
+    Primary: drivers_fte + drivers_pt from KPI (preferred source)
+    Fallback: Count DriverAssignment objects (each represents one unique driver)
+    """
+    kpi = solution.kpi if solution else {}
+    
+    # Primary: from KPI
+    fte = kpi.get("drivers_fte", 0) or 0
+    pt = kpi.get("drivers_pt", 0) or 0
+    primary = fte + pt
+    
+    if primary > 0:
+        return primary
+    
+    # Fallback: count DriverAssignment objects (each = one unique driver)
+    if hasattr(solution, 'assignments') and solution.assignments:
+        fallback = len(solution.assignments)
+        logger.warning(
+            f"drivers_total fallback used: {fallback} drivers "
+            f"(KPI had fte={fte}, pt={pt})"
+        )
+        return fallback
+    
+    logger.error("drivers_total: no valid source, returning 0")
+    return 0
+
+
 class RunManager:
     """Singleton run manager with cleanup policy."""
     
@@ -230,6 +259,34 @@ class RunManager:
         """Blocking execution wrapper with structured events."""
         ctx.status = RunStatus.RUNNING
         
+        # P3: Run Watchdog - enforce hard deadline
+        from time import monotonic
+        WATCHDOG_BUFFER_S = 30.0
+        run_deadline = monotonic() + time_budget + WATCHDOG_BUFFER_S
+        watchdog_triggered = [False]  # Mutable for closure
+        
+        def watchdog():
+            while monotonic() < run_deadline:
+                time.sleep(5)
+                if ctx.status in (RunStatus.COMPLETED, RunStatus.FAILED, RunStatus.CANCELLED):
+                    return  # Run finished normally
+            # Deadline exceeded
+            if ctx.status == RunStatus.RUNNING:
+                watchdog_triggered[0] = True
+                logger.warning(f"Run {ctx.run_id} exceeded hard deadline ({time_budget}s + {WATCHDOG_BUFFER_S}s buffer)")
+                ctx.status = RunStatus.FAILED
+                ctx.error = "TIMED_OUT"
+                ctx.add_event("run_completed", {
+                    "status": "TIMED_OUT",
+                    "reason_codes": ["HARD_DEADLINE_EXCEEDED"],
+                    "total_runtime_s": time_budget + WATCHDOG_BUFFER_S,
+                    "drivers_total": 0,
+                })
+        
+        # Start watchdog thread
+        watchdog_thread = threading.Thread(target=watchdog, daemon=True)
+        watchdog_thread.start()
+        
         # run_started event with config snapshot
         started_payload = {
             "seed": ctx.config.seed,
@@ -249,21 +306,30 @@ class RunManager:
 
         # Log listener with rate limiting
         def log_fn(msg: str):
-            # Detect phase from log content
+            # Detect phase from log content (case-insensitive)
             phase = current_phase[0]
-            if "Phase 1" in msg or "BUILD" in msg: 
-                phase = "PHASE1_CAPACITY"
+            normalized = msg.upper()
+            if "PHASE 1" in normalized or "INSTANCE PROFILING" in normalized:
+                phase = "PROFILING"
                 current_phase[0] = phase
-            elif "Phase 2" in msg or "ASSIGN" in msg: 
-                phase = "PHASE2_ASSIGNMENT"
+            elif "PHASE 3" in normalized or "BLOCK SELECTION" in normalized or "CAPACITY PLANNING" in normalized:
+                phase = "BLOCK_SELECTION"
                 current_phase[0] = phase
-            elif "LNS" in msg: 
-                phase = "LNS"
+            elif "PHASE 4" in normalized or "EXECUTING PATH" in normalized or "SET-PARTITIONING" in normalized:
+                phase = "SOLVER_EXECUTION"
                 current_phase[0] = phase
-            elif "Repair" in msg: 
+            elif normalized.startswith("LNS ") or normalized.startswith("LNS:"):
+                if any(
+                    token in normalized
+                    for token in ("PROCESSING", "ENDGAME", "REFINEMENT")
+                ):
+                    if current_phase[0] in ("SOLVER_EXECUTION", "LNS"):
+                        phase = "LNS"
+                        current_phase[0] = phase
+            elif "REPAIR" in normalized:
                 phase = "REPAIR"
                 current_phase[0] = phase
-                
+
             # Rate-limited log
             ctx.add_log_event(msg, phase=phase)
 
@@ -293,17 +359,11 @@ class RunManager:
                 "solution_signature": solution_sig,
                 "reason_codes": sorted(result.reason_codes) if result.reason_codes else [],
                 "total_runtime_s": result.total_runtime_s,
-                # FIX: Compute drivers_total correctly from FTE + PT
+                # Driver counts from KPI
                 "drivers_fte": result.solution.kpi.get("drivers_fte", 0) if result.solution.kpi else 0,
                 "drivers_pt": result.solution.kpi.get("drivers_pt", 0) if result.solution.kpi else 0,
-                "drivers_total": (
-                    # Primary: Sum of FTE + PT
-                    (result.solution.kpi.get("drivers_fte", 0) + result.solution.kpi.get("drivers_pt", 0))
-                    if result.solution.kpi and (result.solution.kpi.get("drivers_fte", 0) + result.solution.kpi.get("drivers_pt", 0)) > 0
-                    # Fallback: Count assignments
-                    else len(result.solution.assignments) if hasattr(result.solution, 'assignments') and result.solution.assignments
-                    else 0
-                ),
+                # Use helper for robust drivers_total with fallback logging
+                "drivers_total": _compute_drivers_total(result.solution),
             }
             ctx.add_event("run_completed", completed_payload)
 

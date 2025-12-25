@@ -7,6 +7,7 @@ This is the production API server.
 """
 
 import os
+import logging
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -72,7 +73,20 @@ app.add_middleware(
 
 app.include_router(router, prefix="/api/v1", tags=["scheduling"])
 app.include_router(router_v2, prefix="/api/v1", tags=["v2-runs"])
-app.include_router(forecast_router, tags=["forecast"])
+
+# Deprecated: forecast_router conflicts with v2 /runs endpoints.
+# To re-enable for local debugging, set ENABLE_FORECAST_ROUTER=true.
+if os.getenv("ENABLE_FORECAST_ROUTER", "").lower() in ("1", "true", "yes"):
+    logging.getLogger(__name__).warning(
+        "forecast_router is deprecated and may collide with /api/v1/runs. "
+        "Disable in production."
+    )
+    app.include_router(forecast_router, tags=["forecast"])
+
+
+@app.on_event("startup")
+async def startup_event():
+    print("MATCHING_LOG: Using routes_v2 as canonical source", flush=True)
 
 
 # =============================================================================
@@ -97,5 +111,7 @@ async def root():
 
 if __name__ == "__main__":
     import uvicorn
+    # Log startup explicitly for verification
+    print("Starting ShiftOptimizer API (RC0 Mode: routes_v2 canonical)...", flush=True)
     uvicorn.run(app, host="0.0.0.0", port=8000)
     # Force reload trigger

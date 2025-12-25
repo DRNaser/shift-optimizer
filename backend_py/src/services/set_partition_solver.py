@@ -139,6 +139,19 @@ def solve_set_partitioning(
     log_fn(f"  Pool size: {stats.get('size', 0)} ({pt_count} PT columns)")
     log_fn(f"  Uncovered blocks: {stats.get('uncovered_blocks', 0)}")
     
+    # =========================================================================
+    # STEP 2C: Generate SINGLETON columns (Feasibility Net)
+    # One column per block with HIGH COST → ensures RMP always finds a solution
+    # =========================================================================
+    singleton_start = time.time()
+    singleton_count = generator.generate_singleton_columns(penalty_factor=100.0)
+    generation_time += time.time() - singleton_start
+    
+    stats = generator.get_pool_stats()
+    log_fn(f"\nPool after singleton fallback:")
+    log_fn(f"  Pool size: {stats.get('size', 0)} (+{singleton_count} singleton)")
+    log_fn(f"  Uncovered blocks: {stats.get('uncovered_blocks', 0)}")
+    
     if stats.get('size', 0) == 0:
         log_fn("ERROR: Could not generate any valid columns!")
         return SetPartitionResult(
@@ -409,6 +422,24 @@ def solve_set_partitioning(
     # Seed the pool with greedy columns
     seeded = generator.seed_from_greedy(greedy_assignments)
     log_fn(f"Seeded {seeded} columns from greedy solution")
+    
+    # =========================================================================
+    # P1: SEEDING SANITY CHECK
+    # Verify that seeded columns actually cover all blocks
+    # =========================================================================
+    seeded_coverage = set()
+    for col in generator.pool.values():
+        seeded_coverage.update(col.block_ids)
+    
+    under_blocks = all_block_ids - seeded_coverage
+    if under_blocks:
+        log_fn(f"WARNING: Seeding gap! {len(under_blocks)} blocks uncovered after seeding")
+        log_fn(f"  Missing block IDs: {list(under_blocks)[:10]}...")
+        # Trigger targeted repair for missing blocks
+        repair_cols = generator.targeted_repair(list(under_blocks), max_attempts=len(under_blocks) * 2)
+        log_fn(f"  Targeted repair added {len(repair_cols)} columns")
+    else:
+        log_fn("Seeding sanity check: OK (all blocks covered)")
     
     # NOTE: RMP retry disabled - goes straight to greedy fallback in caller
     # (The 120s RMP retry rarely succeeds and wastes time)
