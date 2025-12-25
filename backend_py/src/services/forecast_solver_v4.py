@@ -2061,9 +2061,9 @@ def _solve_capacity_single_cap(
     safe_print(f"  PRE-FLIGHT PASSED (model valid)", flush=True)
     
     # =========================================================================
-    # STAGE 3: MAXIMIZE count_2er_split (with 3er, 2R fixed)
+    # STAGE 3: MAXIMIZE count_2er_split (with 3er, 2R fixed) - hint only
     # =========================================================================
-    safe_print(f"\n  --- STAGE 3: MAXIMIZE count_2er_split ---", flush=True)
+    safe_print(f"\n  --- STAGE 3: MAXIMIZE count_2er_split (hints only) ---", flush=True)
     model.Maximize(count_2er_split)
     
     solver_s3 = cp_model.CpSolver()
@@ -2077,29 +2077,35 @@ def _solve_capacity_single_cap(
         safe_print(f"  STAGE 3: OPTIMAL", flush=True)
         best_count_2er_split = solver_s3.Value(count_2er_split)
         safe_print(f"  STAGE 3 RESULT: count_2er_split = {int(best_count_2er_split)}", flush=True)
-        model.Add(count_2er_split == int(best_count_2er_split))
         reset_hints_from_solver(model, use, solver_s3)
         stage3_solver_for_fallback = solver_s3
     elif status_s3 == cp_model.FEASIBLE:
         safe_print(f"  STAGE 3: FEASIBLE (not proven optimal)", flush=True)
         best_count_2er_split = solver_s3.Value(count_2er_split)
         safe_print(f"  STAGE 3 RESULT: count_2er_split = {int(best_count_2er_split)}", flush=True)
-        model.Add(count_2er_split >= int(best_count_2er_split))
         reset_hints_from_solver(model, use, solver_s3)
         stage3_solver_for_fallback = solver_s3
     else:
         safe_print(f"  STAGE 3 FAILED: {status_str(status_s3)} (using Stage 2 fallback)", flush=True)
         best_count_2er_split = stage2_solver_for_fallback.Value(count_2er_split)
         safe_print(f"  STAGE 3 FALLBACK: count_2er_split = {int(best_count_2er_split)}", flush=True)
-        model.Add(count_2er_split >= int(best_count_2er_split))
         reset_hints_from_solver(model, use, stage2_solver_for_fallback)
         stage3_solver_for_fallback = stage2_solver_for_fallback
     
     # =========================================================================
-    # STAGE 4: MINIMIZE count_1er (with all multi-counts fixed)
+    # STAGE 4: LEXICOGRAPHIC MINIMIZE (1er -> 2er_split -> total_blocks)
     # =========================================================================
-    safe_print(f"\n  --- STAGE 4: MINIMIZE count_1er ---", flush=True)
-    model.Minimize(count_1er)
+    safe_print(f"\n  --- STAGE 4: LEXICOGRAPHIC MINIMIZE (1er, 2er_split, total_blocks) ---", flush=True)
+    total_blocks = sum(use[b] for b in range(len(blocks)))
+    W_1ER = 1_000_000
+    W_2S = 1_000
+    W_TB = 1
+    stage4_objective = (W_1ER * count_1er) + (W_2S * count_2er_split) + (W_TB * total_blocks)
+    safe_print(
+        f"  STAGE 4 OBJ: {W_1ER}*count_1er + {W_2S}*count_2er_split + {W_TB}*total_blocks",
+        flush=True
+    )
+    model.Minimize(stage4_objective)
     
     solver_s4 = cp_model.CpSolver()
     solver_s4.parameters.max_time_in_seconds = stage_budgets[4]
@@ -2111,24 +2117,54 @@ def _solve_capacity_single_cap(
     if status_s4 == cp_model.OPTIMAL:
         safe_print(f"  STAGE 4: OPTIMAL", flush=True)
         best_count_1er = solver_s4.Value(count_1er)
-        safe_print(f"  STAGE 4 RESULT: count_1er = {int(best_count_1er)}", flush=True)
+        best_count_2er_split = solver_s4.Value(count_2er_split)
+        best_total_blocks = solver_s4.Value(total_blocks)
+        safe_print(
+            "  STAGE 4 RESULT: "
+            f"count_1er = {int(best_count_1er)}, "
+            f"count_2er_split = {int(best_count_2er_split)}, "
+            f"total_blocks = {int(best_total_blocks)}",
+            flush=True,
+        )
         model.Add(count_1er == int(best_count_1er))
+        model.Add(count_2er_split == int(best_count_2er_split))
+        model.Add(total_blocks == int(best_total_blocks))
         stage4_solution = [solver_s4.Value(use[b]) for b in range(len(blocks))]
         reset_hints_from_solver(model, use, solver_s4)
         stage4_solver_for_fallback = solver_s4
     elif status_s4 == cp_model.FEASIBLE:
         safe_print(f"  STAGE 4: FEASIBLE (not proven optimal)", flush=True)
         best_count_1er = solver_s4.Value(count_1er)
-        safe_print(f"  STAGE 4 RESULT: count_1er = {int(best_count_1er)}", flush=True)
+        best_count_2er_split = solver_s4.Value(count_2er_split)
+        best_total_blocks = solver_s4.Value(total_blocks)
+        safe_print(
+            "  STAGE 4 RESULT: "
+            f"count_1er = {int(best_count_1er)}, "
+            f"count_2er_split = {int(best_count_2er_split)}, "
+            f"total_blocks = {int(best_total_blocks)}",
+            flush=True,
+        )
         model.Add(count_1er == int(best_count_1er))
+        model.Add(count_2er_split == int(best_count_2er_split))
+        model.Add(total_blocks == int(best_total_blocks))
         stage4_solution = [solver_s4.Value(use[b]) for b in range(len(blocks))]
         reset_hints_from_solver(model, use, solver_s4)
         stage4_solver_for_fallback = solver_s4
     else:
         safe_print(f"  STAGE 4 FAILED: {status_str(status_s4)} (using Stage 3 fallback)", flush=True)
         best_count_1er = stage3_solver_for_fallback.Value(count_1er)
-        safe_print(f"  STAGE 4 FALLBACK: count_1er = {int(best_count_1er)}", flush=True)
+        best_count_2er_split = stage3_solver_for_fallback.Value(count_2er_split)
+        best_total_blocks = stage3_solver_for_fallback.Value(total_blocks)
+        safe_print(
+            "  STAGE 4 FALLBACK: "
+            f"count_1er = {int(best_count_1er)}, "
+            f"count_2er_split = {int(best_count_2er_split)}, "
+            f"total_blocks = {int(best_total_blocks)}",
+            flush=True,
+        )
         model.Add(count_1er == int(best_count_1er))
+        model.Add(count_2er_split == int(best_count_2er_split))
+        model.Add(total_blocks == int(best_total_blocks))
         stage4_solution = [stage3_solver_for_fallback.Value(use[b]) for b in range(len(blocks))]
         reset_hints_from_solver(model, use, stage3_solver_for_fallback)
         stage4_solver_for_fallback = stage3_solver_for_fallback
@@ -2148,7 +2184,6 @@ def _solve_capacity_single_cap(
     
     # Build secondary objective components
     # Already have: max_day, day_slack from model construction
-    total_blocks = sum(use[b] for b in range(len(blocks)))
     total_slack = sum(day_slack[d] for d in days)
     
     # Score component (higher is better, so negate)
@@ -2396,6 +2431,11 @@ def _solve_capacity_single_cap(
 
     safe_print(f"FORCED 1er TOURS: {len(forced_1er_tours)} (No multi-block option available in pool)", flush=True)
     safe_print(f"MISSED 3er OPPS: {len(missed_3er_tours)} (Assigned 1er, but 3er option existed)", flush=True)
+    extra_1er = max(0, by_type["1er"] - len(forced_1er_tours))
+    safe_print(
+        f"EXCESS 1er vs forced: {extra_1er} (selected 1er={by_type['1er']}, forced={len(forced_1er_tours)})",
+        flush=True
+    )
     if missed_3er_tours:
         safe_print(f"  Example missed opps: {missed_3er_tours[:10]}...", flush=True)
 

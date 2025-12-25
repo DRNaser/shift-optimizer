@@ -866,6 +866,14 @@ def _execute_path(
             if sp_result.status == "OK":
                 block_lookup = {b.id: b for b in selected_blocks}
                 assignments = convert_rosters_to_assignments(sp_result.selected_rosters, block_lookup)
+                if any(a.driver_type == "PT" for a in assignments):
+                    assignments, repair_stats = rebalance_to_min_fte_hours(assignments, 40.0, 53.0)
+                    log_fn(
+                        "SP repair: moved FTE→FTE="
+                        f"{repair_stats.get('moved_blocks_fte_fte', 0)}, "
+                        "PT→FTE="
+                        f"{repair_stats.get('moved_blocks_pt_fte', 0)}"
+                    )
                 total_hours = sum(b.total_work_hours for b in selected_blocks)
                 hours_based_cap = math.ceil(total_hours / config.min_hours_per_fte) + 70
                 target_based_cap = config.target_ftes + config.fte_overflow_cap + 25
