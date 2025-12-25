@@ -127,8 +127,12 @@ def solve_stage0_3er(blocks_3er: list[Any], time_limit: float) -> dict[str, Any]
 
     status = solver.Solve(model)
     greedy_obj = len(greedy_selection)
-    obj = int(solver.ObjectiveValue()) if status in (cp_model.OPTIMAL, cp_model.FEASIBLE) else greedy_obj
-    bound = int(solver.BestObjectiveBound()) if status in (cp_model.OPTIMAL, cp_model.FEASIBLE) else int(solver.BestObjectiveBound())
+    if status in (cp_model.OPTIMAL, cp_model.FEASIBLE):
+        obj = int(solver.ObjectiveValue())
+        bound = int(solver.BestObjectiveBound())
+    else:
+        obj = greedy_obj
+        bound = int(solver.BestObjectiveBound())
 
     gap = 0.0
     if bound > 0:
@@ -213,7 +217,7 @@ def build_variants() -> list[dict[str, Any]]:
         },
         {
             "id": "V5",
-            "label": "max_gap_90_span_16h_split_960_gap360",
+            "label": "max_gap_90_span_16h_split_960_gap300_420",
             "overrides": BlockGenOverrides(
                 max_pause_regular=90,
                 max_daily_span_hours=16.0,

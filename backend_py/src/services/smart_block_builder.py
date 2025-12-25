@@ -251,6 +251,7 @@ def build_weekly_blocks_smart(
     gap_3er_min_minutes: int = 30,  # Min gap for 3er in MIN_HEADCOUNT_3ER
     cap_quota_3er: float = 0.25,  # 3er quota for MIN_HEADCOUNT_3ER
     block_gen_overrides: BlockGenOverrides | None = None,
+    hot_tour_penalty_alpha: int = 0,  # 0=off, typical start: 3..10
 ) -> tuple[list[Block], dict]:
     """
     Build blocks with manual-like quality using learned policy.
@@ -298,10 +299,18 @@ def build_weekly_blocks_smart(
         if enable_diag:
             new_3er = sum(1 for b in all_blocks if len(b.tours) == 3)
             safe_print(f"[DIAG] candidates_3er_after_gap_filter: {new_3er}")
-    
+
+    deg3_map, deg3_p95 = _compute_deg3_map(all_blocks)
+
     # Step 2: Score blocks using policy
     safe_print("[SmartBuilder] Step 2: Scoring blocks with policy...")
-    scored = _score_all_blocks(all_blocks, policy)
+    scored = _score_all_blocks(
+        all_blocks,
+        policy,
+        deg3_map=deg3_map,
+        deg3_p95=deg3_p95,
+        hot_tour_penalty_alpha=hot_tour_penalty_alpha,
+    )
     safe_print(f"[SmartBuilder] Scored {len(scored)} blocks")
     
     # Step 3: Dedupe
@@ -386,7 +395,13 @@ def build_weekly_blocks_smart(
 
 
 # Renamed and adapted from _score_all_blocks to score a single block
-def _score_single_block(block: Block, policy: ManualPolicy) -> ScoredBlock:
+def _score_single_block(
+    block: Block,
+    policy: ManualPolicy,
+    deg3_map: dict[str, int] | None = None,
+    deg3_p95: int = 1,
+    hot_tour_penalty_alpha: int = 0,
+) -> ScoredBlock:
     """Score a single block based on policy and assign combi-prio rank."""
     n = len(block.tours)
     score = 0.0
@@ -442,6 +457,13 @@ def _score_single_block(block: Block, policy: ManualPolicy) -> ScoredBlock:
     # Long span penalty
     if block.total_work_hours > 12:
         score += PENALTY_LONG_SPAN
+
+    # Anti-overlap penalty (3er only)
+    if hot_tour_penalty_alpha > 0 and len(block.tours) == 3 and deg3_map is not None:
+        penalty = 0
+        for t in block.tours:
+            penalty += _hotness_bucket(deg3_map.get(t.id, 0), deg3_p95)
+        score -= hot_tour_penalty_alpha * penalty
         
     # Hash for dedupe
     tour_ids = tuple(sorted(t.id for t in block.tours))
@@ -651,7 +673,13 @@ def _get_block_template(block: Block) -> str:
 
 
 # This function is now replaced by _score_single_block and inlined generation
-def _score_all_blocks(blocks: list[Block], policy: ManualPolicy) -> list[ScoredBlock]:
+def _score_all_blocks(
+    blocks: list[Block],
+    policy: ManualPolicy,
+    deg3_map: dict[str, int] | None = None,
+    deg3_p95: int = 1,
+    hot_tour_penalty_alpha: int = 0,
+) -> list[ScoredBlock]:
     """
     This function is deprecated by the new inlined generation and _score_single_block.
     It's kept for compatibility if other parts of the code still call it,
@@ -659,7 +687,15 @@ def _score_all_blocks(blocks: list[Block], policy: ManualPolicy) -> list[ScoredB
     """
     scored = []
     for block in blocks:
-        scored.append(_score_single_block(block, policy))
+        scored.append(
+            _score_single_block(
+                block,
+                policy,
+                deg3_map=deg3_map,
+                deg3_p95=deg3_p95,
+                hot_tour_penalty_alpha=hot_tour_penalty_alpha,
+            )
+        )
     return scored
 
 
@@ -673,6 +709,42 @@ def _max_gap_in_block(block: Block) -> int:
         gap = start_mins - end_mins
         max_gap = max(max_gap, gap)
     return max_gap
+
+
+def _percentile_int(values: list[int], pct: float) -> int:
+    if not values:
+        return 0
+    values_sorted = sorted(values)
+    idx = int(round((len(values_sorted) - 1) * pct))
+    return values_sorted[idx]
+
+
+def _compute_deg3_map(blocks: list[Block]) -> tuple[dict[str, int], int]:
+    """deg3 per tour_id based on 3er candidates only + p95 over deg>0."""
+    deg3: dict[str, int] = defaultdict(int)
+    for b in blocks:
+        if len(b.tours) != 3:
+            continue
+        for t in b.tours:
+            deg3[t.id] += 1
+    vals = [v for v in deg3.values() if v > 0]
+    p95 = _percentile_int(vals, 0.95) if vals else 1
+    if p95 <= 0:
+        p95 = 1
+    return dict(deg3), p95
+
+
+def _hotness_bucket(deg: int, p95: int) -> int:
+    """0..3 bucket for hotness scaling."""
+    if p95 <= 0:
+        return 0
+    if deg >= 3 * p95:
+        return 3
+    if deg >= 2 * p95:
+        return 2
+    if deg >= 1 * p95:
+        return 1
+    return 0
 
 
 def _dedupe_blocks(scored: list[ScoredBlock]) -> list[ScoredBlock]:
