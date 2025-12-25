@@ -290,8 +290,9 @@ class RunManager:
                     token in normalized
                     for token in ("PROCESSING", "ENDGAME", "REFINEMENT")
                 ):
-                    phase = "LNS"
-                    current_phase[0] = phase
+                    if current_phase[0] in ("PHASE2_ASSIGNMENT", "LNS"):
+                        phase = "LNS"
+                        current_phase[0] = phase
             elif "REPAIR" in normalized:
                 phase = "REPAIR"
                 current_phase[0] = phase
