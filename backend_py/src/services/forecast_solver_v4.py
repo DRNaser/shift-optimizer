@@ -164,6 +164,90 @@ class ConfigV4(NamedTuple):
     lns_attempt_budget_s: float = 2.0                # Budget per single kill attempt
     lns_max_attempts: int = 30                       # Maximum kill attempts
 
+    # =========================================================================
+    # DEBUG: CONSTRAINT FAMILY TOGGLES (Phase 1)
+    # =========================================================================
+    debug_disable_coverage: bool = False
+    debug_disable_day_caps: bool = False
+    debug_disable_headcount_lock: bool = False
+
+
+# =============================================================================
+# COVERAGE AUDIT + FEASIBILITY NET
+# =============================================================================
+
+def audit_coverage(tours: list[Tour], blocks: list[Block]) -> dict:
+    """Audit coverage: per-tour candidate counts and missing tours."""
+    tour_counts = defaultdict(int)
+    for block in blocks:
+        for tour in block.tours:
+            tour_counts[tour.id] += 1
+
+    zero_tours = [t for t in tours if tour_counts.get(t.id, 0) == 0]
+    min_candidates = min(tour_counts.values()) if tour_counts else 0
+    samples = [
+        {
+            "id": t.id,
+            "day": t.day.value,
+            "start": t.start_time.strftime("%H:%M"),
+            "end": t.end_time.strftime("%H:%M"),
+        }
+        for t in zero_tours[:5]
+    ]
+
+    safe_print(
+        f"[AUDIT] min_candidates_per_tour={min_candidates} "
+        f"tours_with_zero_candidates={len(zero_tours)}",
+        flush=True,
+    )
+    if zero_tours:
+        safe_print(f"[AUDIT] zero-candidate samples={samples}", flush=True)
+
+    return {
+        "min_candidates_per_tour": min_candidates,
+        "tours_with_zero_candidates": len(zero_tours),
+        "zero_tours": [t.id for t in zero_tours],
+        "samples": samples,
+    }
+
+
+def ensure_singletons_for_all_tours(
+    tours: list[Tour],
+    blocks: list[Block],
+) -> tuple[list[Block], list[Block]]:
+    """Ensure at least one singleton block per tour (feasibility net)."""
+    blocks_by_tour = defaultdict(list)
+    existing_ids = {b.id for b in blocks}
+    for block in blocks:
+        for tour in block.tours:
+            blocks_by_tour[tour.id].append(block)
+
+    injected: list[Block] = []
+    for tour in tours:
+        has_singleton = any(
+            len(block.tours) == 1 for block in blocks_by_tour.get(tour.id, [])
+        )
+        if has_singleton:
+            continue
+
+        block_id = f"B1-{tour.id}"
+        if block_id in existing_ids:
+            block_id = f"B1-AUTO-{tour.id}"
+        injected_block = Block(
+            id=block_id,
+            day=tour.day,
+            tours=[tour],
+            is_split=False,
+            max_pause_minutes=0,
+            pause_zone="REGULAR",
+        )
+        injected.append(injected_block)
+        existing_ids.add(block_id)
+
+    if injected:
+        safe_print(f"[AUTO_HEAL] Injected {len(injected)} singleton blocks", flush=True)
+    return blocks + injected, injected
+
 
 # =============================================================================
 # RESULT MODELS
@@ -945,9 +1029,20 @@ def prune_blocks_tour_aware(blocks: list[Block], tours: list[Tour], config: Conf
         # S0.1: Stable sort with id tie-break
         other_blocks.sort(key=lambda b: (-b.total_work_minutes, b.id))
         # Cap non-protected blocks, keep all protected
-        cap_room = config.max_blocks - len(protected_blocks)
-        kept_blocks = protected_blocks + other_blocks[:cap_room]
-        safe_print(f"  S0.4: Kept {len(protected_blocks)} protected + {min(len(other_blocks), cap_room)} others", flush=True)
+        if len(protected_blocks) >= config.max_blocks:
+            safe_print(
+                f"  S0.4: Protected blocks ({len(protected_blocks)}) exceed cap; "
+                "keeping all protected to preserve coverage.",
+                flush=True,
+            )
+            kept_blocks = protected_blocks
+        else:
+            cap_room = config.max_blocks - len(protected_blocks)
+            kept_blocks = protected_blocks + other_blocks[:cap_room]
+            safe_print(
+                f"  S0.4: Kept {len(protected_blocks)} protected + {min(len(other_blocks), cap_room)} others",
+                flush=True,
+            )
         
     return kept_blocks
 
@@ -1444,31 +1539,34 @@ def _solve_capacity_single_cap(
     # Patch 3: Collect missing tours instead of crashing
     missing_tours = []
     
-    for tour in tours:
-        blocks_with_tour = block_index.get(tour.id, [])
-        if not blocks_with_tour:
-            # Patch 3: Don't crash - collect and continue
-            safe_print(f"  [WARN] Tour {tour.id} has no blocks in pool - marking as missing", flush=True)
-            missing_tours.append(tour.id)
-            continue
-        
-        # Use the pre-built block_index for O(1) lookup instead of scanning all blocks
-        block_indices = []
-        for block in blocks_with_tour:
-            b_idx = block_id_to_idx.get(block.id)
-            if b_idx is not None:
-                block_indices.append(b_idx)
+    if config.debug_disable_coverage:
+        safe_print("  [DEBUG] Coverage constraints disabled", flush=True)
+    else:
+        for tour in tours:
+            blocks_with_tour = block_index.get(tour.id, [])
+            if not blocks_with_tour:
+                # Patch 3: Don't crash - collect and continue
+                safe_print(f"  [WARN] Tour {tour.id} has no blocks in pool - marking as missing", flush=True)
+                missing_tours.append(tour.id)
+                continue
+            
+            # Use the pre-built block_index for O(1) lookup instead of scanning all blocks
+            block_indices = []
+            for block in blocks_with_tour:
+                b_idx = block_id_to_idx.get(block.id)
+                if b_idx is not None:
+                    block_indices.append(b_idx)
 
-        if not block_indices:
-            # Patch 3: Don't crash - collect and continue
-            safe_print(f"  [WARN] Tour {tour.id} has no indexed blocks - marking as missing", flush=True)
-            missing_tours.append(tour.id)
-            continue
-        
-        model.Add(sum(use[b] for b in block_indices) == 1)
+            if not block_indices:
+                # Patch 3: Don't crash - collect and continue
+                safe_print(f"  [WARN] Tour {tour.id} has no indexed blocks - marking as missing", flush=True)
+                missing_tours.append(tour.id)
+                continue
+            
+            model.Add(sum(use[b] for b in block_indices) == 1)
     
     # Patch 3: If any tours are missing, return INFEASIBLE immediately
-    if missing_tours:
+    if missing_tours and not config.debug_disable_coverage:
         safe_print(f"  [ERROR] {len(missing_tours)} tours cannot be covered: {missing_tours}", flush=True)
         return None, {"status": "INFEASIBLE", "missing_tours": missing_tours}
     
@@ -1638,15 +1736,14 @@ def _solve_capacity_single_cap(
     for day_val in days:
         day_count[day_val] = model.NewIntVar(0, 5000, f"day_count_{day_val}")
         model.Add(day_count[day_val] == sum(use[b] for b in blocks_by_day[day_val]))
+        if config.debug_disable_day_caps:
+            day_slack[day_val] = model.NewIntVar(0, 0, f"day_slack_{day_val}")
+            continue
         day_slack[day_val] = model.NewIntVar(0, 500, f"day_slack_{day_val}")
-        
+        # SOFT cap for all days (slack penalized in objective)
+        model.Add(day_count[day_val] <= DAY_CAP + day_slack[day_val])
         if day_val in PEAK_DAYS:
-            # HARD CONSTRAINT for peak days: No slack!
-            model.Add(day_count[day_val] <= DAY_CAP)
-            safe_print(f"    {day_val}: HARD cap at {DAY_CAP}", flush=True)
-        else:
-            # SOFT cap for other days (slack penalized in objective)
-            model.Add(day_count[day_val] <= DAY_CAP + day_slack[day_val])
+            safe_print(f"    {day_val}: SOFT cap at {DAY_CAP} (slack allowed)", flush=True)
     
     # Max day variable (bottleneck variable)
     max_day = model.NewIntVar(0, 5000, "max_day")
@@ -1811,7 +1908,9 @@ def _solve_capacity_single_cap(
     # v5: Lock headcount for Pass 2
     # If Pass 1 was OPTIMAL, use strict equality (==)
     # If Pass 1 was only FEASIBLE, use fail-open (<=) to avoid artificial infeasibility
-    if pass1_is_optimal:
+    if config.debug_disable_headcount_lock:
+        safe_print("  [DEBUG] Headcount lock disabled", flush=True)
+    elif pass1_is_optimal:
         model.Add(max_day == headcount_pass1)
         safe_print(f"  HEADCOUNT LOCK: max_day == {headcount_pass1} (strict, pass1 was OPTIMAL)", flush=True)
     else:
@@ -2105,9 +2204,11 @@ def _solve_capacity_single_cap(
         # Use stage4_solution directly
         selected = [blocks[b] for b in range(len(blocks)) if stage4_solution[b] == 1]
         safe_print(f"  Using Stage 4 solution (Stage 5 failed)", flush=True)
+        slack_values = {d: solver_s4.Value(day_slack[d]) for d in days}
     else:
         # Use final_solver (Stage 5)
         selected = [blocks[b] for b in range(len(blocks)) if final_solver.Value(use[b]) == 1]
+        slack_values = {d: final_solver.Value(day_slack[d]) for d in days}
         
         # INVARIANT CHECK: Packing counts must match locked values
         actual_3er = sum(1 for b in selected if len(b.tours) == 3)
@@ -2202,10 +2303,14 @@ def _solve_capacity_single_cap(
         "block_mix": block_mix,
         "split_2er_count": split_2er_count,
         "template_match_count": template_match_count,
+        "day_cap_slack": slack_values,
     }
     
     # RC1: Merge pack_telemetry into stats
     stats.update(pack_telemetry)
+    if any(value > 0 for value in slack_values.values()):
+        stats.setdefault("reason_codes", [])
+        stats["reason_codes"].append("CAP_SLACK_USED")
     
     safe_print(f"Selected {len(selected)} blocks: {by_type}")
     safe_print(f"Block mix: 1er={block_mix['1er']*100:.1f}%, 2er={block_mix['2er']*100:.1f}%, 3er={block_mix['3er']*100:.1f}%")
@@ -3003,8 +3108,8 @@ def solve_forecast_v4(
     safe_print(f"PHASE A: Block building done in {block_time:.2f}s, generated {len(blocks)} blocks", flush=True)
     
     # Extract scores from block_stats
-    block_scores = block_stats.get("block_scores", {})
-    block_props = block_stats.get("block_props", {})
+    block_scores = block_stats.get("block_scores", {}) or {}
+    block_props = block_stats.get("block_props", {}) or {}
     
     # Block pruning: sort deterministically and limit to max_blocks
     original_count = len(blocks)
@@ -3026,6 +3131,30 @@ def solve_forecast_v4(
         block_props = {k: v for k, v in block_props.items() if k in pruned_ids}
     else:
         block_index = build_block_index(blocks)
+
+    # Coverage audit + auto-heal (singleton safety net)
+    phase1_reason_codes = []
+    audit = audit_coverage(tours, blocks)
+    if audit["tours_with_zero_candidates"] > 0:
+        phase1_reason_codes.append("AUTO_HEAL_SINGLETONS")
+        blocks, injected = ensure_singletons_for_all_tours(tours, blocks)
+        if injected:
+            fallback_score = min(block_scores.values()) - 1 if block_scores else 0
+            for block in injected:
+                block_scores[block.id] = fallback_score
+                block_props[block.id] = {"auto_heal_singleton": True}
+        block_index = build_block_index(blocks)
+        audit = audit_coverage(tours, blocks)
+        if audit["tours_with_zero_candidates"] > 0:
+            safe_print("[ERROR] Coverage audit failed after auto-heal. Aborting Phase 1.", flush=True)
+            return SolveResultV4(
+                status="FAILED",
+                assignments=[],
+                kpi={"error": "Coverage audit failed after auto-heal"},
+                solve_times={"block_building": block_time},
+                block_stats=block_stats,
+                missing_tours=audit["zero_tours"],
+            )
     
     safe_print(f"Blocks: {len(blocks)} (1er={block_stats['blocks_1er']}, 2er={block_stats['blocks_2er']}, 3er={block_stats['blocks_3er']})", flush=True)
     if block_scores:
@@ -3037,6 +3166,9 @@ def solve_forecast_v4(
         block_scores=block_scores,
         block_props=block_props
     )
+    if phase1_reason_codes:
+        phase1_stats.setdefault("reason_codes", [])
+        phase1_stats["reason_codes"].extend(phase1_reason_codes)
     
     if phase1_stats["status"] != "OK":
         return SolveResultV4(
