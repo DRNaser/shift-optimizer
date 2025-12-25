@@ -434,6 +434,36 @@ def run_portfolio(
             blocks, tours, block_index, phase1_config,
             block_scores=block_scores, block_props=block_props
         )
+
+        enable_domain_lns = config.enable_domain_lns or config.output_profile in (
+            "MIN_HEADCOUNT_3ER",
+            "BEST_BALANCED",
+        )
+        if enable_domain_lns and getattr(config, "domain_lns_time_budget_seconds", 0) > 0:
+            try:
+                from src.services.domain_lns import DomainLnsContext, run_domain_lns
+
+                lns_ctx = DomainLnsContext(
+                    config=config,
+                    tours=tours,
+                    block_index=block_index,
+                    block_scores=block_scores,
+                    block_props=block_props,
+                )
+                lns_budget = min(config.domain_lns_time_budget_seconds, remaining())
+                lns_solution, lns_report = run_domain_lns(
+                    lns_ctx,
+                    blocks,
+                    selected_blocks,
+                    time_budget=lns_budget,
+                    seed=seed,
+                )
+                if lns_solution:
+                    selected_blocks = lns_solution
+                    phase1_stats.update(lns_report.get("solution_stats", {}))
+                phase1_stats["domain_lns"] = lns_report
+            except Exception as exc:
+                log(f"Domain LNS skipped due to error: {exc}")
         
         log(f"PHASE 1 COMPLETE: selected_blocks={len(selected_blocks)}, tours={len(tours)}")
         capacity_time = perf_counter() - t_capacity

@@ -294,6 +294,11 @@ class Block(BaseModel):
         """Check if block has a driver assigned."""
         return self.driver_id is not None
 
+    @property
+    def pause_zone_value(self) -> str:
+        """Return pause zone as a normalized string."""
+        return self.pause_zone.value if hasattr(self.pause_zone, "value") else self.pause_zone
+
 
 # =============================================================================
 # ASSIGNMENT & PLAN MODELS

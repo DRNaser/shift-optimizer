@@ -164,6 +164,17 @@ class ConfigV4(NamedTuple):
     lns_attempt_budget_s: float = 2.0                # Budget per single kill attempt
     lns_max_attempts: int = 30                       # Maximum kill attempts
 
+    # =========================================================================
+    # DOMAIN LNS: Block-Selection Destroy & Repair
+    # =========================================================================
+    enable_domain_lns: bool = False
+    domain_lns_time_budget_seconds: float = 60.0
+    domain_lns_repair_iter_seconds: float = 1.0
+    domain_lns_destroy_fraction_default: float = 0.2
+    domain_lns_min_destroy_blocks: int = 50
+    domain_lns_max_destroy_blocks: int = 400
+    domain_lns_force_operator: str | None = None
+
 
 # =============================================================================
 # RESULT MODELS
@@ -1419,7 +1430,9 @@ def _solve_capacity_single_cap(
     block_scores: dict[str, float] = None,
     block_props: dict[str, dict] = None,
     day_cap_override: int = None,
-    time_limit: float = None
+    time_limit: float = None,
+    fixed_use: dict[str, int] | None = None,
+    hint_use: set[str] | None = None
 ) -> tuple[list[Block], dict] | None:
     """
     Single-cap solve for Phase 1. Returns None if INFEASIBLE.
@@ -1435,8 +1448,22 @@ def _solve_capacity_single_cap(
     
     safe_print(f"Variables: {len(use)} (vs {len(use) * 150}+ in old model)", flush=True)
     
-    # Precompute block index lookup for O(1) block â†’ variable mapping
+    # Precompute block index lookup for O(1) block → variable mapping
     block_id_to_idx = {block.id: idx for idx, block in enumerate(blocks)}
+    idx_to_block_id = {idx: block.id for idx, block in enumerate(blocks)}
+
+    # Optional fixations (Domain LNS repair mode)
+    if fixed_use:
+        for b_idx, block in enumerate(blocks):
+            fixed_val = fixed_use.get(block.id)
+            if fixed_val is not None:
+                model.Add(use[b_idx] == int(fixed_val))
+
+    # Optional initial hints (Domain LNS warm start)
+    if hint_use:
+        for b_idx in range(len(blocks)):
+            block_id = idx_to_block_id[b_idx]
+            model.AddHint(use[b_idx], 1 if block_id in hint_use else 0)
 
     # Constraint: Coverage (each tour exactly once)
     safe_print("Adding coverage constraints...", flush=True)
@@ -1711,8 +1738,8 @@ def _solve_capacity_single_cap(
     
     # Debug: count available types
     avail_1er = sum(1 for b in blocks if len(b.tours) == 1)
-    avail_2er_reg = sum(1 for b in blocks if len(b.tours) == 2 and b.pause_zone.value == "REGULAR")
-    avail_2er_split = sum(1 for b in blocks if len(b.tours) == 2 and b.pause_zone.value == "SPLIT")
+    avail_2er_reg = sum(1 for b in blocks if len(b.tours) == 2 and b.pause_zone_value == "REGULAR")
+    avail_2er_split = sum(1 for b in blocks if len(b.tours) == 2 and b.pause_zone_value == "SPLIT")
     avail_3er = sum(1 for b in blocks if len(b.tours) == 3)
     safe_print(f"  AVAILABLE BLOCKS: 1er={avail_1er}, 2er_REG={avail_2er_reg}, 2er_SPLIT={avail_2er_split}, 3er={avail_3er}", flush=True)
     
@@ -1741,11 +1768,11 @@ def _solve_capacity_single_cap(
     ))
     model.Add(count_2er_regular == sum(
         use[b] for b, block in enumerate(blocks) 
-        if len(block.tours) == 2 and block.pause_zone.value == "REGULAR"
+        if len(block.tours) == 2 and block.pause_zone_value == "REGULAR"
     ))
     model.Add(count_2er_split == sum(
         use[b] for b, block in enumerate(blocks)
-        if len(block.tours) == 2 and block.pause_zone.value == "SPLIT"
+        if len(block.tours) == 2 and block.pause_zone_value == "SPLIT"
     ))
     model.Add(count_1er == sum(
         use[b] for b, block in enumerate(blocks) if len(block.tours) == 1
@@ -2111,8 +2138,8 @@ def _solve_capacity_single_cap(
         
         # INVARIANT CHECK: Packing counts must match locked values
         actual_3er = sum(1 for b in selected if len(b.tours) == 3)
-        actual_2R = sum(1 for b in selected if len(b.tours) == 2 and b.pause_zone.value == "REGULAR")
-        actual_2S = sum(1 for b in selected if len(b.tours) == 2 and b.pause_zone.value == "SPLIT")
+        actual_2R = sum(1 for b in selected if len(b.tours) == 2 and b.pause_zone_value == "REGULAR")
+        actual_2S = sum(1 for b in selected if len(b.tours) == 2 and b.pause_zone_value == "SPLIT")
         actual_1er = sum(1 for b in selected if len(b.tours) == 1)
         
         mismatch = (
@@ -2134,8 +2161,8 @@ def _solve_capacity_single_cap(
     
     # RC1: Detailed Stats by Category
     sel_1er = sum(1 for b in selected if len(b.tours) == 1)
-    sel_2er_regular = sum(1 for b in selected if len(b.tours) == 2 and b.pause_zone.value == "REGULAR")
-    sel_2er_split = sum(1 for b in selected if len(b.tours) == 2 and b.pause_zone.value == "SPLIT")
+    sel_2er_regular = sum(1 for b in selected if len(b.tours) == 2 and b.pause_zone_value == "REGULAR")
+    sel_2er_split = sum(1 for b in selected if len(b.tours) == 2 and b.pause_zone_value == "SPLIT")
     sel_3er = sum(1 for b in selected if len(b.tours) == 3)
     sel_2er_total = sel_2er_regular + sel_2er_split
     safe_print(f"  SELECTED BLOCKS: 3er={sel_3er}, 2er_REG={sel_2er_regular}, 2er_SPLIT={sel_2er_split}, 1er={sel_1er}", flush=True)
@@ -2206,6 +2233,31 @@ def _solve_capacity_single_cap(
     
     # RC1: Merge pack_telemetry into stats
     stats.update(pack_telemetry)
+
+    stats["phase1_stage_objective_vectors"] = {
+        "pass1": {
+            "headcount": headcount_pass1,
+            "headcount_lock": "strict" if pass1_is_optimal else "fail_open",
+        },
+        "stage1": {
+            "count_3er": int(best_count_3er),
+        },
+        "stage2": {
+            "count_3er": int(best_count_3er),
+            "count_2er_regular": int(best_count_2er_regular),
+        },
+        "stage3": {
+            "count_3er": int(best_count_3er),
+            "count_2er_regular": int(best_count_2er_regular),
+            "count_2er_split": int(best_count_2er_split),
+        },
+        "stage4": {
+            "count_3er": int(best_count_3er),
+            "count_2er_regular": int(best_count_2er_regular),
+            "count_2er_split": int(best_count_2er_split),
+            "count_1er": int(best_count_1er),
+        },
+    }
     
     safe_print(f"Selected {len(selected)} blocks: {by_type}")
     safe_print(f"Block mix: 1er={block_mix['1er']*100:.1f}%, 2er={block_mix['2er']*100:.1f}%, 3er={block_mix['3er']*100:.1f}%")
@@ -3037,6 +3089,35 @@ def solve_forecast_v4(
         block_scores=block_scores,
         block_props=block_props
     )
+
+    enable_domain_lns = config.enable_domain_lns or config.output_profile in (
+        "MIN_HEADCOUNT_3ER",
+        "BEST_BALANCED",
+    )
+    if enable_domain_lns and config.domain_lns_time_budget_seconds > 0:
+        try:
+            from src.services.domain_lns import DomainLnsContext, run_domain_lns
+
+            lns_ctx = DomainLnsContext(
+                config=config,
+                tours=tours,
+                block_index=block_index,
+                block_scores=block_scores,
+                block_props=block_props,
+            )
+            lns_solution, lns_report = run_domain_lns(
+                lns_ctx,
+                blocks,
+                selected_blocks,
+                time_budget=config.domain_lns_time_budget_seconds,
+                seed=config.seed,
+            )
+            if lns_solution:
+                selected_blocks = lns_solution
+                phase1_stats.update(lns_report.get("solution_stats", {}))
+            phase1_stats["domain_lns"] = lns_report
+        except Exception as exc:
+            logger.warning("Domain LNS skipped due to error: %s", exc)
     
     if phase1_stats["status"] != "OK":
         return SolveResultV4(
@@ -3108,10 +3189,10 @@ def solve_forecast_v4(
     }
     
     # Generate style_report.json (Task 4)
-    _generate_style_report(selected_blocks, phase1_stats, block_props)
+    _generate_style_report(selected_blocks, phase1_stats, block_props, tours, phase2_stats, assignments)
     
     # Generate style_report.json (Task 4)
-    _generate_style_report(selected_blocks, phase1_stats, block_props)
+    _generate_style_report(selected_blocks, phase1_stats, block_props, tours, phase2_stats, assignments)
     
     logger.info(f"\n{'='*60}")
     logger.info("SUMMARY")
@@ -3130,7 +3211,58 @@ def solve_forecast_v4(
     )
 
 
-def _generate_style_report(selected_blocks: list[Block], phase1_stats: dict, block_props: dict):
+def _compute_greedy_3er_regular_bound(tours: list[Tour]) -> int:
+    """
+    Greedy proxy bound for regular 3er chains (30-60 min pauses).
+    """
+    used = set()
+    count = 0
+    tours_by_day = defaultdict(list)
+    for tour in tours:
+        tours_by_day[tour.day.value].append(tour)
+
+    for day, day_tours in tours_by_day.items():
+        day_tours = sorted(
+            day_tours, key=lambda t: (t.start_time.hour, t.start_time.minute)
+        )
+        for tour in day_tours:
+            if tour.id in used:
+                continue
+            chain = [tour]
+            current = tour
+            for _ in range(2):
+                next_tour = None
+                current_end = current.end_time.hour * 60 + current.end_time.minute
+                for candidate in day_tours:
+                    if candidate.id in used or candidate.id in {t.id for t in chain}:
+                        continue
+                    candidate_start = candidate.start_time.hour * 60 + candidate.start_time.minute
+                    pause = candidate_start - current_end
+                    if 30 <= pause <= 60:
+                        next_tour = candidate
+                        break
+                if next_tour is None:
+                    break
+                chain.append(next_tour)
+                current = next_tour
+            if len(chain) == 3:
+                span_start = chain[0].start_time.hour * 60 + chain[0].start_time.minute
+                span_end = chain[-1].end_time.hour * 60 + chain[-1].end_time.minute
+                if span_end - span_start <= 930:
+                    for t in chain:
+                        used.add(t.id)
+                    count += 1
+    return count
+
+
+def _generate_style_report(
+    selected_blocks: list[Block],
+    phase1_stats: dict,
+    block_props: dict,
+    tours: list[Tour],
+    phase2_stats: dict | None = None,
+    assignments: list[DriverAssignment] | None = None,
+):
     """Generate style_report.json with block mix and pattern analysis."""
     import json
     from pathlib import Path
@@ -3180,13 +3312,49 @@ def _generate_style_report(selected_blocks: list[Block], phase1_stats: dict, blo
             k: round(v / total, 3) if total else 0 
             for k, v in counts.items()
         }
-    
+
+    forced_1er = phase1_stats.get("forced_1er_count", 0)
+    total_1er = phase1_stats.get("blocks_1er", 0)
+    avoidable_1er = max(0, total_1er - forced_1er)
+    greedy_3er_bound = _compute_greedy_3er_regular_bound(tours)
+    upper_bound_3er_regular = len(tours) // 3 if tours else 0
+
+    pt_hours_total = 0.0
+    drivers_pt = 0
+    if assignments:
+        drivers_pt = len([a for a in assignments if a.driver_type == "PT"])
+        pt_hours_total = sum(
+            a.total_hours for a in assignments if a.driver_type == "PT"
+        )
+    elif phase2_stats:
+        drivers_pt = phase2_stats.get("drivers_pt", 0)
+    pt_avg_hours = round(pt_hours_total / max(1, drivers_pt), 2) if drivers_pt else 0.0
+
+    domain_lns_report = phase1_stats.get("domain_lns", {})
+
     report = {
         "block_mix_overall": block_mix,
         "block_mix_by_day": block_mix_by_day,
         "split_2er_rate": split_rate,
         "template_match_rate": template_rate,
         "gap_histogram": dict(sorted(gap_histogram.items())[:15]),
+        "quality_contract": {
+            "greedy_bound_3er_regular": greedy_3er_bound,
+            "upper_bound_3er_regular": upper_bound_3er_regular,
+            "forced_1er_tours": forced_1er,
+            "total_1er_blocks_selected": total_1er,
+            "avoidable_1er": avoidable_1er,
+            "pt_hours_total": round(pt_hours_total, 2),
+            "drivers_pt": drivers_pt,
+            "pt_avg_hours": pt_avg_hours,
+            "phase1_stage_objective_vectors": phase1_stats.get("phase1_stage_objective_vectors", {}),
+            "best_so_far_never_regresses": domain_lns_report.get("best_so_far_never_regresses", True),
+            "regression_reason": domain_lns_report.get("regression_reason"),
+            "lns_iterations": domain_lns_report.get("lns_iterations", 0),
+            "lns_best_improvement_vector": domain_lns_report.get("lns_best_improvement_vector", {}),
+            "lns_operator_stats": domain_lns_report.get("lns_operator_stats", {}),
+            "lns_time_spent": domain_lns_report.get("lns_time_spent", 0),
+        },
         "stats": {
             "total_blocks": total_selected,
             "blocks_1er": phase1_stats.get("blocks_1er", 0),
