@@ -56,6 +56,19 @@ def safe_print(msg: str) -> None:
         safe_log(msg)
 
 
+def _pz(pause_zone) -> str:
+    """Return a stable pause-zone label for Enum or str inputs."""
+    if pause_zone is None:
+        return "UNKNOWN"
+    v = getattr(pause_zone, "value", None)
+    if v is not None:
+        return str(v)
+    n = getattr(pause_zone, "name", None)
+    if n is not None:
+        return str(n)
+    return str(pause_zone)
+
+
 # =============================================================================
 # CONFIGURATION
 # =============================================================================
@@ -257,7 +270,7 @@ def build_weekly_blocks_smart(
     # Step 1: Generate ALL blocks
     gen_start = time_module.time()
     safe_log("[SmartBuilder] Step 1: Generating blocks...")
-    all_blocks = _generate_all_blocks(tours)
+    all_blocks, gen_stats = _generate_all_blocks(tours)
     gen_time = time_module.time() - gen_start
     
     count_1er = sum(1 for b in all_blocks if len(b.tours) == 1)
@@ -265,6 +278,11 @@ def build_weekly_blocks_smart(
     count_3er = sum(1 for b in all_blocks if len(b.tours) == 3)
     
     safe_log(f"[SmartBuilder] Generated {len(all_blocks)} blocks in {gen_time:.2f}s")
+    safe_log(
+        "[SmartBuilder] Split telemetry: "
+        f"gap_hits_240_360={gen_stats['split_gap_hits_240_360']}, "
+        f"candidates_generated={gen_stats['split_candidates_generated']}"
+    )
     if enable_diag:
         safe_print(f"[DIAG] candidates_raw{{size=1}}: {count_1er}")
         safe_print(f"[DIAG] candidates_raw{{size=2}}: {count_2er}")
@@ -312,6 +330,13 @@ def build_weekly_blocks_smart(
         deduped, tours, global_top_n, cap_quota_2er,
         cap_quota_3er=cap_quota_3er if output_profile == "MIN_HEADCOUNT_3ER" else 0.0
     )
+    final_blocks, singleton_missing = _ensure_singleton_coverage(tours, final_blocks)
+    if singleton_missing:
+        cap_stats["reason_codes"].append("SINGLETON_REPAIR")
+        cap_stats["singleton_repair_count"] = len(singleton_missing)
+    cap_stats["split_gap_hits_240_360"] = gen_stats.get("split_gap_hits_240_360", 0)
+    cap_stats["split_candidates_generated"] = gen_stats.get("split_candidates_generated", 0)
+    cap_stats["split_candidates_kept"] = cap_stats.get("post_cap_2er_split", 0)
     safe_log(f"[SmartBuilder] After capping: {len(final_blocks)} blocks")
     
     # ==== POOL HEALTH CHECK (after capping) ====
@@ -361,6 +386,9 @@ def build_weekly_blocks_smart(
     safe_print("[SmartBuilder] Step 5: Computing stats...")
     stats = _compute_stats(final_blocks, tours, elapsed, cap_stats, deduped) # Pass deduped for stats
     stats["sanity_ok"] = sanity_ok
+    if singleton_missing:
+        stats["singleton_repair_count"] = len(singleton_missing)
+        stats["singleton_repair_sample"] = [t.id for t in singleton_missing[:10]]
     
     # Add raw counts for metrics
     stats["raw_1er"] = count_1er
@@ -445,7 +473,10 @@ def _score_single_block(block: Block, policy: ManualPolicy) -> ScoredBlock:
     )
 
 
-def _generate_all_blocks(tours: list[Tour], enable_splits: bool = True) -> list[Block]:
+def _generate_all_blocks(
+    tours: list[Tour],
+    enable_splits: bool = True,
+) -> tuple[list[Block], dict]:
     """
     Generate 1er, 2er, and 3er blocks using two-zone pause logic.
     
@@ -463,9 +494,12 @@ def _generate_all_blocks(tours: list[Tour], enable_splits: bool = True) -> list[
         tours_by_day[day].sort(key=lambda t: t.start_time)
     
     all_blocks: list[Block] = []
+    split_candidates_generated = 0
+    split_gap_hits_240_360 = 0
     
     for day, day_tours in tours_by_day.items():
-        can_follow_regular, can_follow_split = _build_adjacency(day_tours, enable_splits)
+        can_follow_regular, can_follow_split, adjacency_stats = _build_adjacency(day_tours, enable_splits)
+        split_gap_hits_240_360 += adjacency_stats["split_gap_hits_240_360"]
         
         # 1er - ALWAYS (no gaps)
         for tour in day_tours:
@@ -510,6 +544,7 @@ def _generate_all_blocks(tours: list[Tour], enable_splits: bool = True) -> list[
                             max_pause_minutes=gap,
                             pause_zone="SPLIT"
                         ))
+                        split_candidates_generated += 1
         
         # 3er - Regular adjacency ONLY (no splits allowed)
         for i, t1 in enumerate(day_tours):
@@ -533,7 +568,11 @@ def _generate_all_blocks(tours: list[Tour], enable_splits: bool = True) -> list[
                             pause_zone="REGULAR"
                         ))
     
-    return all_blocks
+    stats = {
+        "split_gap_hits_240_360": split_gap_hits_240_360,
+        "split_candidates_generated": split_candidates_generated,
+    }
+    return all_blocks, stats
 
 
 def _calc_gap(t1: Tour, t2: Tour) -> int:
@@ -550,7 +589,10 @@ def _calc_span(tours: list[Tour]) -> int:
     return last_end - first_start
 
 
-def _build_adjacency(tours: list[Tour], enable_splits: bool = True) -> tuple[dict[int, list[int]], dict[int, list[int]]]:
+def _build_adjacency(
+    tours: list[Tour],
+    enable_splits: bool = True,
+) -> tuple[dict[int, list[int]], dict[int, list[int]], dict]:
     """
     Build two adjacency mappings for tours:
     - can_follow_regular: tours reachable with regular pause (30-120 min)
@@ -560,6 +602,7 @@ def _build_adjacency(tours: list[Tour], enable_splits: bool = True) -> tuple[dic
     """
     can_follow_regular = defaultdict(list)
     can_follow_split = defaultdict(list)
+    split_gap_hits = 0
     
     for i, t1 in enumerate(tours):
         t1_end = t1.end_time.hour * 60 + t1.end_time.minute
@@ -577,10 +620,14 @@ def _build_adjacency(tours: list[Tour], enable_splits: bool = True) -> tuple[dic
             # Zone 2: Split pause (240-360 min) - only if enabled
             elif enable_splits and SPLIT_PAUSE_MIN <= gap <= SPLIT_PAUSE_MAX:
                 can_follow_split[i].append(j)
+                split_gap_hits += 1
             
             # Gaps 121-239 or >360 are forbidden - no entry
             
-    return can_follow_regular, can_follow_split
+    stats = {
+        "split_gap_hits_240_360": split_gap_hits,
+    }
+    return can_follow_regular, can_follow_split, stats
 
 
 def _get_block_template(block: Block) -> str:
@@ -748,11 +795,17 @@ def _smart_cap_with_1er_guarantee(
     for tour in sorted(tours, key=lambda t: t.id):
         tour_blocks = tour_to_blocks.get(tour.id, [])
         
-        # B2: Consistent split classification - use pause_zone.value consistently
+        # B2: Consistent split classification - use _pz() for enum/string safety
         # Separate blocks by class
         blocks_3er = [sb for sb in tour_blocks if len(sb.block.tours) == 3]
-        blocks_2er_reg = [sb for sb in tour_blocks if len(sb.block.tours) == 2 and sb.block.pause_zone.value == "REGULAR"]
-        blocks_2er_split = [sb for sb in tour_blocks if len(sb.block.tours) == 2 and sb.block.pause_zone.value == "SPLIT"]
+        blocks_2er_reg = [
+            sb for sb in tour_blocks
+            if len(sb.block.tours) == 2 and _pz(sb.block.pause_zone) == "REGULAR"
+        ]
+        blocks_2er_split = [
+            sb for sb in tour_blocks
+            if len(sb.block.tours) == 2 and _pz(sb.block.pause_zone) == "SPLIT"
+        ]
         blocks_1er = [sb for sb in tour_blocks if len(sb.block.tours) == 1]
         
         # Deterministic sort: (-score, block.id) for stability
@@ -955,6 +1008,40 @@ def _sanity_check(blocks: list[Block], tours: list[Tour]) -> tuple[bool, list[st
         safe_log(f"[Sanity] FAILED: {errors}")
     
     return (len(errors) == 0, errors)
+
+
+def _ensure_singleton_coverage(tours: list[Tour], blocks: list[Block]) -> tuple[list[Block], list[Tour]]:
+    """Ensure every tour has at least one singleton block in the pool."""
+    index = build_block_index(blocks)
+    missing = [
+        t for t in tours
+        if not any(len(b.tours) == 1 for b in index.get(t.id, []))
+    ]
+    if not missing:
+        return blocks, []
+
+    existing_ids = {b.id for b in blocks}
+    for tour in missing:
+        base_id = f"SINGLETON_{tour.id}"
+        new_id = base_id
+        suffix = 1
+        while new_id in existing_ids:
+            new_id = f"{base_id}_{suffix}"
+            suffix += 1
+        blocks.append(
+            Block(
+                id=new_id,
+                day=tour.day,
+                tours=[tour],
+                is_split=False,
+                max_pause_minutes=0,
+                pause_zone="REGULAR",
+            )
+        )
+        existing_ids.add(new_id)
+
+    safe_log(f"[SmartBuilder] Singleton repair added {len(missing)} blocks")
+    return blocks, missing
 
 
 def _span_ok(tours: list[Tour]) -> bool:
