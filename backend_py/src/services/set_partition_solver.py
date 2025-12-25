@@ -185,9 +185,23 @@ def solve_set_partitioning(
         # Bin-pack PT rosters before broad PT generation
         max_pt_hours = getattr(config, "pt_max_week_hours", 30.0) if config else 30.0
         max_pt_minutes = int(max_pt_hours * 60)
-        seed_blocks = [b for b in block_infos if b.block_id in (under_blocks or all_block_ids)]
+        pt_seed_reason = ""
+        seed_ids = []
+        if under_blocks:
+            pt_seed_reason = "under_blocks"
+            seed_ids = under_blocks
+        else:
+            coverage_freq = relaxed_fte.get("coverage_freq", {})
+            rare_ids = [bid for bid, freq in coverage_freq.items() if freq <= 2]
+            if rare_ids:
+                pt_seed_reason = "rare_blocks"
+                seed_ids = rare_ids
+            else:
+                pt_seed_reason = "none"
+        seed_blocks = [b for b in block_infos if b.block_id in set(seed_ids)]
         seed_blocks.sort(key=lambda b: (-b.work_min, b.block_id))
         pt_bins: list[list[BlockInfo]] = []
+        seed_blocks = seed_blocks[:100]
         for block in seed_blocks:
             placed = False
             for bin_blocks in pt_bins:
@@ -211,6 +225,10 @@ def solve_set_partitioning(
             )
             if column and generator.add_column(column):
                 pt_bin_added += 1
+        log_fn(
+            f"PT bin-pack: reason={pt_seed_reason}, seed_size={len(seed_blocks)}, "
+            f"sample={seed_ids[:5]}"
+        )
         log_fn(f"PT bin-pack: added {pt_bin_added} packed PT columns")
 
         pt_gen_start = time.time()

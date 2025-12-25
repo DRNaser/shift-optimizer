@@ -2161,95 +2161,97 @@ def _solve_capacity_single_cap(
         stage3_solver_for_fallback = stage2_solver_for_fallback
     
     # =========================================================================
-    # STAGE 4: LEXICOGRAPHIC MIX (max 3er, max 2er, min split, min 1er, min blocks)
+    # STAGE 4: TRUE LEXICOGRAPHIC MIX (3er -> 2er_reg -> 2er_split -> 1er -> total_blocks)
     # =========================================================================
     safe_print(
-        "\n  --- STAGE 4: LEXICOGRAPHIC MIX (3er, 2er, split, 1er, total_blocks) ---",
+        "\n  --- STAGE 4: TRUE LEXICOGRAPHIC MIX (3er, 2er_reg, split, 1er, total_blocks) ---",
         flush=True,
     )
     total_blocks = sum(use[b] for b in range(len(blocks)))
-    count_2er_total = count_2er_regular + count_2er_split
-    W_3 = 1_000_000_000
-    W_2 = 1_000_000
-    W_SPLIT = 10_000
-    W_1ER = 100
-    W_TB = 1
-    stage4_objective = (
-        -W_3 * count_3er
-        -W_2 * count_2er_total
-        +W_SPLIT * count_2er_split
-        +W_1ER * count_1er
-        +W_TB * total_blocks
-    )
-    safe_print(
-        "  STAGE 4 OBJ: "
-        f"-{W_3}*count_3er -{W_2}*count_2er + {W_SPLIT}*count_2er_split "
-        f"+ {W_1ER}*count_1er + {W_TB}*total_blocks",
-        flush=True,
-    )
-    model.Minimize(stage4_objective)
-    
-    solver_s4 = cp_model.CpSolver()
-    solver_s4.parameters.max_time_in_seconds = stage_budgets[4]
-    solver_s4.parameters.num_search_workers = 1
-    solver_s4.parameters.random_seed = config.seed
-    
-    status_s4 = solver_s4.Solve(model)
-    
-    if status_s4 == cp_model.OPTIMAL:
-        safe_print(f"  STAGE 4: OPTIMAL", flush=True)
-        best_count_1er = solver_s4.Value(count_1er)
-        best_count_2er_split = solver_s4.Value(count_2er_split)
-        best_total_blocks = solver_s4.Value(total_blocks)
+    stage4_statuses = {}
+    stage4_objective_vector_found = {}
+    stage4_objective_vector_proven = {}
+    stage4_failed_reason = ""
+    stage4_solution = None
+
+    stage3_hint = [stage3_solver_for_fallback.Value(use[b]) for b in range(len(blocks))]
+
+    def _stage4_solve(label: str, sense: str, expr, time_limit: float) -> tuple[int, Optional[int]]:
+        model.ClearHints()
+        for b in range(len(blocks)):
+            model.AddHint(use[b], int(stage3_hint[b]))
+        if sense == "max":
+            model.Maximize(expr)
+        else:
+            model.Minimize(expr)
+        solver = cp_model.CpSolver()
+        solver.parameters.max_time_in_seconds = time_limit
+        solver.parameters.num_search_workers = 1
+        solver.parameters.random_seed = config.seed
+        status = solver.Solve(model)
+        if status in (cp_model.OPTIMAL, cp_model.FEASIBLE):
+            return status, solver.Value(expr), solver
+        return status, None, None
+
+    stage4_steps = [
+        ("max_3er", "max", count_3er),
+        ("max_2er_regular", "max", count_2er_regular),
+        ("min_2er_split", "min", count_2er_split),
+        ("min_1er", "min", count_1er),
+        ("min_total_blocks", "min", total_blocks),
+    ]
+
+    last_solver = None
+    for label, sense, expr in stage4_steps:
+        status, value, solver = _stage4_solve(label, sense, expr, stage_budgets[4])
+        stage4_statuses[label] = status_str(status)
+        if status in (cp_model.OPTIMAL, cp_model.FEASIBLE) and value is not None:
+            stage4_objective_vector_found[label] = int(value)
+            stage4_objective_vector_proven[label] = (status == cp_model.OPTIMAL)
+            if sense == "max":
+                if status == cp_model.OPTIMAL:
+                    model.Add(expr == int(value))
+                else:
+                    model.Add(expr >= int(value))
+            else:
+                if status == cp_model.OPTIMAL:
+                    model.Add(expr == int(value))
+                else:
+                    model.Add(expr <= int(value))
+            stage4_solution = [solver.Value(use[b]) for b in range(len(blocks))]
+            last_solver = solver
+        else:
+            stage4_failed_reason = f"{label}:{status_str(status)}"
+            break
+
+    if stage4_failed_reason:
         safe_print(
-            "  STAGE 4 RESULT: "
-            f"count_1er = {int(best_count_1er)}, "
-            f"count_2er_split = {int(best_count_2er_split)}, "
-            f"total_blocks = {int(best_total_blocks)}",
+            f"  STAGE 4 FAILED: {stage4_failed_reason} (using Stage 3 fallback)",
             flush=True,
         )
-        model.Add(count_1er == int(best_count_1er))
-        model.Add(count_2er_split == int(best_count_2er_split))
-        model.Add(total_blocks == int(best_total_blocks))
-        stage4_solution = [solver_s4.Value(use[b]) for b in range(len(blocks))]
-        reset_hints_from_solver(model, use, solver_s4)
-        stage4_solver_for_fallback = solver_s4
-    elif status_s4 == cp_model.FEASIBLE:
-        safe_print(f"  STAGE 4: FEASIBLE (not proven optimal)", flush=True)
-        best_count_1er = solver_s4.Value(count_1er)
-        best_count_2er_split = solver_s4.Value(count_2er_split)
-        best_total_blocks = solver_s4.Value(total_blocks)
-        safe_print(
-            "  STAGE 4 RESULT: "
-            f"count_1er = {int(best_count_1er)}, "
-            f"count_2er_split = {int(best_count_2er_split)}, "
-            f"total_blocks = {int(best_total_blocks)}",
-            flush=True,
-        )
-        model.Add(count_1er == int(best_count_1er))
-        model.Add(count_2er_split == int(best_count_2er_split))
-        model.Add(total_blocks == int(best_total_blocks))
-        stage4_solution = [solver_s4.Value(use[b]) for b in range(len(blocks))]
-        reset_hints_from_solver(model, use, solver_s4)
-        stage4_solver_for_fallback = solver_s4
-    else:
-        safe_print(f"  STAGE 4 FAILED: {status_str(status_s4)} (using Stage 3 fallback)", flush=True)
-        best_count_1er = stage3_solver_for_fallback.Value(count_1er)
-        best_count_2er_split = stage3_solver_for_fallback.Value(count_2er_split)
-        best_total_blocks = stage3_solver_for_fallback.Value(total_blocks)
-        safe_print(
-            "  STAGE 4 FALLBACK: "
-            f"count_1er = {int(best_count_1er)}, "
-            f"count_2er_split = {int(best_count_2er_split)}, "
-            f"total_blocks = {int(best_total_blocks)}",
-            flush=True,
-        )
-        model.Add(count_1er == int(best_count_1er))
-        model.Add(count_2er_split == int(best_count_2er_split))
-        model.Add(total_blocks == int(best_total_blocks))
         stage4_solution = [stage3_solver_for_fallback.Value(use[b]) for b in range(len(blocks))]
-        reset_hints_from_solver(model, use, stage3_solver_for_fallback)
         stage4_solver_for_fallback = stage3_solver_for_fallback
+    else:
+        safe_print(
+            "  STAGE 4 COMPLETE: "
+            f"3er={stage4_objective_vector_found.get('max_3er')}, "
+            f"2er_reg={stage4_objective_vector_found.get('max_2er_regular')}, "
+            f"2er_split={stage4_objective_vector_found.get('min_2er_split')}, "
+            f"1er={stage4_objective_vector_found.get('min_1er')}, "
+            f"total_blocks={stage4_objective_vector_found.get('min_total_blocks')}",
+            flush=True,
+        )
+        stage4_solver_for_fallback = last_solver
+
+    best_count_2er_split = stage4_objective_vector_found.get(
+        "min_2er_split", stage3_solver_for_fallback.Value(count_2er_split)
+    )
+    best_count_1er = stage4_objective_vector_found.get(
+        "min_1er", stage3_solver_for_fallback.Value(count_1er)
+    )
+    best_total_blocks = stage4_objective_vector_found.get(
+        "min_total_blocks", stage3_solver_for_fallback.Value(total_blocks)
+    )
     
     # =========================================================================
     # STAGE 5: SECONDARY OPTIMIZATION under fixed packing
@@ -2461,6 +2463,10 @@ def _solve_capacity_single_cap(
         "split_2er_count": split_2er_count,
         "template_match_count": template_match_count,
         "day_cap_slack": slack_values,
+        "stage4_subsolve_statuses": stage4_statuses,
+        "stage4_objective_vector_found": stage4_objective_vector_found,
+        "stage4_objective_vector_proven": stage4_objective_vector_proven,
+        "stage4_failed_reason": stage4_failed_reason,
     }
     
     # RC1: Merge pack_telemetry into stats
