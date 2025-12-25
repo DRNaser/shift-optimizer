@@ -286,8 +286,12 @@ class RunManager:
                 phase = "PHASE2_ASSIGNMENT"
                 current_phase[0] = phase
             elif normalized.startswith("LNS ") or normalized.startswith("LNS:"):
-                phase = "LNS"
-                current_phase[0] = phase
+                if any(
+                    token in normalized
+                    for token in ("PROCESSING", "ENDGAME", "REFINEMENT")
+                ):
+                    phase = "LNS"
+                    current_phase[0] = phase
             elif "REPAIR" in normalized:
                 phase = "REPAIR"
                 current_phase[0] = phase
