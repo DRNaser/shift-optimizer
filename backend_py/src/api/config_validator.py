@@ -74,6 +74,16 @@ TUNABLE_FIELDS = {
     "enable_lns_low_hour_consolidation": {"type": "bool", "default": False},
     "lns_time_budget_s": {"type": "float", "default": 60.0, "min": 0.0, "max": 300.0},
     "lns_low_hour_threshold_h": {"type": "float", "default": 40.0, "min": 0.0, "max": 50.0},
+
+    # =========================================================================
+    # DOMAIN LNS: Block-Selection Destroy & Repair
+    # =========================================================================
+    "enable_domain_lns": {"type": "bool", "default": False},
+    "domain_lns_time_budget_seconds": {"type": "float", "default": 60.0, "min": 0.0, "max": 300.0},
+    "domain_lns_repair_iter_seconds": {"type": "float", "default": 1.0, "min": 0.1, "max": 10.0},
+    "domain_lns_destroy_fraction_default": {"type": "float", "default": 0.2, "min": 0.05, "max": 0.5},
+    "domain_lns_min_destroy_blocks": {"type": "int", "default": 50, "min": 10, "max": 1000},
+    "domain_lns_max_destroy_blocks": {"type": "int", "default": 400, "min": 50, "max": 5000},
     
     # =========================================================================
     # OUTPUT PROFILES: MIN_HEADCOUNT_3ER vs BEST_BALANCED

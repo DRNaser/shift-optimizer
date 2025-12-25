@@ -253,6 +253,13 @@ class ConfigOverrides(BaseModel):
     lns_time_budget_s: float | None = Field(default=None, ge=1.0)
     lns_low_hour_threshold_h: float | None = Field(default=None, ge=10.0)
 
+    enable_domain_lns: bool | None = None
+    domain_lns_time_budget_seconds: float | None = Field(default=None, ge=0.0)
+    domain_lns_repair_iter_seconds: float | None = Field(default=None, ge=0.1)
+    domain_lns_destroy_fraction_default: float | None = Field(default=None, ge=0.05, le=0.5)
+    domain_lns_min_destroy_blocks: int | None = Field(default=None, ge=10)
+    domain_lns_max_destroy_blocks: int | None = Field(default=None, ge=50)
+
 
 class RunConfig(BaseModel):
     """Run execution configuration."""
