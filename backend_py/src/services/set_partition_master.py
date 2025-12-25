@@ -314,31 +314,38 @@ def solve_rmp(
     # - Base cost per FTE driver
     # - PT driver start penalty + per-hour PT cost (PT only as overflow)
     # - Soft penalty for FTE under 40h (cost-based minimum)
+    # - Singleton column penalty (emergency only)
     # - Overtime (>53h) penalty
+    # NOTE: CP-SAT expects integer coefficients; use a scaling factor.
     # =========================================================================
-    FTE_BASE_COST = 1.0
-    PT_DRIVER_PENALTY = 10.0
-    PT_HOUR_COST = 0.2
+    SCALE = 100
+    FTE_BASE_COST = 1 * SCALE
+    PT_DRIVER_PENALTY = 100 * SCALE
+    PT_HOUR_COST = 2 * SCALE
     FTE_MIN_HOURS_TARGET = 40.0
-    FTE_UNDERUTIL_COST_PER_HOUR = 0.2
+    FTE_UNDERUTIL_COST_PER_HOUR = 2 * SCALE
+    SINGLETON_PENALTY = 200 * SCALE
     OVERTIME_THRESHOLD = 53.0
-    OVERTIME_COST_PER_HOUR = 0.5
+    OVERTIME_COST_PER_HOUR = 1 * SCALE
     
     costs = []
     for i, col in enumerate(columns):
         # Base cost
         cost = FTE_BASE_COST
         if hasattr(col, "roster_type") and col.roster_type == "PT":
-            cost += PT_DRIVER_PENALTY + (col.total_hours * PT_HOUR_COST)
+            cost += PT_DRIVER_PENALTY + int(col.total_hours * PT_HOUR_COST)
         else:
             if col.total_hours < FTE_MIN_HOURS_TARGET:
                 shortfall = FTE_MIN_HOURS_TARGET - col.total_hours
-                cost += shortfall * FTE_UNDERUTIL_COST_PER_HOUR
+                cost += int(shortfall * FTE_UNDERUTIL_COST_PER_HOUR)
+
+        if col.num_blocks == 1:
+            cost += SINGLETON_PENALTY
         
         # Overtime penalty
         if col.total_hours > OVERTIME_THRESHOLD:
             excess = col.total_hours - OVERTIME_THRESHOLD
-            cost += excess * OVERTIME_COST_PER_HOUR
+            cost += int(excess * OVERTIME_COST_PER_HOUR)
             
         costs.append(cost * y[i])
     

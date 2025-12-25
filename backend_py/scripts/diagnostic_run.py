@@ -66,16 +66,15 @@ def parse_input(file_path):
             line = line.strip()
             if not line:
                 continue
-            parts = line.split()
-            if len(parts) >= 1 and parts[0] in DAY_MAP:
-                current_day = DAY_MAP[parts[0]]
-                continue
             if '\t' in line:
                 tokens = line.split('\t')
             elif ';' in line:
                 tokens = line.split(';')
             else:
                 tokens = line.split()
+            if tokens and tokens[0] in DAY_MAP:
+                current_day = DAY_MAP[tokens[0]]
+                continue
             if len(tokens) < 2:
                 continue
             time_range = tokens[0]
