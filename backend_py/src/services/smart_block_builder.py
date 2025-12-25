@@ -162,6 +162,16 @@ class ManualPolicy:
 
 _POLICY_CACHE: Optional[ManualPolicy] = None
 
+
+@dataclass(frozen=True)
+class BlockGenOverrides:
+    min_pause_minutes: int | None = None
+    max_pause_regular: int | None = None
+    split_pause_min: int | None = None
+    split_pause_max: int | None = None
+    max_spread_split_minutes: int | None = None
+    max_daily_span_hours: float | None = None
+
 def load_policy() -> ManualPolicy:
     global _POLICY_CACHE
     if _POLICY_CACHE:
@@ -240,6 +250,8 @@ def build_weekly_blocks_smart(
     output_profile: str = "BEST_BALANCED",  # Profile selection
     gap_3er_min_minutes: int = 30,  # Min gap for 3er in MIN_HEADCOUNT_3ER
     cap_quota_3er: float = 0.25,  # 3er quota for MIN_HEADCOUNT_3ER
+    block_gen_overrides: BlockGenOverrides | None = None,
+    hot_tour_penalty_alpha: int = 0,  # 0=off, typical start: 3..10
 ) -> tuple[list[Block], dict]:
     """
     Build blocks with manual-like quality using learned policy.
@@ -257,7 +269,7 @@ def build_weekly_blocks_smart(
     # Step 1: Generate ALL blocks
     gen_start = time_module.time()
     safe_log("[SmartBuilder] Step 1: Generating blocks...")
-    all_blocks = _generate_all_blocks(tours)
+    all_blocks = _generate_all_blocks(tours, block_gen_overrides=block_gen_overrides)
     gen_time = time_module.time() - gen_start
     
     count_1er = sum(1 for b in all_blocks if len(b.tours) == 1)
@@ -287,10 +299,22 @@ def build_weekly_blocks_smart(
         if enable_diag:
             new_3er = sum(1 for b in all_blocks if len(b.tours) == 3)
             safe_print(f"[DIAG] candidates_3er_after_gap_filter: {new_3er}")
-    
+
+    deg3_map, deg3_p95 = _compute_deg3_map(all_blocks)
+    deg3_vals_raw = [v for v in deg3_map.values() if v > 0]
+    deg3_max_raw = max(deg3_vals_raw) if deg3_vals_raw else 0
+    deg3_p95_raw = _percentile_int(deg3_vals_raw, 0.95) if deg3_vals_raw else 0
+    hot_block_share_raw = _compute_hot_block_share(all_blocks)
+
     # Step 2: Score blocks using policy
     safe_print("[SmartBuilder] Step 2: Scoring blocks with policy...")
-    scored = _score_all_blocks(all_blocks, policy)
+    scored = _score_all_blocks(
+        all_blocks,
+        policy,
+        deg3_map=deg3_map,
+        deg3_p95=deg3_p95,
+        hot_tour_penalty_alpha=hot_tour_penalty_alpha,
+    )
     safe_print(f"[SmartBuilder] Scored {len(scored)} blocks")
     
     # Step 3: Dedupe
@@ -351,6 +375,10 @@ def build_weekly_blocks_smart(
     
     safe_log(f"[POOL DEGREE 2er] {get_stats(deg2_vals)}")
     safe_log(f"[POOL DEGREE 3er] {get_stats(deg3_vals)}")
+    deg3_vals_nonzero = [v for v in deg3_vals if v > 0]
+    deg3_max_capped = max(deg3_vals_nonzero) if deg3_vals_nonzero else 0
+    deg3_p95_capped = _percentile_int(deg3_vals_nonzero, 0.95) if deg3_vals_nonzero else 0
+    hot_block_share_capped = _compute_hot_block_share(final_blocks)
 
     # Step 5: Sanity checks (returns (ok, errors) instead of raising)
     sanity_ok, sanity_errors = _sanity_check(final_blocks, tours)
@@ -367,6 +395,12 @@ def build_weekly_blocks_smart(
     stats["raw_2er"] = count_2er
     stats["raw_3er"] = count_3er
     stats["candidates_3er_pre_cap"] = cap_stats.get("pre_cap_3er", 0)
+    stats["deg3_max_raw"] = deg3_max_raw
+    stats["deg3_p95_raw"] = deg3_p95_raw
+    stats["hot_block_share_raw"] = hot_block_share_raw
+    stats["deg3_max_capped"] = deg3_max_capped
+    stats["deg3_p95_capped"] = deg3_p95_capped
+    stats["hot_block_share_capped"] = hot_block_share_capped
     
     safe_print(f"[SmartBuilder] Final: {len(final_blocks)} blocks in {elapsed:.2f}s")
     if enable_diag:
@@ -375,7 +409,13 @@ def build_weekly_blocks_smart(
 
 
 # Renamed and adapted from _score_all_blocks to score a single block
-def _score_single_block(block: Block, policy: ManualPolicy) -> ScoredBlock:
+def _score_single_block(
+    block: Block,
+    policy: ManualPolicy,
+    deg3_map: dict[str, int] | None = None,
+    deg3_p95: int = 1,
+    hot_tour_penalty_alpha: int = 0,
+) -> ScoredBlock:
     """Score a single block based on policy and assign combi-prio rank."""
     n = len(block.tours)
     score = 0.0
@@ -431,6 +471,13 @@ def _score_single_block(block: Block, policy: ManualPolicy) -> ScoredBlock:
     # Long span penalty
     if block.total_work_hours > 12:
         score += PENALTY_LONG_SPAN
+
+    # Anti-overlap penalty (3er only)
+    if hot_tour_penalty_alpha > 0 and len(block.tours) == 3 and deg3_map is not None:
+        penalty = 0
+        for t in block.tours:
+            penalty += _hotness_bucket(deg3_map.get(t.id, 0), deg3_p95)
+        score -= hot_tour_penalty_alpha * penalty
         
     # Hash for dedupe
     tour_ids = tuple(sorted(t.id for t in block.tours))
@@ -445,7 +492,36 @@ def _score_single_block(block: Block, policy: ManualPolicy) -> ScoredBlock:
     )
 
 
-def _generate_all_blocks(tours: list[Tour], enable_splits: bool = True) -> list[Block]:
+def generate_all_blocks(
+    tours: list[Tour],
+    enable_splits: bool = True,
+    block_gen_overrides: BlockGenOverrides | None = None,
+) -> list[Block]:
+    return _generate_all_blocks(
+        tours,
+        enable_splits=enable_splits,
+        block_gen_overrides=block_gen_overrides,
+    )
+
+
+def _resolve_block_gen_overrides(
+    overrides: BlockGenOverrides | None,
+) -> dict[str, float | int]:
+    return {
+        "min_pause_minutes": MIN_PAUSE_MINUTES if overrides is None or overrides.min_pause_minutes is None else overrides.min_pause_minutes,
+        "max_pause_regular": MAX_PAUSE_REGULAR if overrides is None or overrides.max_pause_regular is None else overrides.max_pause_regular,
+        "split_pause_min": SPLIT_PAUSE_MIN if overrides is None or overrides.split_pause_min is None else overrides.split_pause_min,
+        "split_pause_max": SPLIT_PAUSE_MAX if overrides is None or overrides.split_pause_max is None else overrides.split_pause_max,
+        "max_spread_split_minutes": MAX_SPREAD_SPLIT if overrides is None or overrides.max_spread_split_minutes is None else overrides.max_spread_split_minutes,
+        "max_daily_span_hours": HARD_CONSTRAINTS.MAX_DAILY_SPAN_HOURS if overrides is None or overrides.max_daily_span_hours is None else overrides.max_daily_span_hours,
+    }
+
+
+def _generate_all_blocks(
+    tours: list[Tour],
+    enable_splits: bool = True,
+    block_gen_overrides: BlockGenOverrides | None = None,
+) -> list[Block]:
     """
     Generate 1er, 2er, and 3er blocks using two-zone pause logic.
     
@@ -464,8 +540,17 @@ def _generate_all_blocks(tours: list[Tour], enable_splits: bool = True) -> list[
     
     all_blocks: list[Block] = []
     
+    overrides = _resolve_block_gen_overrides(block_gen_overrides)
+
     for day, day_tours in tours_by_day.items():
-        can_follow_regular, can_follow_split = _build_adjacency(day_tours, enable_splits)
+        can_follow_regular, can_follow_split = _build_adjacency(
+            day_tours,
+            enable_splits,
+            min_pause_minutes=int(overrides["min_pause_minutes"]),
+            max_pause_regular=int(overrides["max_pause_regular"]),
+            split_pause_min=int(overrides["split_pause_min"]),
+            split_pause_max=int(overrides["split_pause_max"]),
+        )
         
         # 1er - ALWAYS (no gaps)
         for tour in day_tours:
@@ -482,7 +567,7 @@ def _generate_all_blocks(tours: list[Tour], enable_splits: bool = True) -> list[
         for i, t1 in enumerate(day_tours):
             for j in can_follow_regular[i]:
                 t2 = day_tours[j]
-                if _span_ok([t1, t2]):
+                if _span_ok([t1, t2], max_daily_span_hours=float(overrides["max_daily_span_hours"])):
                     gap = _calc_gap(t1, t2)
                     all_blocks.append(Block(
                         id=f"B2-{t1.id}-{t2.id}", 
@@ -500,7 +585,7 @@ def _generate_all_blocks(tours: list[Tour], enable_splits: bool = True) -> list[
                     t2 = day_tours[j]
                     # Check spread constraint for split blocks
                     span = _calc_span([t1, t2])
-                    if span <= MAX_SPREAD_SPLIT:
+                    if span <= int(overrides["max_spread_split_minutes"]):
                         gap = _calc_gap(t1, t2)
                         all_blocks.append(Block(
                             id=f"B2S-{t1.id}-{t2.id}",  # S suffix for split
@@ -515,13 +600,13 @@ def _generate_all_blocks(tours: list[Tour], enable_splits: bool = True) -> list[
         for i, t1 in enumerate(day_tours):
             for j in can_follow_regular[i]:
                 t2 = day_tours[j]
-                if not _span_ok([t1, t2]): 
+                if not _span_ok([t1, t2], max_daily_span_hours=float(overrides["max_daily_span_hours"])): 
                     continue
                      
                 for k in can_follow_regular[j]:
                     if k == i: continue
                     t3 = day_tours[k]
-                    if _span_ok([t1, t2, t3]):
+                    if _span_ok([t1, t2, t3], max_daily_span_hours=float(overrides["max_daily_span_hours"])):
                         gap1 = _calc_gap(t1, t2)
                         gap2 = _calc_gap(t2, t3)
                         all_blocks.append(Block(
@@ -550,7 +635,14 @@ def _calc_span(tours: list[Tour]) -> int:
     return last_end - first_start
 
 
-def _build_adjacency(tours: list[Tour], enable_splits: bool = True) -> tuple[dict[int, list[int]], dict[int, list[int]]]:
+def _build_adjacency(
+    tours: list[Tour],
+    enable_splits: bool = True,
+    min_pause_minutes: int = MIN_PAUSE_MINUTES,
+    max_pause_regular: int = MAX_PAUSE_REGULAR,
+    split_pause_min: int = SPLIT_PAUSE_MIN,
+    split_pause_max: int = SPLIT_PAUSE_MAX,
+) -> tuple[dict[int, list[int]], dict[int, list[int]]]:
     """
     Build two adjacency mappings for tours:
     - can_follow_regular: tours reachable with regular pause (30-120 min)
@@ -571,11 +663,11 @@ def _build_adjacency(tours: list[Tour], enable_splits: bool = True) -> tuple[dic
             gap = t2_start - t1_end
             
             # Zone 1: Regular pause (30-120 min)
-            if MIN_PAUSE_MINUTES <= gap <= MAX_PAUSE_REGULAR:
+            if min_pause_minutes <= gap <= max_pause_regular:
                 can_follow_regular[i].append(j)
             
             # Zone 2: Split pause (240-360 min) - only if enabled
-            elif enable_splits and SPLIT_PAUSE_MIN <= gap <= SPLIT_PAUSE_MAX:
+            elif enable_splits and split_pause_min <= gap <= split_pause_max:
                 can_follow_split[i].append(j)
             
             # Gaps 121-239 or >360 are forbidden - no entry
@@ -595,7 +687,13 @@ def _get_block_template(block: Block) -> str:
 
 
 # This function is now replaced by _score_single_block and inlined generation
-def _score_all_blocks(blocks: list[Block], policy: ManualPolicy) -> list[ScoredBlock]:
+def _score_all_blocks(
+    blocks: list[Block],
+    policy: ManualPolicy,
+    deg3_map: dict[str, int] | None = None,
+    deg3_p95: int = 1,
+    hot_tour_penalty_alpha: int = 0,
+) -> list[ScoredBlock]:
     """
     This function is deprecated by the new inlined generation and _score_single_block.
     It's kept for compatibility if other parts of the code still call it,
@@ -603,7 +701,15 @@ def _score_all_blocks(blocks: list[Block], policy: ManualPolicy) -> list[ScoredB
     """
     scored = []
     for block in blocks:
-        scored.append(_score_single_block(block, policy))
+        scored.append(
+            _score_single_block(
+                block,
+                policy,
+                deg3_map=deg3_map,
+                deg3_p95=deg3_p95,
+                hot_tour_penalty_alpha=hot_tour_penalty_alpha,
+            )
+        )
     return scored
 
 
@@ -617,6 +723,56 @@ def _max_gap_in_block(block: Block) -> int:
         gap = start_mins - end_mins
         max_gap = max(max_gap, gap)
     return max_gap
+
+
+def _percentile_int(values: list[int], pct: float) -> int:
+    if not values:
+        return 0
+    values_sorted = sorted(values)
+    idx = int(round((len(values_sorted) - 1) * pct))
+    return values_sorted[idx]
+
+
+def _compute_deg3_map(blocks: list[Block]) -> tuple[dict[str, int], int]:
+    """deg3 per tour_id based on 3er candidates only + p95 over deg>0."""
+    deg3: dict[str, int] = defaultdict(int)
+    for b in blocks:
+        if len(b.tours) != 3:
+            continue
+        for t in b.tours:
+            deg3[t.id] += 1
+    vals = [v for v in deg3.values() if v > 0]
+    p95 = _percentile_int(vals, 0.95) if vals else 1
+    if p95 <= 0:
+        p95 = 1
+    return dict(deg3), p95
+
+
+def _hotness_bucket(deg: int, p95: int) -> int:
+    """0..3 bucket for hotness scaling."""
+    if p95 <= 0:
+        return 0
+    if deg >= 3 * p95:
+        return 3
+    if deg >= 2 * p95:
+        return 2
+    if deg >= 1 * p95:
+        return 1
+    return 0
+
+
+def _compute_hot_block_share(blocks: list[Block], hot_k: int = 10) -> float:
+    blocks_3er = [b for b in blocks if len(b.tours) == 3]
+    if not blocks_3er:
+        return 0.0
+    deg3_map, _ = _compute_deg3_map(blocks_3er)
+    top_tours = sorted(deg3_map.items(), key=lambda item: (-item[1], item[0]))[:hot_k]
+    hot_ids = {tour_id for tour_id, _ in top_tours}
+    hot_block_hits = 0
+    for block in blocks_3er:
+        if any(tour.id in hot_ids for tour in block.tours):
+            hot_block_hits += 1
+    return hot_block_hits / len(blocks_3er)
 
 
 def _dedupe_blocks(scored: list[ScoredBlock]) -> list[ScoredBlock]:
@@ -957,11 +1113,12 @@ def _sanity_check(blocks: list[Block], tours: list[Tour]) -> tuple[bool, list[st
     return (len(errors) == 0, errors)
 
 
-def _span_ok(tours: list[Tour]) -> bool:
+def _span_ok(tours: list[Tour], max_daily_span_hours: float | None = None) -> bool:
     if not tours: return True
     starts = [t.start_time.hour * 60 + t.start_time.minute for t in tours]
     ends = [t.end_time.hour * 60 + t.end_time.minute for t in tours]
-    return (max(ends) - min(starts)) / 60.0 <= HARD_CONSTRAINTS.MAX_DAILY_SPAN_HOURS
+    span_limit = HARD_CONSTRAINTS.MAX_DAILY_SPAN_HOURS if max_daily_span_hours is None else max_daily_span_hours
+    return (max(ends) - min(starts)) / 60.0 <= span_limit
 
 
 def _compute_stats(blocks: list[Block], tours: list[Tour], elapsed: float, cap_stats: dict, scored: list[ScoredBlock]) -> dict:

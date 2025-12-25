@@ -56,6 +56,7 @@ def safe_print(*args, **kwargs):
 from src.domain.models import Block, Tour, Weekday
 from src.services.constraints import can_assign_block
 from src.services.smart_block_builder import (
+    BlockGenOverrides,
     build_weekly_blocks_smart,
     build_block_index,
     verify_coverage,
@@ -140,6 +141,15 @@ class ConfigV4(NamedTuple):
     gap_3er_min_minutes: int = 30  # Min gap between tours in a valid 3er
     cap_quota_3er: float = 0.25    # 3er reservation for MIN_HEADCOUNT_3ER
     w_3er_bonus: float = 10.0      # Small tie-break reward for 3er selection
+
+    # Block Generation Overrides (diagnostic only; default None = use hard constraints)
+    block_gen_min_pause_minutes: int | None = None
+    block_gen_max_pause_regular_minutes: int | None = None
+    block_gen_max_daily_span_hours: float | None = None
+    block_gen_max_spread_split_minutes: int | None = None
+    block_gen_split_pause_min_minutes: int | None = None
+    block_gen_split_pause_max_minutes: int | None = None
+    hot_tour_penalty_alpha: int = 0
     
     # BEST_BALANCED: balance-focused weights
     max_extra_driver_pct: float = 0.05   # Max +5% drivers vs min-headcount
@@ -163,6 +173,30 @@ class ConfigV4(NamedTuple):
     lns_receiver_k_values: tuple = (3, 5, 8, 12)     # Escalating receiver neighborhood sizes
     lns_attempt_budget_s: float = 2.0                # Budget per single kill attempt
     lns_max_attempts: int = 30                       # Maximum kill attempts
+
+
+def _build_block_gen_overrides(config: ConfigV4) -> BlockGenOverrides | None:
+    overrides = BlockGenOverrides(
+        min_pause_minutes=config.block_gen_min_pause_minutes,
+        max_pause_regular=config.block_gen_max_pause_regular_minutes,
+        max_daily_span_hours=config.block_gen_max_daily_span_hours,
+        max_spread_split_minutes=config.block_gen_max_spread_split_minutes,
+        split_pause_min=config.block_gen_split_pause_min_minutes,
+        split_pause_max=config.block_gen_split_pause_max_minutes,
+    )
+    if all(
+        value is None
+        for value in (
+            overrides.min_pause_minutes,
+            overrides.max_pause_regular,
+            overrides.max_daily_span_hours,
+            overrides.max_spread_split_minutes,
+            overrides.split_pause_min,
+            overrides.split_pause_max,
+        )
+    ):
+        return None
+    return overrides
 
 
 # =============================================================================
@@ -1411,6 +1445,58 @@ def _run_phase1_diagnostics(selected: list[Block], tours: list[Tour], block_inde
     stats["missed_3er_count"] = len(missed_3er_tours)
 
 
+def _solve_stage0_3er_upper_bound(
+    blocks: list[Block],
+    tours: list[Tour],
+    time_limit: float,
+    seed: int,
+) -> dict:
+    """Solve Stage0: max disjoint 3er packing (no coverage requirement)."""
+    blocks_3er = [(idx, block) for idx, block in enumerate(blocks) if len(block.tours) == 3]
+    model = cp_model.CpModel()
+    use = [model.NewBoolVar(f"s0_{idx}") for idx, _ in blocks_3er]
+
+    tour_to_blocks = defaultdict(list)
+    for var_idx, (_, block) in enumerate(blocks_3er):
+        for t in block.tours:
+            tour_to_blocks[t.id].append(var_idx)
+
+    for block_ids in tour_to_blocks.values():
+        model.Add(sum(use[i] for i in block_ids) <= 1)
+
+    model.Maximize(sum(use))
+
+    solver = cp_model.CpSolver()
+    solver.parameters.max_time_in_seconds = time_limit
+    solver.parameters.num_search_workers = 1
+    solver.parameters.random_seed = seed
+
+    status = solver.Solve(model)
+    status_name = solver.StatusName(status)
+    if status in (cp_model.OPTIMAL, cp_model.FEASIBLE):
+        obj = int(solver.ObjectiveValue())
+        bound = int(solver.BestObjectiveBound())
+        selected_block_indices = [
+            blocks_3er[i][0] for i in range(len(use)) if solver.Value(use[i]) == 1
+        ]
+    else:
+        obj = 0
+        bound = int(solver.BestObjectiveBound())
+        selected_block_indices = []
+
+    gap = 0.0
+    if bound > 0:
+        gap = (bound - obj) / bound
+
+    return {
+        "status": status_name,
+        "objective": obj,
+        "best_bound": bound,
+        "gap": gap,
+        "selected_block_indices": selected_block_indices,
+    }
+
+
 def _solve_capacity_single_cap(
     blocks: list[Block],
     tours: list[Tour],
@@ -1830,40 +1916,84 @@ def _solve_capacity_single_cap(
     safe_print(f"\n{'='*60}", flush=True)
     safe_print("v5 PASS 2: QUALITY OPTIMIZATION (locked headcount)", flush=True)
     safe_print(f"{'='*60}", flush=True)
+
+    # =========================================================================
+    # STAGE 0: MAX DISJOINT 3er UPPER BOUND (optional)
+    # =========================================================================
+    stage0_budget = min(30.0, max(5.0, pass2_budget * 0.10))
+    stage0_stats = _solve_stage0_3er_upper_bound(
+        blocks,
+        tours,
+        time_limit=stage0_budget,
+        seed=config.seed,
+    )
+    safe_print(
+        f"  STAGE 0: status={stage0_stats['status']} obj={stage0_stats['objective']} "
+        f"bound={stage0_stats['best_bound']} gap={stage0_stats['gap']:.3f}",
+        flush=True,
+    )
+
+    stage0_is_optimal = stage0_stats["status"] == "OPTIMAL"
+    stage0_has_solution = stage0_stats["status"] in ("OPTIMAL", "FEASIBLE")
+    skip_stage1 = False
+
+    if stage0_is_optimal:
+        model.Add(count_3er == int(stage0_stats["objective"]))
+        skip_stage1 = True
+        safe_print(
+            f"  STAGE 0 LOCK: count_3er == {int(stage0_stats['objective'])} (OPTIMAL)",
+            flush=True,
+        )
+    elif stage0_has_solution:
+        safe_print(
+            "  STAGE 0: FEASIBLE only, no hard lock (using hints only)",
+            flush=True,
+        )
+
+    if stage0_has_solution and stage0_stats["selected_block_indices"]:
+        model.ClearHints()
+        for b_idx in stage0_stats["selected_block_indices"]:
+            model.AddHint(use[b_idx], 1)
+        safe_print("  STAGE 0 HINTS: applied 3er selection hints", flush=True)
     
     # =========================================================================
     # STAGE 1: MAXIMIZE count_3er
     # =========================================================================
-    safe_print(f"\n  --- STAGE 1: MAXIMIZE count_3er ---", flush=True)
-    model.Maximize(count_3er)
-    
-    solver_s1 = cp_model.CpSolver()
-    solver_s1.parameters.max_time_in_seconds = stage_budgets[1]
-    solver_s1.parameters.num_search_workers = 1  # Determinism
-    solver_s1.parameters.random_seed = config.seed
-    
-    status_s1 = solver_s1.Solve(model)
-    
-    # K2: Status handling - distinguish OPTIMAL vs FEASIBLE (Edit 1: use status_str)
-    if status_s1 == cp_model.OPTIMAL:
-        safe_print(f"  STAGE 1: {status_str(status_s1)}", flush=True)
-    elif status_s1 == cp_model.FEASIBLE:
-        safe_print(f"  STAGE 1: {status_str(status_s1)} (not proven optimal)", flush=True)
+    if skip_stage1:
+        best_count_3er = int(stage0_stats["objective"])
+        safe_print(f"\n  --- STAGE 1: SKIPPED (count_3er fixed via Stage 0) ---", flush=True)
+        status_s1 = cp_model.OPTIMAL
     else:
-        safe_print(f"  STAGE 1 FAILED: {status_str(status_s1)}", flush=True)
-        if status_s1 == cp_model.MODEL_INVALID:
-            safe_print(f"  ERROR: Model is invalid. Check count expressions.", flush=True)
-        return None
-    
-    # K1: Use solver.Value(expr) instead of ObjectiveValue() for robustness
-    best_count_3er = solver_s1.Value(count_3er)
-    safe_print(f"  STAGE 1 RESULT: count_3er = {int(best_count_3er)}", flush=True)
-    
-    # Fix count_3er for subsequent stages
-    model.Add(count_3er == int(best_count_3er))
-    
-    # K3: Hints for Stage 2 (using helper to prevent duplicates)
-    reset_hints_from_solver(model, use, solver_s1)
+        safe_print(f"\n  --- STAGE 1: MAXIMIZE count_3er ---", flush=True)
+        model.Maximize(count_3er)
+        
+        solver_s1 = cp_model.CpSolver()
+        solver_s1.parameters.max_time_in_seconds = stage_budgets[1]
+        solver_s1.parameters.num_search_workers = 1  # Determinism
+        solver_s1.parameters.random_seed = config.seed
+        
+        status_s1 = solver_s1.Solve(model)
+        
+        # K2: Status handling - distinguish OPTIMAL vs FEASIBLE (Edit 1: use status_str)
+        if status_s1 == cp_model.OPTIMAL:
+            safe_print(f"  STAGE 1: {status_str(status_s1)}", flush=True)
+        elif status_s1 == cp_model.FEASIBLE:
+            safe_print(f"  STAGE 1: {status_str(status_s1)} (not proven optimal)", flush=True)
+        else:
+            safe_print(f"  STAGE 1 FAILED: {status_str(status_s1)}", flush=True)
+            if status_s1 == cp_model.MODEL_INVALID:
+                safe_print(f"  ERROR: Model is invalid. Check count expressions.", flush=True)
+            return None
+        
+        # K1: Use solver.Value(expr) instead of ObjectiveValue() for robustness
+        best_count_3er = solver_s1.Value(count_3er)
+        safe_print(f"  STAGE 1 RESULT: count_3er = {int(best_count_3er)}", flush=True)
+        
+        # Fix count_3er for subsequent stages
+        model.Add(count_3er == int(best_count_3er))
+        
+        # K3: Hints for Stage 2 (using helper to prevent duplicates)
+        reset_hints_from_solver(model, use, solver_s1)
     
     # =========================================================================
     # STAGE 2: MAXIMIZE count_2er_regular (with count_3er fixed)
@@ -2202,6 +2332,10 @@ def _solve_capacity_single_cap(
         "block_mix": block_mix,
         "split_2er_count": split_2er_count,
         "template_match_count": template_match_count,
+        "stage0_n3_obj": stage0_stats.get("objective"),
+        "stage0_bound": stage0_stats.get("best_bound"),
+        "stage0_status": stage0_stats.get("status"),
+        "stage0_gap": stage0_stats.get("gap"),
     }
     
     # RC1: Merge pack_telemetry into stats
@@ -2998,7 +3132,17 @@ def solve_forecast_v4(
     # Phase A: Build blocks
     t_block = perf_counter()
     safe_print("PHASE A: Block building start...", flush=True)
-    blocks, block_stats = build_weekly_blocks_smart(tours)
+    block_gen_overrides = _build_block_gen_overrides(config)
+    blocks, block_stats = build_weekly_blocks_smart(
+        tours,
+        cap_quota_2er=config.cap_quota_2er,
+        enable_diag=config.enable_diag_block_caps,
+        output_profile=config.output_profile,
+        gap_3er_min_minutes=config.gap_3er_min_minutes,
+        cap_quota_3er=config.cap_quota_3er,
+        block_gen_overrides=block_gen_overrides,
+        hot_tour_penalty_alpha=config.hot_tour_penalty_alpha,
+    )
     block_time = perf_counter() - t_block
     safe_print(f"PHASE A: Block building done in {block_time:.2f}s, generated {len(blocks)} blocks", flush=True)
     
@@ -3319,7 +3463,17 @@ def solve_forecast_fte_only(
     # Phase A: Build blocks
     t_block = perf_counter()
     safe_print("PHASE A: Block building...", flush=True)
-    blocks, block_stats = build_weekly_blocks_smart(tours)
+    block_gen_overrides = _build_block_gen_overrides(config)
+    blocks, block_stats = build_weekly_blocks_smart(
+        tours,
+        cap_quota_2er=config.cap_quota_2er,
+        enable_diag=config.enable_diag_block_caps,
+        output_profile=config.output_profile,
+        gap_3er_min_minutes=config.gap_3er_min_minutes,
+        cap_quota_3er=config.cap_quota_3er,
+        block_gen_overrides=block_gen_overrides,
+        hot_tour_penalty_alpha=config.hot_tour_penalty_alpha,
+    )
     block_time = perf_counter() - t_block
     safe_print(f"Generated {len(blocks)} blocks in {block_time:.1f}s", flush=True)
     
@@ -4144,7 +4298,17 @@ def solve_forecast_set_partitioning(
     # Phase A: Build blocks (reuse existing)
     t_block = perf_counter()
     safe_print("PHASE A: Block building...", flush=True)
-    blocks, block_stats = build_weekly_blocks_smart(tours)
+    block_gen_overrides = _build_block_gen_overrides(config)
+    blocks, block_stats = build_weekly_blocks_smart(
+        tours,
+        cap_quota_2er=config.cap_quota_2er,
+        enable_diag=config.enable_diag_block_caps,
+        output_profile=config.output_profile,
+        gap_3er_min_minutes=config.gap_3er_min_minutes,
+        cap_quota_3er=config.cap_quota_3er,
+        block_gen_overrides=block_gen_overrides,
+        hot_tour_penalty_alpha=config.hot_tour_penalty_alpha,
+    )
     block_time = perf_counter() - t_block
     safe_print(f"Generated {len(blocks)} blocks in {block_time:.1f}s", flush=True)
     

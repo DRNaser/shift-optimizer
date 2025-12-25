@@ -87,6 +87,15 @@ TUNABLE_FIELDS = {
     "pass2_min_time_s": {"type": "float", "default": 30.0, "min": 1.0, "max": 600.0},
     "w_choice_1er": {"type": "float", "default": 1.0, "min": 0.0, "max": 32.0},
     "w_3er_bonus": {"type": "float", "default": 10.0, "min": 0.0, "max": 100.0},
+
+    # Block Generation Overrides (diagnostic only)
+    "block_gen_min_pause_minutes": {"type": "int", "default": None, "min": 30, "max": 60},
+    "block_gen_max_pause_regular_minutes": {"type": "int", "default": None, "min": 30, "max": 90},
+    "block_gen_max_daily_span_hours": {"type": "float", "default": None, "min": 8.0, "max": 16.0},
+    "block_gen_max_spread_split_minutes": {"type": "int", "default": None, "min": 600, "max": 960},
+    "block_gen_split_pause_min_minutes": {"type": "int", "default": None, "min": 180, "max": 480},
+    "block_gen_split_pause_max_minutes": {"type": "int", "default": None, "min": 180, "max": 480},
+    "hot_tour_penalty_alpha": {"type": "int", "default": 0, "min": 0, "max": 20},
     
     # BEST_BALANCED weights
     "max_extra_driver_pct": {"type": "float", "default": 0.05, "min": 0.0, "max": 0.20},
