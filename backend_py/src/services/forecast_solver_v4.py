@@ -2164,7 +2164,7 @@ def _solve_capacity_single_cap(
     # STAGE 4: TRUE LEXICOGRAPHIC MIX (3er -> 2er_reg -> 2er_split -> 1er -> total_blocks)
     # =========================================================================
     safe_print(
-        "\n  --- STAGE 4: TRUE LEXICOGRAPHIC MIX (3er, 2er_reg, split, 1er, total_blocks) ---",
+        "\n  --- STAGE 4: TRUE LEXICOGRAPHIC MIX (3er, 2er_reg, 1er, split, total_blocks) ---",
         flush=True,
     )
     total_blocks = sum(use[b] for b in range(len(blocks)))
@@ -2196,8 +2196,8 @@ def _solve_capacity_single_cap(
     stage4_steps = [
         ("max_3er", "max", count_3er),
         ("max_2er_regular", "max", count_2er_regular),
-        ("min_2er_split", "min", count_2er_split),
         ("min_1er", "min", count_1er),
+        ("min_2er_split", "min", count_2er_split),
         ("min_total_blocks", "min", total_blocks),
     ]
 
@@ -2236,8 +2236,8 @@ def _solve_capacity_single_cap(
             "  STAGE 4 COMPLETE: "
             f"3er={stage4_objective_vector_found.get('max_3er')}, "
             f"2er_reg={stage4_objective_vector_found.get('max_2er_regular')}, "
-            f"2er_split={stage4_objective_vector_found.get('min_2er_split')}, "
             f"1er={stage4_objective_vector_found.get('min_1er')}, "
+            f"2er_split={stage4_objective_vector_found.get('min_2er_split')}, "
             f"total_blocks={stage4_objective_vector_found.get('min_total_blocks')}",
             flush=True,
         )
