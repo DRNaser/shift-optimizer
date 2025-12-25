@@ -80,40 +80,79 @@ def _count_avoidable_singles(selected: list["Block"], block_index: dict[str, lis
 
 
 def _build_greedy_hint(blocks: list["Block"], tours: list["Tour"]) -> tuple[list[int], dict]:
-    """Construct a greedy coverage hint favoring 3ers, then 2ers, then 1ers."""
-    covered = set()
-    hint = [0 for _ in blocks]
+    """Construct greedy coverage hints with multi-start variants."""
+    tour_degree_3er = defaultdict(int)
+    for block in blocks:
+        if len(block.tours) != 3:
+            continue
+        for t in block.tours:
+            tour_degree_3er[t.id] += 1
 
-    def sort_key(block: Block) -> tuple:
+    def rarity_weight(tour_id: str) -> float:
+        return 1.0 / max(1, tour_degree_3er.get(tour_id, 0))
+
+    def block_score(block: Block) -> float:
+        rarity = sum(rarity_weight(t.id) for t in block.tours)
+        spread_penalty = block.span_minutes / 10000.0
+        return rarity - spread_penalty
+
+    def build_variant(order_key) -> tuple[list[int], dict]:
+        covered = set()
+        hint = [0 for _ in blocks]
+
+        def pick_blocks(size: int) -> int:
+            picked = 0
+            candidates = [(i, b) for i, b in enumerate(blocks) if len(b.tours) == size]
+            candidates.sort(key=lambda pair: order_key(pair[1]), reverse=True)
+            for idx, block in candidates:
+                if any(t.id in covered for t in block.tours):
+                    continue
+                for t in block.tours:
+                    covered.add(t.id)
+                hint[idx] = 1
+                picked += 1
+            return picked
+
+        picked_3er = pick_blocks(3)
+        picked_2er = pick_blocks(2)
+        picked_1er = pick_blocks(1)
+        return hint, {
+            "hinted_3er": picked_3er,
+            "hinted_2er": picked_2er,
+            "hinted_1er": picked_1er,
+            "coverage_ok": len(covered) == len(tours),
+        }
+
+    def order_variant_a(block: Block) -> tuple:
+        return (block_score(block), -block.span_minutes, -block.max_pause_minutes, block.id)
+
+    def order_variant_b(block: Block) -> tuple:
+        return (-block.span_minutes, block_score(block), block.day.value, block.id)
+
+    def order_variant_c(block: Block) -> tuple:
         end_minutes = block.last_end.hour * 60 + block.last_end.minute
-        return (block.day.value, end_minutes, block.max_pause_minutes, block.id)
+        return (-end_minutes, block_score(block), block.day.value, block.id)
 
-    def pick_blocks(size: int) -> int:
-        picked = 0
-        for idx, block in sorted(
-            ((i, b) for i, b in enumerate(blocks) if len(b.tours) == size),
-            key=lambda pair: sort_key(pair[1]),
-        ):
-            if any(t.id in covered for t in block.tours):
-                continue
-            for t in block.tours:
-                covered.add(t.id)
-            hint[idx] = 1
-            picked += 1
-        return picked
+    day_single_pressure = defaultdict(int)
+    for block in blocks:
+        if len(block.tours) == 1:
+            day_single_pressure[block.day.value] += 1
 
-    picked_3er = pick_blocks(3)
-    picked_2er = pick_blocks(2)
-    picked_1er = pick_blocks(1)
+    def order_variant_d(block: Block) -> tuple:
+        return (day_single_pressure.get(block.day.value, 0), block_score(block), block.id)
 
-    coverage_ok = len(covered) == len(tours)
-    stats = {
-        "hinted_3er": picked_3er,
-        "hinted_2er": picked_2er,
-        "hinted_1er": picked_1er,
-        "coverage_ok": coverage_ok,
+    variants = {
+        "A": build_variant(order_variant_a),
+        "B": build_variant(order_variant_b),
+        "C": build_variant(order_variant_c),
+        "D": build_variant(order_variant_d),
     }
-    return hint, stats
+
+    best_key = max(variants.keys(), key=lambda k: variants[k][1]["hinted_3er"])
+    best_hint, best_stats = variants[best_key]
+    best_stats["variant"] = best_key
+    best_stats["variants"] = {k: v[1]["hinted_3er"] for k, v in variants.items()}
+    return best_hint, best_stats
 
 
 def _log_pool_diagnostics(
@@ -1288,7 +1327,7 @@ def solve_capacity_phase(
             rebuilt_3er = sum(1 for b in rebuilt if len(b.tours) == 3)
             current_1er = sum(1 for b in best_solution if len(b.tours) == 1)
             rebuilt_1er = sum(1 for b in rebuilt if len(b.tours) == 1)
-            if rebuilt_3er > current_3er or (rebuilt_3er == current_3er and rebuilt_1er < current_1er):
+            if rebuilt_3er > current_3er and rebuilt_1er <= current_1er:
                 safe_print(
                     f"[MOVE3] accepted: 3er {current_3er}->{rebuilt_3er}, 1er {current_1er}->{rebuilt_1er}",
                     flush=True,
@@ -1299,9 +1338,40 @@ def solve_capacity_phase(
                 best_stats["blocks_3er"] = rebuilt_3er
                 best_stats["selected_blocks"] = len(best_solution)
             else:
-                safe_print("[MOVE3] rejected (no improvement)", flush=True)
+                safe_print(
+                    f"[MOVE3] rejected: 3er {current_3er}->{rebuilt_3er}, 1er {current_1er}->{rebuilt_1er}",
+                    flush=True,
+                )
         else:
             safe_print("[MOVE3] skipped (no rebuild solution)", flush=True)
+
+    move4 = _move4_day_slab_rebuild(
+        current_solution=best_solution,
+        all_blocks=blocks,
+        tours=tours,
+        block_index=block_index,
+        config=config,
+    )
+    if move4:
+        current_3er = sum(1 for b in best_solution if len(b.tours) == 3)
+        rebuilt_3er = sum(1 for b in move4 if len(b.tours) == 3)
+        current_1er = sum(1 for b in best_solution if len(b.tours) == 1)
+        rebuilt_1er = sum(1 for b in move4 if len(b.tours) == 1)
+        if rebuilt_3er > current_3er and rebuilt_1er <= current_1er:
+            safe_print(
+                f"[MOVE4] accepted: 3er {current_3er}->{rebuilt_3er}, 1er {current_1er}->{rebuilt_1er}",
+                flush=True,
+            )
+            best_solution = move4
+            best_stats["blocks_1er"] = rebuilt_1er
+            best_stats["blocks_2er"] = sum(1 for b in best_solution if len(b.tours) == 2)
+            best_stats["blocks_3er"] = rebuilt_3er
+            best_stats["selected_blocks"] = len(best_solution)
+        else:
+            safe_print(
+                f"[MOVE4] rejected: 3er {current_3er}->{rebuilt_3er}, 1er {current_1er}->{rebuilt_1er}",
+                flush=True,
+            )
     
     return best_solution, best_stats
 
@@ -1503,34 +1573,57 @@ def _move3_component_rebuild(
     block_scores: dict[str, float],
     time_budget_s: float = 15.0,
     seed_k: int = 80,
-    neighborhood_limit: int = 3000,
+    neighborhood_limit: int = 20000,
 ) -> list[Block] | None:
-    """Component rebuild LNS to reduce avoidable singles while maximizing 3ers."""
+    """Component rebuild LNS to increase 3ers via larger neighborhoods."""
     from ortools.sat.python import cp_model
 
-    avoidable_single_tours = [
-        b.tours[0].id
+    tour_degree_3er = defaultdict(int)
+    for block in all_blocks:
+        if len(block.tours) != 3:
+            continue
+        for t in block.tours:
+            tour_degree_3er[t.id] += 1
+
+    candidate_seed_tours = [
+        t.id
         for b in current_solution
-        if len(b.tours) == 1
-        and any(len(candidate.tours) > 1 for candidate in block_index.get(b.tours[0].id, []))
+        for t in b.tours
+        if len(b.tours) < 3 and tour_degree_3er.get(t.id, 0) > 0
     ]
-    if not avoidable_single_tours:
+    if not candidate_seed_tours:
         return None
 
-    seed_tours = avoidable_single_tours[:seed_k]
+    candidate_seed_tours.sort(key=lambda tid: tour_degree_3er.get(tid, 0), reverse=True)
+    seed_tours = candidate_seed_tours[:seed_k]
+    seed_single_pct = (
+        sum(
+            1
+            for b in current_solution
+            if len(b.tours) == 1 and b.tours[0].id in seed_tours
+        )
+        / max(1, len(seed_tours))
+    )
+    avg_degree = sum(tour_degree_3er.get(tid, 0) for tid in seed_tours) / max(1, len(seed_tours))
+    safe_print(
+        f"[MOVE3] seeds: count={len(seed_tours)} avg_degree_3er={avg_degree:.2f} "
+        f"singles_pct={seed_single_pct:.2f}",
+        flush=True,
+    )
     neighborhood_blocks: dict[str, Block] = {}
     for tid in seed_tours:
         for block in block_index.get(tid, []):
             neighborhood_blocks[block.id] = block
 
-    expanded_tours = set()
-    for block in neighborhood_blocks.values():
-        for t in block.tours:
-            expanded_tours.add(t.id)
-
-    for tid in expanded_tours:
-        for block in block_index.get(tid, []):
-            neighborhood_blocks[block.id] = block
+    expanded_tours = set(seed_tours)
+    for _ in range(3):
+        next_tours = set()
+        for tid in expanded_tours:
+            for block in block_index.get(tid, []):
+                neighborhood_blocks[block.id] = block
+                for t in block.tours:
+                    next_tours.add(t.id)
+        expanded_tours.update(next_tours)
 
     fixed_tours = set()
     neighborhood_ids = set(neighborhood_blocks.keys())
@@ -1585,65 +1678,142 @@ def _move3_component_rebuild(
         model.AddExactlyOne([use[i] for i in block_indices])
 
     count_3er = model.NewIntVar(0, len(candidate_blocks), "move3_count_3er")
-    count_2er = model.NewIntVar(0, len(candidate_blocks), "move3_count_2er")
-    count_split = model.NewIntVar(0, len(candidate_blocks), "move3_count_split")
-    count_1er = model.NewIntVar(0, len(candidate_blocks), "move3_count_1er")
-
     model.Add(count_3er == sum(use[i] for i, b in enumerate(candidate_blocks) if len(b.tours) == 3))
-    model.Add(count_2er == sum(use[i] for i, b in enumerate(candidate_blocks) if len(b.tours) == 2))
-    model.Add(
-        count_split
-        == sum(
-            use[i]
-            for i, b in enumerate(candidate_blocks)
-            if len(b.tours) == 2 and normalize_pause_zone(b.pause_zone)[0] == "SPLIT"
-        )
-    )
-    model.Add(count_1er == sum(use[i] for i, b in enumerate(candidate_blocks) if len(b.tours) == 1))
+    model.Maximize(count_3er)
 
-    def solve_stage(objective, maximize: bool, budget: float) -> tuple[cp_model.CpSolver, int] | None:
-        if maximize:
-            model.Maximize(objective)
-        else:
-            model.Minimize(objective)
-        solver = cp_model.CpSolver()
-        solver.parameters.max_time_in_seconds = budget
-        solver.parameters.num_search_workers = 1
-        solver.parameters.random_seed = config.seed
-        status = solver.Solve(model)
-        if status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
-            return None
-        return solver, int(solver.Value(objective))
-
-    stage_budget = max(2.0, time_budget_s / 4)
-
-    result = solve_stage(count_3er, True, stage_budget)
-    if result is None:
+    solver = cp_model.CpSolver()
+    solver.parameters.max_time_in_seconds = time_budget_s
+    solver.parameters.num_search_workers = 1
+    solver.parameters.random_seed = config.seed
+    status = solver.Solve(model)
+    safe_print(f"[MOVE3] solve status={status} time={solver.WallTime():.2f}s", flush=True)
+    if status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
         return None
-    solver_s1, best_3er = result
-    model.Add(count_3er >= best_3er)
 
-    result = solve_stage(count_2er, True, stage_budget)
-    if result is None:
-        return None
-    solver_s2, best_2er = result
-    model.Add(count_2er >= best_2er)
-
-    result = solve_stage(count_split, False, stage_budget)
-    if result is None:
-        return None
-    solver_s3, best_split = result
-    model.Add(count_split <= best_split)
-
-    result = solve_stage(count_1er, False, stage_budget)
-    if result is None:
-        return None
-    solver_s4, best_1er = result
-    model.Add(count_1er <= best_1er)
-
-    selected = [candidate_blocks[i] for i in range(len(candidate_blocks)) if solver_s4.Value(use[i]) == 1]
+    selected = [candidate_blocks[i] for i in range(len(candidate_blocks)) if solver.Value(use[i]) == 1]
 
     fixed_blocks = [b for b in current_solution if b.id not in neighborhood_ids]
+    return fixed_blocks + selected
+
+
+def _move4_day_slab_rebuild(
+    current_solution: list[Block],
+    all_blocks: list[Block],
+    tours: list[Tour],
+    block_index: dict[str, list[Block]],
+    config: ConfigV4,
+    time_budget_s: float = 20.0,
+    window_minutes: int = 180,
+    buffer_minutes: int = 60,
+) -> list[Block] | None:
+    """Day-slab rebuild: maximize 3ers within a dense single window."""
+    from ortools.sat.python import cp_model
+
+    day_single_counts = defaultdict(int)
+    for block in current_solution:
+        if len(block.tours) == 1:
+            day_single_counts[block.day.value] += 1
+
+    if not day_single_counts:
+        return None
+
+    target_day = max(day_single_counts, key=day_single_counts.get)
+    day_tours = [t for t in tours if t.day.value == target_day]
+    if not day_tours:
+        return None
+
+    def tour_start_minutes(tour: Tour) -> int:
+        return tour.start_time.hour * 60 + tour.start_time.minute
+
+    day_tours.sort(key=tour_start_minutes)
+    best_window = None
+    best_single_count = -1
+    start_idx = 0
+    for end_idx, tour in enumerate(day_tours):
+        while tour_start_minutes(tour) - tour_start_minutes(day_tours[start_idx]) > window_minutes:
+            start_idx += 1
+        window_tours = day_tours[start_idx : end_idx + 1]
+        single_count = sum(
+            1
+            for b in current_solution
+            if len(b.tours) == 1
+            and b.tours[0] in window_tours
+        )
+        if single_count > best_single_count:
+            best_single_count = single_count
+            best_window = (tour_start_minutes(day_tours[start_idx]), tour_start_minutes(tour))
+
+    if best_window is None:
+        return None
+
+    window_start, window_end = best_window
+    window_start -= buffer_minutes
+    window_end += buffer_minutes
+
+    window_tour_ids = {
+        t.id
+        for t in day_tours
+        if window_start <= tour_start_minutes(t) <= window_end
+    }
+    if not window_tour_ids:
+        return None
+
+    candidate_blocks = [
+        b for b in all_blocks
+        if b.day.value == target_day and any(t.id in window_tour_ids for t in b.tours)
+    ]
+    if not candidate_blocks:
+        return None
+
+    fixed_tours = set()
+    for block in current_solution:
+        if block.day.value != target_day:
+            for t in block.tours:
+                fixed_tours.add(t.id)
+
+    neighborhood_tours = {
+        t.id for b in candidate_blocks for t in b.tours if t.id not in fixed_tours
+    }
+    safe_print(
+        f"[MOVE4] day={target_day} window=[{window_start},{window_end}] "
+        f"tours_in_window={len(window_tour_ids)} blocks_in_neighborhood={len(candidate_blocks)}",
+        flush=True,
+    )
+    if not neighborhood_tours:
+        return None
+
+    model = cp_model.CpModel()
+    use = {}
+    for i, block in enumerate(candidate_blocks):
+        use[i] = model.NewBoolVar(f"move4_use_{i}")
+
+    tour_to_blocks = defaultdict(list)
+    for i, block in enumerate(candidate_blocks):
+        for t in block.tours:
+            if t.id in neighborhood_tours:
+                tour_to_blocks[t.id].append(i)
+
+    for tour_id in neighborhood_tours:
+        block_indices = tour_to_blocks.get(tour_id, [])
+        if not block_indices:
+            return None
+        model.AddExactlyOne([use[i] for i in block_indices])
+
+    count_3er = model.NewIntVar(0, len(candidate_blocks), "move4_count_3er")
+    model.Add(count_3er == sum(use[i] for i, b in enumerate(candidate_blocks) if len(b.tours) == 3))
+    model.Maximize(count_3er)
+
+    solver = cp_model.CpSolver()
+    solver.parameters.max_time_in_seconds = time_budget_s
+    solver.parameters.num_search_workers = 1
+    solver.parameters.random_seed = config.seed
+    status = solver.Solve(model)
+    safe_print(f"[MOVE4] solve status={status} time={solver.WallTime():.2f}s", flush=True)
+    if status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
+        return None
+
+    selected = [candidate_blocks[i] for i in range(len(candidate_blocks)) if solver.Value(use[i]) == 1]
+    fixed_blocks = [b for b in current_solution if b.day.value != target_day]
     return fixed_blocks + selected
 
 
@@ -2149,6 +2319,17 @@ def _solve_capacity_single_cap(
     safe_print(f"\n{'='*60}", flush=True)
     safe_print("v5 PASS 2: QUALITY OPTIMIZATION (locked headcount)", flush=True)
     safe_print(f"{'='*60}", flush=True)
+
+    # Decision strategy: prioritize 3er vars, then 2er, then 1er (set to 1 first)
+    vars_3er = [use[b] for b, block in enumerate(blocks) if len(block.tours) == 3]
+    vars_2er = [use[b] for b, block in enumerate(blocks) if len(block.tours) == 2]
+    vars_1er = [use[b] for b, block in enumerate(blocks) if len(block.tours) == 1]
+    if vars_3er:
+        model.AddDecisionStrategy(vars_3er, cp_model.CHOOSE_FIRST, cp_model.SELECT_MAX_VALUE)
+    if vars_2er:
+        model.AddDecisionStrategy(vars_2er, cp_model.CHOOSE_FIRST, cp_model.SELECT_MAX_VALUE)
+    if vars_1er:
+        model.AddDecisionStrategy(vars_1er, cp_model.CHOOSE_FIRST, cp_model.SELECT_MAX_VALUE)
     
     # =========================================================================
     # STAGE 1: MAXIMIZE count_3er
@@ -2162,9 +2343,59 @@ def _solve_capacity_single_cap(
         model.AddHint(var, hint_values[idx])
     safe_print(
         f"  STAGE 1 HINT: 3er={hint_stats['hinted_3er']} 2er={hint_stats['hinted_2er']} "
-        f"1er={hint_stats['hinted_1er']} coverage_ok={hint_stats['coverage_ok']}",
+        f"1er={hint_stats['hinted_1er']} coverage_ok={hint_stats['coverage_ok']} "
+        f"variant={hint_stats.get('variant')} variants_n3={hint_stats.get('variants')}",
         flush=True,
     )
+
+    # Stage-1 fix/unfix ramp using assumptions on hinted 3er vars
+    hinted_3er_vars = [
+        use[i]
+        for i, block in enumerate(blocks)
+        if hint_values[i] == 1 and len(block.tours) == 3
+    ]
+    ramp_rounds = [0.8, 0.6, 0.4, 0.2]
+    best_ramp_solver = None
+    best_ramp_3er = -1
+    if not hasattr(cp_model.CpSolver, "SolveWithAssumptions"):
+        safe_print("[PHASE1][STAGE1_RAMP] SolveWithAssumptions unavailable, skipping ramp", flush=True)
+        ramp_rounds = []
+
+    for ridx, frac in enumerate(ramp_rounds, start=1):
+        if not hinted_3er_vars:
+            break
+        fix_count = max(1, int(len(hinted_3er_vars) * frac))
+        assumptions = [var for var in hinted_3er_vars[:fix_count]]
+
+        ramp_solver = cp_model.CpSolver()
+        ramp_solver.parameters.max_time_in_seconds = 10.0
+        ramp_solver.parameters.num_search_workers = 1
+        ramp_solver.parameters.random_seed = config.seed
+
+        ramp_status = ramp_solver.SolveWithAssumptions(model, assumptions)
+        ramp_obj = ramp_solver.ObjectiveValue()
+        ramp_bound = ramp_solver.BestObjectiveBound()
+        ramp_bound_norm = max(ramp_bound, ramp_obj)
+        ramp_gap = ramp_bound_norm - ramp_obj
+        ramp_time = ramp_solver.WallTime()
+        safe_print(
+            f"[PHASE1][STAGE1_RAMP{ridx}] status={status_str(ramp_status)} obj={int(ramp_obj)} "
+            f"best_bound={int(ramp_bound_norm)} gap={int(ramp_gap)} time={ramp_time:.2f}s "
+            f"conflicts={ramp_solver.NumConflicts()} branches={ramp_solver.NumBranches()} "
+            f"fixed_3er={fix_count}",
+            flush=True,
+        )
+        if ramp_status in (cp_model.OPTIMAL, cp_model.FEASIBLE):
+            ramp_count_3er = int(ramp_solver.Value(count_3er))
+            if ramp_count_3er > best_ramp_3er:
+                best_ramp_3er = ramp_count_3er
+                best_ramp_solver = ramp_solver
+
+    if best_ramp_solver is not None:
+        model.ClearHints()
+        for idx, var in use.items():
+            model.AddHint(var, int(best_ramp_solver.Value(var)))
+        safe_print(f"  STAGE 1 RAMP: best_n3={best_ramp_3er} (using as hint)", flush=True)
 
     solver_s1 = cp_model.CpSolver()
     solver_s1.parameters.max_time_in_seconds = stage_budgets[1]
@@ -2201,6 +2432,9 @@ def _solve_capacity_single_cap(
         "time": round(stage1_walltime, 2),
         "conflicts": stage1_conflicts,
         "branches": stage1_branches,
+        "hint_n3": hint_stats.get("hinted_3er"),
+        "hint_variants_n3": hint_stats.get("variants"),
+        "hint_variant": hint_stats.get("variant"),
     }
 
     if stage1_best_bound_norm < stage1_obj:
