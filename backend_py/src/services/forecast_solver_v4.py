@@ -1558,6 +1558,12 @@ def _move3_component_rebuild(
     neighborhood_tours = {
         t.id for b in candidate_blocks for t in b.tours if t.id not in fixed_tours
     }
+    unfixed_vars = len(candidate_blocks)
+    safe_print(
+        f"[MOVE3] neighborhood_size: unfixed_vars={unfixed_vars} "
+        f"blocks_in_neighborhood={len(candidate_blocks)} tours_in_neighborhood={len(neighborhood_tours)}",
+        flush=True,
+    )
     if not neighborhood_tours:
         return None
 
@@ -2185,12 +2191,16 @@ def _solve_capacity_single_cap(
     stage1_best_bound_norm = max(stage1_best_bound, stage1_obj)
     stage1_gap = stage1_best_bound_norm - stage1_obj
     stage1_walltime = solver_s1.WallTime()
+    stage1_conflicts = solver_s1.NumConflicts()
+    stage1_branches = solver_s1.NumBranches()
     stage1_metrics = {
         "status": status_str(status_s1),
         "obj": int(stage1_obj),
         "best_bound": int(stage1_best_bound_norm),
         "gap": int(stage1_gap),
         "time": round(stage1_walltime, 2),
+        "conflicts": stage1_conflicts,
+        "branches": stage1_branches,
     }
 
     if stage1_best_bound_norm < stage1_obj:
@@ -2201,7 +2211,8 @@ def _solve_capacity_single_cap(
 
     safe_print(
         f"[PHASE1][STAGE1_MAX3ER] status={status_str(status_s1)} obj={int(stage1_obj)} "
-        f"best_bound={int(stage1_best_bound_norm)} gap={int(stage1_gap)} time={stage1_walltime:.2f}s",
+        f"best_bound={int(stage1_best_bound_norm)} gap={int(stage1_gap)} time={stage1_walltime:.2f}s "
+        f"conflicts={stage1_conflicts} branches={stage1_branches}",
         flush=True,
     )
     safe_print(f"  STAGE 1 RESULT: count_3er = {int(best_count_3er)}", flush=True)
