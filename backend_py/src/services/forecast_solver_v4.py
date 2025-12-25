@@ -1711,8 +1711,8 @@ def _solve_capacity_single_cap(
     
     # Debug: count available types
     avail_1er = sum(1 for b in blocks if len(b.tours) == 1)
-    avail_2er_reg = sum(1 for b in blocks if len(b.tours) == 2 and b.pause_zone.value == "REGULAR")
-    avail_2er_split = sum(1 for b in blocks if len(b.tours) == 2 and b.pause_zone.value == "SPLIT")
+    avail_2er_reg = sum(1 for b in blocks if len(b.tours) == 2 and b.pause_zone == "REGULAR")
+    avail_2er_split = sum(1 for b in blocks if len(b.tours) == 2 and b.pause_zone == "SPLIT")
     avail_3er = sum(1 for b in blocks if len(b.tours) == 3)
     safe_print(f"  AVAILABLE BLOCKS: 1er={avail_1er}, 2er_REG={avail_2er_reg}, 2er_SPLIT={avail_2er_split}, 3er={avail_3er}", flush=True)
     
@@ -1741,11 +1741,11 @@ def _solve_capacity_single_cap(
     ))
     model.Add(count_2er_regular == sum(
         use[b] for b, block in enumerate(blocks) 
-        if len(block.tours) == 2 and block.pause_zone.value == "REGULAR"
+        if len(block.tours) == 2 and block.pause_zone == "REGULAR"
     ))
     model.Add(count_2er_split == sum(
         use[b] for b, block in enumerate(blocks)
-        if len(block.tours) == 2 and block.pause_zone.value == "SPLIT"
+        if len(block.tours) == 2 and block.pause_zone == "SPLIT"
     ))
     model.Add(count_1er == sum(
         use[b] for b, block in enumerate(blocks) if len(block.tours) == 1
@@ -2111,8 +2111,8 @@ def _solve_capacity_single_cap(
         
         # INVARIANT CHECK: Packing counts must match locked values
         actual_3er = sum(1 for b in selected if len(b.tours) == 3)
-        actual_2R = sum(1 for b in selected if len(b.tours) == 2 and b.pause_zone.value == "REGULAR")
-        actual_2S = sum(1 for b in selected if len(b.tours) == 2 and b.pause_zone.value == "SPLIT")
+        actual_2R = sum(1 for b in selected if len(b.tours) == 2 and b.pause_zone == "REGULAR")
+        actual_2S = sum(1 for b in selected if len(b.tours) == 2 and b.pause_zone == "SPLIT")
         actual_1er = sum(1 for b in selected if len(b.tours) == 1)
         
         mismatch = (
@@ -2134,8 +2134,8 @@ def _solve_capacity_single_cap(
     
     # RC1: Detailed Stats by Category
     sel_1er = sum(1 for b in selected if len(b.tours) == 1)
-    sel_2er_regular = sum(1 for b in selected if len(b.tours) == 2 and b.pause_zone.value == "REGULAR")
-    sel_2er_split = sum(1 for b in selected if len(b.tours) == 2 and b.pause_zone.value == "SPLIT")
+    sel_2er_regular = sum(1 for b in selected if len(b.tours) == 2 and b.pause_zone == "REGULAR")
+    sel_2er_split = sum(1 for b in selected if len(b.tours) == 2 and b.pause_zone == "SPLIT")
     sel_3er = sum(1 for b in selected if len(b.tours) == 3)
     sel_2er_total = sel_2er_regular + sel_2er_split
     safe_print(f"  SELECTED BLOCKS: 3er={sel_3er}, 2er_REG={sel_2er_regular}, 2er_SPLIT={sel_2er_split}, 1er={sel_1er}", flush=True)
