@@ -276,21 +276,22 @@ class RunManager:
 
         # Log listener with rate limiting
         def log_fn(msg: str):
-            # Detect phase from log content
+            # Detect phase from log content (case-insensitive)
             phase = current_phase[0]
-            if "Phase 1" in msg or "BUILD" in msg: 
+            normalized = msg.upper()
+            if "PHASE 1" in normalized or "PHASE 3" in normalized or "BUILD" in normalized:
                 phase = "PHASE1_CAPACITY"
                 current_phase[0] = phase
-            elif "Phase 2" in msg or "ASSIGN" in msg: 
+            elif "PHASE 2" in normalized or "PHASE 4" in normalized or "ASSIGN" in normalized:
                 phase = "PHASE2_ASSIGNMENT"
                 current_phase[0] = phase
-            elif "LNS" in msg: 
+            elif normalized.startswith("LNS ") or normalized.startswith("LNS:"):
                 phase = "LNS"
                 current_phase[0] = phase
-            elif "Repair" in msg: 
+            elif "REPAIR" in normalized:
                 phase = "REPAIR"
                 current_phase[0] = phase
-                
+
             # Rate-limited log
             ctx.add_log_event(msg, phase=phase)
 
