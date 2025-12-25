@@ -249,6 +249,11 @@ def ensure_singletons_for_all_tours(
     return blocks + injected, injected
 
 
+def _pause_zone_value(block: Block) -> str:
+    pause_zone = block.pause_zone
+    return pause_zone.value if hasattr(pause_zone, "value") else str(pause_zone)
+
+
 # =============================================================================
 # RESULT MODELS
 # =============================================================================
@@ -1808,8 +1813,8 @@ def _solve_capacity_single_cap(
     
     # Debug: count available types
     avail_1er = sum(1 for b in blocks if len(b.tours) == 1)
-    avail_2er_reg = sum(1 for b in blocks if len(b.tours) == 2 and b.pause_zone.value == "REGULAR")
-    avail_2er_split = sum(1 for b in blocks if len(b.tours) == 2 and b.pause_zone.value == "SPLIT")
+    avail_2er_reg = sum(1 for b in blocks if len(b.tours) == 2 and _pause_zone_value(b) == "REGULAR")
+    avail_2er_split = sum(1 for b in blocks if len(b.tours) == 2 and _pause_zone_value(b) == "SPLIT")
     avail_3er = sum(1 for b in blocks if len(b.tours) == 3)
     safe_print(f"  AVAILABLE BLOCKS: 1er={avail_1er}, 2er_REG={avail_2er_reg}, 2er_SPLIT={avail_2er_split}, 3er={avail_3er}", flush=True)
     
@@ -1838,11 +1843,11 @@ def _solve_capacity_single_cap(
     ))
     model.Add(count_2er_regular == sum(
         use[b] for b, block in enumerate(blocks) 
-        if len(block.tours) == 2 and block.pause_zone.value == "REGULAR"
+        if len(block.tours) == 2 and _pause_zone_value(block) == "REGULAR"
     ))
     model.Add(count_2er_split == sum(
         use[b] for b, block in enumerate(blocks)
-        if len(block.tours) == 2 and block.pause_zone.value == "SPLIT"
+        if len(block.tours) == 2 and _pause_zone_value(block) == "SPLIT"
     ))
     model.Add(count_1er == sum(
         use[b] for b, block in enumerate(blocks) if len(block.tours) == 1
@@ -1855,17 +1860,17 @@ def _solve_capacity_single_cap(
     total_budget = time_limit if time_limit is not None else config.time_limit_phase1
     
     # v5: Two-Pass budget split: 40% Pass 1 (Capacity), 60% Pass 2 (Quality/Lexicographic)
-    pass1_budget = total_budget * 0.40
-    pass2_budget = total_budget * 0.60
+    pass1_budget = total_budget * 0.30
+    pass2_budget = total_budget * 0.70
     
     # Pass 2 stage budgets (split among 5 lexicographic stages)
-    # Split: 35% stage1 (3er most important), 25% stage2, 15% stage3, 10% stage4, 15% stage5
+    # Split: favor stage2/3 to avoid UNKNOWN under tight budgets
     stage_budgets = {
-        1: pass2_budget * 0.35,
-        2: pass2_budget * 0.25,
-        3: pass2_budget * 0.15,
+        1: pass2_budget * 0.15,
+        2: pass2_budget * 0.40,
+        3: pass2_budget * 0.30,
         4: pass2_budget * 0.10,
-        5: pass2_budget * 0.15,
+        5: pass2_budget * 0.05,
     }
     
     safe_print(f"  TWO-PASS BUDGET (total={total_budget:.1f}s):", flush=True)
@@ -1946,23 +1951,28 @@ def _solve_capacity_single_cap(
     # K2: Status handling - distinguish OPTIMAL vs FEASIBLE (Edit 1: use status_str)
     if status_s1 == cp_model.OPTIMAL:
         safe_print(f"  STAGE 1: {status_str(status_s1)}", flush=True)
+        best_count_3er = solver_s1.Value(count_3er)
+        safe_print(f"  STAGE 1 RESULT: count_3er = {int(best_count_3er)}", flush=True)
+        model.Add(count_3er == int(best_count_3er))
+        reset_hints_from_solver(model, use, solver_s1)
+        stage1_solver_for_fallback = solver_s1
     elif status_s1 == cp_model.FEASIBLE:
         safe_print(f"  STAGE 1: {status_str(status_s1)} (not proven optimal)", flush=True)
+        best_count_3er = solver_s1.Value(count_3er)
+        safe_print(f"  STAGE 1 RESULT: count_3er = {int(best_count_3er)}", flush=True)
+        model.Add(count_3er >= int(best_count_3er))
+        reset_hints_from_solver(model, use, solver_s1)
+        stage1_solver_for_fallback = solver_s1
     else:
-        safe_print(f"  STAGE 1 FAILED: {status_str(status_s1)}", flush=True)
+        safe_print(f"  STAGE 1 FAILED: {status_str(status_s1)} (using Pass 1 fallback)", flush=True)
         if status_s1 == cp_model.MODEL_INVALID:
             safe_print(f"  ERROR: Model is invalid. Check count expressions.", flush=True)
-        return None
-    
-    # K1: Use solver.Value(expr) instead of ObjectiveValue() for robustness
-    best_count_3er = solver_s1.Value(count_3er)
-    safe_print(f"  STAGE 1 RESULT: count_3er = {int(best_count_3er)}", flush=True)
-    
-    # Fix count_3er for subsequent stages
-    model.Add(count_3er == int(best_count_3er))
-    
-    # K3: Hints for Stage 2 (using helper to prevent duplicates)
-    reset_hints_from_solver(model, use, solver_s1)
+            return None
+        best_count_3er = solver_pass1.Value(count_3er)
+        safe_print(f"  STAGE 1 FALLBACK: count_3er = {int(best_count_3er)}", flush=True)
+        model.Add(count_3er >= int(best_count_3er))
+        reset_hints_from_solver(model, use, solver_pass1)
+        stage1_solver_for_fallback = solver_pass1
     
     # =========================================================================
     # STAGE 2: MAXIMIZE count_2er_regular (with count_3er fixed)
@@ -1979,25 +1989,28 @@ def _solve_capacity_single_cap(
     
     if status_s2 == cp_model.OPTIMAL:
         safe_print(f"  STAGE 2: OPTIMAL", flush=True)
-    elif status_s2 == cp_model.FEASIBLE:
-        safe_print(f"  STAGE 2: FEASIBLE (not proven optimal)", flush=True)
-    else:
-        safe_print(f"  STAGE 2 FAILED: {status_str(status_s2)}", flush=True)
-        return None
-    
-    best_count_2er_regular = solver_s2.Value(count_2er_regular)
-    safe_print(f"  STAGE 2 RESULT: count_2er_regular = {int(best_count_2er_regular)}", flush=True)
-    
-    # Fix count_2er_regular (Edit 3: use >= for FEASIBLE, == for OPTIMAL)
-    if status_s2 == cp_model.OPTIMAL:
+        best_count_2er_regular = solver_s2.Value(count_2er_regular)
+        safe_print(f"  STAGE 2 RESULT: count_2er_regular = {int(best_count_2er_regular)}", flush=True)
         model.Add(count_2er_regular == int(best_count_2er_regular))
         safe_print(f"  Fixation: count_2er_regular == {int(best_count_2er_regular)} (OPTIMAL)", flush=True)
-    else:
+        reset_hints_from_solver(model, use, solver_s2)
+        stage2_solver_for_fallback = solver_s2
+    elif status_s2 == cp_model.FEASIBLE:
+        safe_print(f"  STAGE 2: FEASIBLE (not proven optimal)", flush=True)
+        best_count_2er_regular = solver_s2.Value(count_2er_regular)
+        safe_print(f"  STAGE 2 RESULT: count_2er_regular = {int(best_count_2er_regular)}", flush=True)
         model.Add(count_2er_regular >= int(best_count_2er_regular))
         safe_print(f"  Fixation: count_2er_regular >= {int(best_count_2er_regular)} (FEASIBLE, fail-open)", flush=True)
-    
-    # Hints for Stage 3 (clear previous hints first!)
-    reset_hints_from_solver(model, use, solver_s2)
+        reset_hints_from_solver(model, use, solver_s2)
+        stage2_solver_for_fallback = solver_s2
+    else:
+        safe_print(f"  STAGE 2 FAILED: {status_str(status_s2)} (using Stage 1 fallback)", flush=True)
+        best_count_2er_regular = stage1_solver_for_fallback.Value(count_2er_regular)
+        safe_print(f"  STAGE 2 FALLBACK: count_2er_regular = {int(best_count_2er_regular)}", flush=True)
+        model.Add(count_2er_regular >= int(best_count_2er_regular))
+        safe_print(f"  Fixation: count_2er_regular >= {int(best_count_2er_regular)} (fallback)", flush=True)
+        reset_hints_from_solver(model, use, stage1_solver_for_fallback)
+        stage2_solver_for_fallback = stage1_solver_for_fallback
     
     # =========================================================================
     # EDIT 4: PRE-FLIGHT FEASIBILITY CHECK (after Stage 2 fixation)
@@ -2062,20 +2075,25 @@ def _solve_capacity_single_cap(
     
     if status_s3 == cp_model.OPTIMAL:
         safe_print(f"  STAGE 3: OPTIMAL", flush=True)
+        best_count_2er_split = solver_s3.Value(count_2er_split)
+        safe_print(f"  STAGE 3 RESULT: count_2er_split = {int(best_count_2er_split)}", flush=True)
+        model.Add(count_2er_split == int(best_count_2er_split))
+        reset_hints_from_solver(model, use, solver_s3)
+        stage3_solver_for_fallback = solver_s3
     elif status_s3 == cp_model.FEASIBLE:
         safe_print(f"  STAGE 3: FEASIBLE (not proven optimal)", flush=True)
+        best_count_2er_split = solver_s3.Value(count_2er_split)
+        safe_print(f"  STAGE 3 RESULT: count_2er_split = {int(best_count_2er_split)}", flush=True)
+        model.Add(count_2er_split >= int(best_count_2er_split))
+        reset_hints_from_solver(model, use, solver_s3)
+        stage3_solver_for_fallback = solver_s3
     else:
-        safe_print(f"  STAGE 3 FAILED: {status_str(status_s3)}", flush=True)
-        return None
-    
-    best_count_2er_split = solver_s3.Value(count_2er_split)
-    safe_print(f"  STAGE 3 RESULT: count_2er_split = {int(best_count_2er_split)}", flush=True)
-    
-    # Fix count_2er_split
-    model.Add(count_2er_split == int(best_count_2er_split))
-    
-    # K3: Hints for Stage 4 (using helper to prevent duplicates)
-    reset_hints_from_solver(model, use, solver_s3)
+        safe_print(f"  STAGE 3 FAILED: {status_str(status_s3)} (using Stage 2 fallback)", flush=True)
+        best_count_2er_split = stage2_solver_for_fallback.Value(count_2er_split)
+        safe_print(f"  STAGE 3 FALLBACK: count_2er_split = {int(best_count_2er_split)}", flush=True)
+        model.Add(count_2er_split >= int(best_count_2er_split))
+        reset_hints_from_solver(model, use, stage2_solver_for_fallback)
+        stage3_solver_for_fallback = stage2_solver_for_fallback
     
     # =========================================================================
     # STAGE 4: MINIMIZE count_1er (with all multi-counts fixed)
@@ -2092,23 +2110,28 @@ def _solve_capacity_single_cap(
     
     if status_s4 == cp_model.OPTIMAL:
         safe_print(f"  STAGE 4: OPTIMAL", flush=True)
+        best_count_1er = solver_s4.Value(count_1er)
+        safe_print(f"  STAGE 4 RESULT: count_1er = {int(best_count_1er)}", flush=True)
+        model.Add(count_1er == int(best_count_1er))
+        stage4_solution = [solver_s4.Value(use[b]) for b in range(len(blocks))]
+        reset_hints_from_solver(model, use, solver_s4)
+        stage4_solver_for_fallback = solver_s4
     elif status_s4 == cp_model.FEASIBLE:
         safe_print(f"  STAGE 4: FEASIBLE (not proven optimal)", flush=True)
+        best_count_1er = solver_s4.Value(count_1er)
+        safe_print(f"  STAGE 4 RESULT: count_1er = {int(best_count_1er)}", flush=True)
+        model.Add(count_1er == int(best_count_1er))
+        stage4_solution = [solver_s4.Value(use[b]) for b in range(len(blocks))]
+        reset_hints_from_solver(model, use, solver_s4)
+        stage4_solver_for_fallback = solver_s4
     else:
-        safe_print(f"  STAGE 4 FAILED: {status_str(status_s4)}", flush=True)
-        return None
-    
-    best_count_1er = solver_s4.Value(count_1er)
-    safe_print(f"  STAGE 4 RESULT: count_1er = {int(best_count_1er)}", flush=True)
-    
-    # Fix count_1er for stage 5
-    model.Add(count_1er == int(best_count_1er))
-    
-    # K5: Explicitly save Stage 4 solution for fallback
-    stage4_solution = [solver_s4.Value(use[b]) for b in range(len(blocks))]
-    
-    # K3: Hints for Stage 5 (using helper to prevent duplicates)
-    reset_hints_from_solver(model, use, solver_s4)
+        safe_print(f"  STAGE 4 FAILED: {status_str(status_s4)} (using Stage 3 fallback)", flush=True)
+        best_count_1er = stage3_solver_for_fallback.Value(count_1er)
+        safe_print(f"  STAGE 4 FALLBACK: count_1er = {int(best_count_1er)}", flush=True)
+        model.Add(count_1er == int(best_count_1er))
+        stage4_solution = [stage3_solver_for_fallback.Value(use[b]) for b in range(len(blocks))]
+        reset_hints_from_solver(model, use, stage3_solver_for_fallback)
+        stage4_solver_for_fallback = stage3_solver_for_fallback
     
     # =========================================================================
     # STAGE 5: SECONDARY OPTIMIZATION under fixed packing
@@ -2204,7 +2227,7 @@ def _solve_capacity_single_cap(
         # Use stage4_solution directly
         selected = [blocks[b] for b in range(len(blocks)) if stage4_solution[b] == 1]
         safe_print(f"  Using Stage 4 solution (Stage 5 failed)", flush=True)
-        slack_values = {d: solver_s4.Value(day_slack[d]) for d in days}
+        slack_values = {d: stage4_solver_for_fallback.Value(day_slack[d]) for d in days}
     else:
         # Use final_solver (Stage 5)
         selected = [blocks[b] for b in range(len(blocks)) if final_solver.Value(use[b]) == 1]
@@ -2212,8 +2235,8 @@ def _solve_capacity_single_cap(
         
         # INVARIANT CHECK: Packing counts must match locked values
         actual_3er = sum(1 for b in selected if len(b.tours) == 3)
-        actual_2R = sum(1 for b in selected if len(b.tours) == 2 and b.pause_zone.value == "REGULAR")
-        actual_2S = sum(1 for b in selected if len(b.tours) == 2 and b.pause_zone.value == "SPLIT")
+        actual_2R = sum(1 for b in selected if len(b.tours) == 2 and _pause_zone_value(b) == "REGULAR")
+        actual_2S = sum(1 for b in selected if len(b.tours) == 2 and _pause_zone_value(b) == "SPLIT")
         actual_1er = sum(1 for b in selected if len(b.tours) == 1)
         
         mismatch = (
@@ -2235,8 +2258,8 @@ def _solve_capacity_single_cap(
     
     # RC1: Detailed Stats by Category
     sel_1er = sum(1 for b in selected if len(b.tours) == 1)
-    sel_2er_regular = sum(1 for b in selected if len(b.tours) == 2 and b.pause_zone.value == "REGULAR")
-    sel_2er_split = sum(1 for b in selected if len(b.tours) == 2 and b.pause_zone.value == "SPLIT")
+    sel_2er_regular = sum(1 for b in selected if len(b.tours) == 2 and _pause_zone_value(b) == "REGULAR")
+    sel_2er_split = sum(1 for b in selected if len(b.tours) == 2 and _pause_zone_value(b) == "SPLIT")
     sel_3er = sum(1 for b in selected if len(b.tours) == 3)
     sel_2er_total = sel_2er_regular + sel_2er_split
     safe_print(f"  SELECTED BLOCKS: 3er={sel_3er}, 2er_REG={sel_2er_regular}, 2er_SPLIT={sel_2er_split}, 1er={sel_1er}", flush=True)

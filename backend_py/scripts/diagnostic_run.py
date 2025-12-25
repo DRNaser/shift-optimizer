@@ -5,6 +5,7 @@ Diagnostic Run - Capture full KPIs for analysis
 import os
 import sys
 import json
+from pathlib import Path
 import requests
 
 # Fix encoding issues on Windows (cp1252 doesn't support unicode symbols)
@@ -13,6 +14,9 @@ try:
 except AttributeError:
     # Python < 3.7 fallback
     pass
+
+# Add project root to sys.path for local runs
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 import time
 
@@ -45,7 +49,8 @@ def read_json_with_retry(url, retries=10, delay=0.5):
 
 
 API_URL = "http://localhost:8000/api/v1"
-INPUT_FILE = r"C:\Users\n.zaher\OneDrive - LTS Transport u. Logistik GmbH\Desktop\shift-optimizer\forecast-test.txt"
+DEFAULT_INPUT = Path(__file__).resolve().parents[2] / "forecast-test.txt"
+INPUT_FILE = os.getenv("DIAGNOSTIC_INPUT_FILE", str(DEFAULT_INPUT))
 
 DAY_MAP = {
     "Montag": "Mon", "Dienstag": "Tue", "Mittwoch": "Wed",
@@ -67,6 +72,8 @@ def parse_input(file_path):
                 continue
             if '\t' in line:
                 tokens = line.split('\t')
+            elif ';' in line:
+                tokens = line.split(';')
             else:
                 tokens = line.split()
             if len(tokens) < 2:
@@ -106,6 +113,55 @@ def generate_drivers(num_drivers=300):
         })
     return drivers
 
+
+def _to_domain_tours(tours_payload):
+    from datetime import time as time_cls
+    from src.domain.models import Tour, Weekday
+
+    day_map = {v.value: v for v in Weekday}
+    tours = []
+    for t in tours_payload:
+        start_h, start_m = map(int, t["start_time"].split(":"))
+        end_h, end_m = map(int, t["end_time"].split(":"))
+        tours.append(
+            Tour(
+                id=t["id"],
+                day=day_map[t["day"]],
+                start_time=time_cls(start_h, start_m),
+                end_time=time_cls(end_h, end_m),
+                location=t.get("location", "DEFAULT"),
+                required_qualifications=t.get("required_qualifications", []),
+            )
+        )
+    return tours
+
+
+def _to_domain_drivers(drivers_payload):
+    from src.domain.models import Driver, DailyAvailability, Weekday
+
+    day_map = {v.value: v for v in Weekday}
+    drivers = []
+    for d in drivers_payload:
+        available_days = d.get("available_days", [v.value for v in Weekday])
+        weekly_availability = [
+            DailyAvailability(day=day_map[day], available=True)
+            for day in available_days
+            if day in day_map
+        ]
+        drivers.append(
+            Driver(
+                id=d["id"],
+                name=d["name"],
+                qualifications=d.get("qualifications", []),
+                max_weekly_hours=d.get("max_weekly_hours", 55.0),
+                max_daily_span_hours=d.get("max_daily_span_hours", 14.0),
+                max_tours_per_day=d.get("max_tours_per_day", 3),
+                min_rest_hours=d.get("min_rest_hours", 11.0),
+                weekly_availability=weekly_availability,
+            )
+        )
+    return drivers
+
 def main():
     # Parse CLI arguments
     import argparse
@@ -123,11 +179,11 @@ def main():
     print("DIAGNOSTIC RUN - Full KPI Analysis")
     print("=" * 60)
     
-    tours = parse_input(INPUT_FILE)
-    drivers = generate_drivers(300)
+    tours_payload = parse_input(INPUT_FILE)
+    drivers_payload = generate_drivers(300)
     
-    print(f"Tours: {len(tours)}")
-    print(f"Drivers pool: {len(drivers)}")
+    print(f"Tours: {len(tours_payload)}")
+    print(f"Drivers pool: {len(drivers_payload)}")
     print(f"Output Profile: {args.output_profile}")
     
     # Build config overrides with profile selection
@@ -142,8 +198,8 @@ def main():
     
     payload = {
         "week_start": "2024-01-01",
-        "tours": tours,
-        "drivers": drivers,
+        "tours": tours_payload,
+        "drivers": drivers_payload,
         "run": {
             "time_budget_seconds": args.time_budget,
             "seed": 42,
@@ -158,14 +214,13 @@ def main():
     print("\nStarting solver...")
     
     try:
-        resp = requests.post(f"{API_URL}/runs", json=payload, timeout=300)
+        resp = requests.post(f"{API_URL}/runs", json=payload, timeout=10)
         resp.raise_for_status()
         result = resp.json()
         run_id = result.get("run_id", "unknown")
         print(f"\nRun ID: {run_id}")
         
         # Poll for completion - solver runs async
-        import time
         max_wait = 300  # 5 minutes max
         poll_interval = 5
         waited = 0
@@ -401,6 +456,116 @@ def main():
         else:
             print(f"Failed to fetch plan: {plan_resp.status_code}")
             
+    except requests.exceptions.RequestException:
+        print("API unavailable; running local portfolio controller instead.")
+        from src.services.portfolio_controller import run_portfolio
+        from src.services.forecast_solver_v4 import ConfigV4
+        from src.api.routes import tour_to_output
+
+        tours = _to_domain_tours(tours_payload)
+        drivers = _to_domain_drivers(drivers_payload)
+
+        config = ConfigV4()
+        local_override_keys = {"output_profile", "gap_3er_min_minutes", "cap_quota_2er"}
+        override_values = {
+            k: v for k, v in config_overrides.items()
+            if k in config._fields and k in local_override_keys
+        }
+        config = config._replace(**override_values, seed=42)
+
+        result = run_portfolio(
+            tours=tours,
+            time_budget=float(args.time_budget),
+            seed=42,
+            config=config,
+        )
+        solution = result.solution
+        if not solution:
+            print("ERROR: No solution returned from portfolio controller.")
+            return
+
+        output_assignments = []
+        sorted_driver_assignments = sorted(
+            solution.assignments,
+            key=lambda a: (a.driver_type, a.driver_id)
+        )
+        for driver_asgn in sorted_driver_assignments:
+            sorted_blocks = sorted(
+                driver_asgn.blocks,
+                key=lambda b: (b.day.value, b.first_start.hour if b.first_start else 0, b.id)
+            )
+            for block in sorted_blocks:
+                sorted_tours = sorted(
+                    block.tours,
+                    key=lambda t: (t.start_time.hour, t.start_time.minute, t.id)
+                )
+                tours_output = [tour_to_output(t).model_dump() for t in sorted_tours]
+                pause_zone = block.pause_zone.value if hasattr(block.pause_zone, "value") else str(block.pause_zone)
+                block_type = block.block_type.value if hasattr(block, "block_type") and block.block_type else str(len(block.tours))
+
+                output_assignments.append({
+                    "driver_id": driver_asgn.driver_id,
+                    "driver_name": f"{driver_asgn.driver_type} {driver_asgn.driver_id}",
+                    "day": block.day.value,
+                    "block": {
+                        "id": block.id,
+                        "day": block.day.value,
+                        "block_type": block_type,
+                        "tours": tours_output,
+                        "driver_id": driver_asgn.driver_id,
+                        "total_work_hours": block.total_work_hours,
+                        "span_hours": block.span_hours,
+                        "pause_zone": pause_zone,
+                        "is_split": block.is_split,
+                        "max_pause_minutes": block.max_pause_minutes,
+                    }
+                })
+
+        kpi = solution.kpi or {}
+        total_tours_assigned_actual = sum(len(a["block"]["tours"]) for a in output_assignments)
+        total_tours_input = len(tours)
+        drivers_fte = kpi.get("drivers_fte", 0)
+        drivers_pt = kpi.get("drivers_pt", 0)
+        total_drivers = drivers_fte + drivers_pt
+
+        plan_data = {
+            "id": "local_run",
+            "week_start": "2024-01-01",
+            "assignments": output_assignments,
+            "unassigned_tours": [],
+            "validation": {
+                "is_valid": solution.status in ["OPTIMAL", "FEASIBLE", "COMPLETE", "COMPLETED", "OK", "HARD_OK"],
+                "hard_violations": [],
+                "warnings": [],
+            },
+            "stats": {
+                "total_drivers": total_drivers,
+                "total_tours_input": total_tours_input,
+                "total_tours_assigned": total_tours_assigned_actual,
+                "total_tours_unassigned": max(0, total_tours_input - total_tours_assigned_actual),
+                "block_counts": {
+                    "1er": kpi.get("blocks_1er", 0),
+                    "2er": kpi.get("blocks_2er", 0),
+                    "3er": kpi.get("blocks_3er", 0),
+                },
+                "assignment_rate": total_tours_assigned_actual / total_tours_input if total_tours_input else 1.0,
+                "average_driver_utilization": kpi.get("fte_hours_avg", 0.0) / 53.0 if kpi.get("fte_hours_avg") else 0.0,
+                "average_work_hours": kpi.get("fte_hours_avg", 0.0),
+                "drivers_fte": drivers_fte,
+                "drivers_pt": drivers_pt,
+                "output_profile": kpi.get("output_profile"),
+                "gap_3er_min_minutes": kpi.get("gap_3er_min_minutes"),
+                "twopass_executed": kpi.get("twopass_executed"),
+            },
+            "version": "4.0",
+            "solver_type": "portfolio_v4",
+            "schema_version": "2.0",
+        }
+
+        with open("diag_run_result.json", "w") as f:
+            json.dump(plan_data, f, indent=2)
+
+        print("\nFull result saved to: diag_run_result.json")
     except Exception as e:
         print(f"Error: {e}")
         import traceback

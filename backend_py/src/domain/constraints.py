@@ -76,8 +76,8 @@ class HardConstraints:
     SPLIT_PAUSE_MAX: int = 360
     """Gap for split-shift blocks (exactly 6 hours - same as MIN for exact match)."""
     
-    MAX_SPREAD_SPLIT_MINUTES: int = 840
-    """Maximum spread (first_start -> last_end) for split blocks (14 hours)."""
+    MAX_SPREAD_SPLIT_MINUTES: int = 900
+    """Maximum spread (first_start -> last_end) for split blocks (15 hours)."""
     
     # Note: Gaps 61-359 and 361+ are FORBIDDEN (neither regular nor split)
 
@@ -242,4 +242,3 @@ class SoftPenaltyConfig:
 
 
 SOFT_PENALTY_CONFIG: Final[SoftPenaltyConfig] = SoftPenaltyConfig()
-

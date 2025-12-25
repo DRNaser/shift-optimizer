@@ -13,6 +13,7 @@ All execution is deterministic (seeded, num_workers=1).
 """
 
 import json
+import math
 import logging
 import os
 from dataclasses import dataclass, field
@@ -865,8 +866,22 @@ def _execute_path(
             if sp_result.status == "OK":
                 block_lookup = {b.id: b for b in selected_blocks}
                 assignments = convert_rosters_to_assignments(sp_result.selected_rosters, block_lookup)
+                total_hours = sum(b.total_work_hours for b in selected_blocks)
+                hours_based_cap = math.ceil(total_hours / config.min_hours_per_fte) + 70
+                target_based_cap = config.target_ftes + config.fte_overflow_cap + 25
+                max_reasonable = min(hours_based_cap, target_based_cap)
+                if len(assignments) > max_reasonable:
+                    log_fn(
+                        f"SP driver count {len(assignments)} exceeds cap {max_reasonable}; "
+                        "falling back to greedy."
+                    )
+                    assignments, _ = assign_drivers_greedy(selected_blocks, config)
+                    assignments, _ = rebalance_to_min_fte_hours(assignments, 40.0, 53.0)
+                    assignments, _ = eliminate_pt_drivers(assignments, 53.0, time_limit=30.0)
+                    result["status"] = "GREEDY_FALLBACK"
+                else:
+                    result["status"] = "OK"
                 result["assignments"] = assignments
-                result["status"] = "OK"
             else:
                 # SP failed - greedy fallback
                 log_fn(f"SP failed ({sp_result.status}), falling back to greedy...")

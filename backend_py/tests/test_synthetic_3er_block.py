@@ -208,41 +208,55 @@ class TestSyntheticEdgeCases:
     """Test edge cases with slightly different gaps."""
 
     def test_max_gap_3er_block(self):
-        """Test 3er with MAX_PAUSE (120 min) gap."""
+        """Test 3er with MAX_PAUSE gap."""
+        from src.domain.constraints import HARD_CONSTRAINTS
+        from datetime import datetime, timedelta
+        max_pause = HARD_CONSTRAINTS.MAX_PAUSE_BETWEEN_TOURS
+        def add_minutes(base: time, minutes: int) -> time:
+            return (datetime.combine(date.today(), base) + timedelta(minutes=minutes)).time()
         tours = [
             Tour(id="EDGE-A", day=Weekday.MONDAY,
                  start_time=time(6, 0), end_time=time(10, 0)),
             Tour(id="EDGE-B", day=Weekday.MONDAY,
-                 start_time=time(12, 0), end_time=time(16, 0)),  # 120 min gap
+                 start_time=add_minutes(time(10, 0), max_pause),
+                 end_time=add_minutes(time(14, 0), max_pause)),  # MAX gap
             Tour(id="EDGE-C", day=Weekday.MONDAY,
-                 start_time=time(18, 0), end_time=time(22, 0)),  # 120 min gap
+                 start_time=add_minutes(time(14, 0), 2 * max_pause),
+                 end_time=add_minutes(time(18, 0), 2 * max_pause)),  # MAX gap
         ]
 
         builder = BlockBuilder(tours)
         blocks_3er = [b for b in builder.all_possible_blocks if len(b.tours) == 3]
 
         print(f"\n=== MAX GAP TEST ===")
-        print(f"3er blocks with 120 min gaps: {len(blocks_3er)}")
+        print(f"3er blocks with max gaps: {len(blocks_3er)}")
 
         assert len(blocks_3er) == 1, \
-            "Should create 3er block even with max gap (120 min)"
+            "Should create 3er block even with max gap"
 
     def test_gap_too_large_prevents_3er(self):
-        """Test that gap > 120 min prevents 3er block."""
+        """Test that gap > MAX_PAUSE prevents 3er block."""
+        from src.domain.constraints import HARD_CONSTRAINTS
+        from datetime import datetime, timedelta
+        max_pause = HARD_CONSTRAINTS.MAX_PAUSE_BETWEEN_TOURS
+        def add_minutes(base: time, minutes: int) -> time:
+            return (datetime.combine(date.today(), base) + timedelta(minutes=minutes)).time()
         tours = [
             Tour(id="TOOLARGE-A", day=Weekday.MONDAY,
                  start_time=time(6, 0), end_time=time(10, 0)),
             Tour(id="TOOLARGE-B", day=Weekday.MONDAY,
-                 start_time=time(12, 5), end_time=time(16, 0)),  # 125 min gap
+                 start_time=add_minutes(time(10, 0), max_pause + 5),
+                 end_time=add_minutes(time(14, 0), max_pause + 5)),  # too large
             Tour(id="TOOLARGE-C", day=Weekday.MONDAY,
-                 start_time=time(18, 0), end_time=time(22, 0)),
+                 start_time=add_minutes(time(14, 0), 2 * max_pause + 10),
+                 end_time=add_minutes(time(18, 0), 2 * max_pause + 10)),
         ]
 
         builder = BlockBuilder(tours)
         blocks_3er = [b for b in builder.all_possible_blocks if len(b.tours) == 3]
 
         print(f"\n=== GAP TOO LARGE TEST ===")
-        print(f"3er blocks with 125 min gap: {len(blocks_3er)}")
+        print(f"3er blocks with too-large gap: {len(blocks_3er)}")
 
         assert len(blocks_3er) == 0, \
-            "Should NOT create 3er block when gap > 120 min"
+            "Should NOT create 3er block when gap > MAX_PAUSE"

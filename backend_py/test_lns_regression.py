@@ -156,7 +156,7 @@ def main():
     print(f"\nImprovement:")
     print(f"  Total drivers: {result.kpi['drivers_fte'] + result.kpi['drivers_pt']} -> {fte_count + pt_count} (Delta {(fte_count + pt_count) - (result.kpi['drivers_fte'] + result.kpi['drivers_pt'])})")
     print(f"  PT drivers: {result.kpi['drivers_pt']} -> {pt_count} (Delta {pt_count - result.kpi['drivers_pt']})")
-    print(f"  PT with <=4.5h: {result.kpi.get('pt_low_utilization_count', 0)} -> {pt_low_util} (Delta {pt_low_util - result.kpi.get('pt_low_utilization_count', 0)})"))
+    print(f"  PT with <=4.5h: {result.kpi.get('pt_low_utilization_count', 0)} -> {pt_low_util} (Delta {pt_low_util - result.kpi.get('pt_low_utilization_count', 0)})")
     
     print("\n" + "=" * 70)
     print("TEST COMPLETE")

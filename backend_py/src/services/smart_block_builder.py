@@ -751,8 +751,16 @@ def _smart_cap_with_1er_guarantee(
         # B2: Consistent split classification - use pause_zone.value consistently
         # Separate blocks by class
         blocks_3er = [sb for sb in tour_blocks if len(sb.block.tours) == 3]
-        blocks_2er_reg = [sb for sb in tour_blocks if len(sb.block.tours) == 2 and sb.block.pause_zone.value == "REGULAR"]
-        blocks_2er_split = [sb for sb in tour_blocks if len(sb.block.tours) == 2 and sb.block.pause_zone.value == "SPLIT"]
+        blocks_2er_reg = [
+            sb for sb in tour_blocks
+            if len(sb.block.tours) == 2
+            and (sb.block.pause_zone.value if hasattr(sb.block.pause_zone, "value") else sb.block.pause_zone) == "REGULAR"
+        ]
+        blocks_2er_split = [
+            sb for sb in tour_blocks
+            if len(sb.block.tours) == 2
+            and (sb.block.pause_zone.value if hasattr(sb.block.pause_zone, "value") else sb.block.pause_zone) == "SPLIT"
+        ]
         blocks_1er = [sb for sb in tour_blocks if len(sb.block.tours) == 1]
         
         # Deterministic sort: (-score, block.id) for stability

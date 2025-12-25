@@ -17,6 +17,7 @@ from src.domain.constraints import HARD_CONSTRAINTS
 from src.services.scheduler import create_schedule, SchedulerConfig
 from src.services.cpsat_solver import create_cpsat_schedule, CPSATConfig
 from src.services.lns_refiner import refine_schedule, LNSConfig
+from src.services.forecast_solver_v4 import ConfigV4
 from src.api.schemas import (
     ScheduleRequest,
     ScheduleResponse,
@@ -117,6 +118,18 @@ async def health_check():
     )
 
 
+@router.get("/readyz")
+async def ready_check():
+    """Readiness endpoint with config snapshot for operational checks."""
+    config = ConfigV4()
+    return {
+        "status": "ready",
+        "config": {
+            "cap_quota_2er": config.cap_quota_2er,
+        }
+    }
+
+
 @router.post("/schedule", response_model=ScheduleResponse)
 async def create_weekly_schedule(request: ScheduleRequest):
     """
@@ -187,6 +200,9 @@ async def create_weekly_schedule(request: ScheduleRequest):
         for assignment in plan.assignments:
             block = assignment.block
             tours_output = [tour_to_output(t) for t in block.tours]
+            pause_zone = block.pause_zone
+            if hasattr(pause_zone, "value"):
+                pause_zone = pause_zone.value
             
             assignments.append(AssignmentOutput(
                 driver_id=assignment.driver_id,
@@ -199,7 +215,8 @@ async def create_weekly_schedule(request: ScheduleRequest):
                     tours=tours_output,
                     driver_id=block.driver_id,
                     total_work_hours=block.total_work_hours,
-                    span_hours=block.span_hours
+                    span_hours=block.span_hours,
+                    pause_zone=pause_zone
                 )
             ))
         
@@ -244,7 +261,8 @@ async def create_weekly_schedule(request: ScheduleRequest):
             validation=validation,
             stats=stats,
             version=plan.version,
-            solver_type=solver_type
+            solver_type=solver_type,
+            schema_version="2.0"
         )
         
     except ValueError as e:
