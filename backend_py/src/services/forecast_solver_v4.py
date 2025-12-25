@@ -53,7 +53,62 @@ def safe_print(*args, **kwargs):
             # Swallow all errors - logging must never crash the solver
             pass
 
+
+def _log_block_mix(label: str, blocks: list["Block"]) -> None:
+    counts = {"1er": 0, "2er": 0, "3er": 0}
+    for block in blocks:
+        n = len(block.tours)
+        key = f"{n}er"
+        if key in counts:
+            counts[key] += 1
+    total = sum(counts.values())
+    safe_print(
+        f"[BLOCK_MIX] {label}: total={total}, 1er={counts['1er']}, 2er={counts['2er']}, 3er={counts['3er']}",
+        flush=True,
+    )
+
+
+def _log_pool_diagnostics(
+    blocks: list["Block"],
+    tours: list["Tour"],
+    block_index: dict[str, list["Block"]],
+) -> None:
+    from collections import Counter
+
+    cover_counts = {tour.id: len(block_index.get(tour.id, [])) for tour in tours}
+    min_cover = min(cover_counts.values()) if cover_counts else 0
+    missing = [tid for tid, count in cover_counts.items() if count == 0]
+
+    blocks_by_day = Counter()
+    for block in blocks:
+        blocks_by_day[block.day.value] += 1
+
+    pause_zone_counts = Counter()
+    unknown_zone_blocks = []
+    for block in blocks:
+        zone_key, _ = normalize_pause_zone(block.pause_zone)
+        pause_zone_counts[zone_key] += 1
+        if zone_key == "NONE":
+            unknown_zone_blocks.append(block.id)
+
+    safe_print("=== PRE-SOLVE DIAGNOSTICS ===", flush=True)
+    safe_print(
+        f"total_blocks={len(blocks)} blocks_1er={sum(1 for b in blocks if len(b.tours)==1)} "
+        f"blocks_2er={sum(1 for b in blocks if len(b.tours)==2)} "
+        f"blocks_3er={sum(1 for b in blocks if len(b.tours)==3)}",
+        flush=True,
+    )
+    safe_print(f"blocks_by_day={dict(blocks_by_day)}", flush=True)
+    safe_print(f"min_cover={min_cover}", flush=True)
+    if missing:
+        safe_print(f"tours_with_cover_count_0 (n={len(missing)}): {missing[:50]}", flush=True)
+    safe_print(f"pause_zone_counter={pause_zone_counts}", flush=True)
+    if unknown_zone_blocks:
+        safe_print(f"[WARN] unknown_pause_zone_blocks (n={len(unknown_zone_blocks)}): {unknown_zone_blocks[:20]}", flush=True)
+    safe_print("=== END PRE-SOLVE DIAGNOSTICS ===", flush=True)
+
 from src.domain.models import Block, Tour, Weekday
+from src.domain.pause_zone import normalize_pause_zone
 from src.services.constraints import can_assign_block
 from src.services.smart_block_builder import (
     build_weekly_blocks_smart,
@@ -1711,8 +1766,12 @@ def _solve_capacity_single_cap(
     
     # Debug: count available types
     avail_1er = sum(1 for b in blocks if len(b.tours) == 1)
-    avail_2er_reg = sum(1 for b in blocks if len(b.tours) == 2 and b.pause_zone.value == "REGULAR")
-    avail_2er_split = sum(1 for b in blocks if len(b.tours) == 2 and b.pause_zone.value == "SPLIT")
+    avail_2er_reg = sum(
+        1 for b in blocks if len(b.tours) == 2 and normalize_pause_zone(b.pause_zone)[0] == "REGULAR"
+    )
+    avail_2er_split = sum(
+        1 for b in blocks if len(b.tours) == 2 and normalize_pause_zone(b.pause_zone)[0] == "SPLIT"
+    )
     avail_3er = sum(1 for b in blocks if len(b.tours) == 3)
     safe_print(f"  AVAILABLE BLOCKS: 1er={avail_1er}, 2er_REG={avail_2er_reg}, 2er_SPLIT={avail_2er_split}, 3er={avail_3er}", flush=True)
     
@@ -1741,11 +1800,11 @@ def _solve_capacity_single_cap(
     ))
     model.Add(count_2er_regular == sum(
         use[b] for b, block in enumerate(blocks) 
-        if len(block.tours) == 2 and block.pause_zone.value == "REGULAR"
+        if len(block.tours) == 2 and normalize_pause_zone(block.pause_zone)[0] == "REGULAR"
     ))
     model.Add(count_2er_split == sum(
         use[b] for b, block in enumerate(blocks)
-        if len(block.tours) == 2 and block.pause_zone.value == "SPLIT"
+        if len(block.tours) == 2 and normalize_pause_zone(block.pause_zone)[0] == "SPLIT"
     ))
     model.Add(count_1er == sum(
         use[b] for b, block in enumerate(blocks) if len(block.tours) == 1
@@ -1880,25 +1939,28 @@ def _solve_capacity_single_cap(
     
     if status_s2 == cp_model.OPTIMAL:
         safe_print(f"  STAGE 2: OPTIMAL", flush=True)
-    elif status_s2 == cp_model.FEASIBLE:
-        safe_print(f"  STAGE 2: FEASIBLE (not proven optimal)", flush=True)
-    else:
-        safe_print(f"  STAGE 2 FAILED: {status_str(status_s2)}", flush=True)
-        return None
-    
-    best_count_2er_regular = solver_s2.Value(count_2er_regular)
-    safe_print(f"  STAGE 2 RESULT: count_2er_regular = {int(best_count_2er_regular)}", flush=True)
-    
-    # Fix count_2er_regular (Edit 3: use >= for FEASIBLE, == for OPTIMAL)
-    if status_s2 == cp_model.OPTIMAL:
+        best_count_2er_regular = solver_s2.Value(count_2er_regular)
+        safe_print(f"  STAGE 2 RESULT: count_2er_regular = {int(best_count_2er_regular)}", flush=True)
         model.Add(count_2er_regular == int(best_count_2er_regular))
         safe_print(f"  Fixation: count_2er_regular == {int(best_count_2er_regular)} (OPTIMAL)", flush=True)
-    else:
+        reset_hints_from_solver(model, use, solver_s2)
+    elif status_s2 == cp_model.FEASIBLE:
+        safe_print(f"  STAGE 2: FEASIBLE (not proven optimal)", flush=True)
+        best_count_2er_regular = solver_s2.Value(count_2er_regular)
+        safe_print(f"  STAGE 2 RESULT: count_2er_regular = {int(best_count_2er_regular)}", flush=True)
         model.Add(count_2er_regular >= int(best_count_2er_regular))
         safe_print(f"  Fixation: count_2er_regular >= {int(best_count_2er_regular)} (FEASIBLE, fail-open)", flush=True)
-    
-    # Hints for Stage 3 (clear previous hints first!)
-    reset_hints_from_solver(model, use, solver_s2)
+        reset_hints_from_solver(model, use, solver_s2)
+    else:
+        safe_print(f"  STAGE 2 FAILED: {status_str(status_s2)} (fallback to Stage 1 solution)", flush=True)
+        best_count_2er_regular = solver_s1.Value(count_2er_regular)
+        safe_print(f"  STAGE 2 FALLBACK RESULT: count_2er_regular = {int(best_count_2er_regular)}", flush=True)
+        model.Add(count_2er_regular >= int(best_count_2er_regular))
+        safe_print(
+            f"  Fixation: count_2er_regular >= {int(best_count_2er_regular)} (fallback, fail-open)",
+            flush=True,
+        )
+        reset_hints_from_solver(model, use, solver_s1)
     
     # =========================================================================
     # EDIT 4: PRE-FLIGHT FEASIBILITY CHECK (after Stage 2 fixation)
@@ -1963,20 +2025,22 @@ def _solve_capacity_single_cap(
     
     if status_s3 == cp_model.OPTIMAL:
         safe_print(f"  STAGE 3: OPTIMAL", flush=True)
+        best_count_2er_split = solver_s3.Value(count_2er_split)
+        safe_print(f"  STAGE 3 RESULT: count_2er_split = {int(best_count_2er_split)}", flush=True)
+        model.Add(count_2er_split == int(best_count_2er_split))
+        reset_hints_from_solver(model, use, solver_s3)
     elif status_s3 == cp_model.FEASIBLE:
         safe_print(f"  STAGE 3: FEASIBLE (not proven optimal)", flush=True)
+        best_count_2er_split = solver_s3.Value(count_2er_split)
+        safe_print(f"  STAGE 3 RESULT: count_2er_split = {int(best_count_2er_split)}", flush=True)
+        model.Add(count_2er_split >= int(best_count_2er_split))
+        reset_hints_from_solver(model, use, solver_s3)
     else:
-        safe_print(f"  STAGE 3 FAILED: {status_str(status_s3)}", flush=True)
-        return None
-    
-    best_count_2er_split = solver_s3.Value(count_2er_split)
-    safe_print(f"  STAGE 3 RESULT: count_2er_split = {int(best_count_2er_split)}", flush=True)
-    
-    # Fix count_2er_split
-    model.Add(count_2er_split == int(best_count_2er_split))
-    
-    # K3: Hints for Stage 4 (using helper to prevent duplicates)
-    reset_hints_from_solver(model, use, solver_s3)
+        safe_print(f"  STAGE 3 FAILED: {status_str(status_s3)} (fallback to Stage 1 solution)", flush=True)
+        best_count_2er_split = solver_s1.Value(count_2er_split)
+        safe_print(f"  STAGE 3 FALLBACK RESULT: count_2er_split = {int(best_count_2er_split)}", flush=True)
+        model.Add(count_2er_split >= int(best_count_2er_split))
+        reset_hints_from_solver(model, use, solver_s1)
     
     # =========================================================================
     # STAGE 4: MINIMIZE count_1er (with all multi-counts fixed)
@@ -1993,23 +2057,25 @@ def _solve_capacity_single_cap(
     
     if status_s4 == cp_model.OPTIMAL:
         safe_print(f"  STAGE 4: OPTIMAL", flush=True)
+        best_count_1er = solver_s4.Value(count_1er)
+        safe_print(f"  STAGE 4 RESULT: count_1er = {int(best_count_1er)}", flush=True)
+        model.Add(count_1er == int(best_count_1er))
+        stage4_solution = [solver_s4.Value(use[b]) for b in range(len(blocks))]
+        reset_hints_from_solver(model, use, solver_s4)
     elif status_s4 == cp_model.FEASIBLE:
         safe_print(f"  STAGE 4: FEASIBLE (not proven optimal)", flush=True)
+        best_count_1er = solver_s4.Value(count_1er)
+        safe_print(f"  STAGE 4 RESULT: count_1er = {int(best_count_1er)}", flush=True)
+        model.Add(count_1er >= int(best_count_1er))
+        stage4_solution = [solver_s4.Value(use[b]) for b in range(len(blocks))]
+        reset_hints_from_solver(model, use, solver_s4)
     else:
-        safe_print(f"  STAGE 4 FAILED: {status_str(status_s4)}", flush=True)
-        return None
-    
-    best_count_1er = solver_s4.Value(count_1er)
-    safe_print(f"  STAGE 4 RESULT: count_1er = {int(best_count_1er)}", flush=True)
-    
-    # Fix count_1er for stage 5
-    model.Add(count_1er == int(best_count_1er))
-    
-    # K5: Explicitly save Stage 4 solution for fallback
-    stage4_solution = [solver_s4.Value(use[b]) for b in range(len(blocks))]
-    
-    # K3: Hints for Stage 5 (using helper to prevent duplicates)
-    reset_hints_from_solver(model, use, solver_s4)
+        safe_print(f"  STAGE 4 FAILED: {status_str(status_s4)} (fallback to Stage 1 solution)", flush=True)
+        best_count_1er = solver_s1.Value(count_1er)
+        safe_print(f"  STAGE 4 FALLBACK RESULT: count_1er = {int(best_count_1er)}", flush=True)
+        model.Add(count_1er >= int(best_count_1er))
+        stage4_solution = [solver_s1.Value(use[b]) for b in range(len(blocks))]
+        reset_hints_from_solver(model, use, solver_s1)
     
     # =========================================================================
     # STAGE 5: SECONDARY OPTIMIZATION under fixed packing
@@ -2111,8 +2177,12 @@ def _solve_capacity_single_cap(
         
         # INVARIANT CHECK: Packing counts must match locked values
         actual_3er = sum(1 for b in selected if len(b.tours) == 3)
-        actual_2R = sum(1 for b in selected if len(b.tours) == 2 and b.pause_zone.value == "REGULAR")
-        actual_2S = sum(1 for b in selected if len(b.tours) == 2 and b.pause_zone.value == "SPLIT")
+        actual_2R = sum(
+            1 for b in selected if len(b.tours) == 2 and normalize_pause_zone(b.pause_zone)[0] == "REGULAR"
+        )
+        actual_2S = sum(
+            1 for b in selected if len(b.tours) == 2 and normalize_pause_zone(b.pause_zone)[0] == "SPLIT"
+        )
         actual_1er = sum(1 for b in selected if len(b.tours) == 1)
         
         mismatch = (
@@ -2134,8 +2204,12 @@ def _solve_capacity_single_cap(
     
     # RC1: Detailed Stats by Category
     sel_1er = sum(1 for b in selected if len(b.tours) == 1)
-    sel_2er_regular = sum(1 for b in selected if len(b.tours) == 2 and b.pause_zone.value == "REGULAR")
-    sel_2er_split = sum(1 for b in selected if len(b.tours) == 2 and b.pause_zone.value == "SPLIT")
+    sel_2er_regular = sum(
+        1 for b in selected if len(b.tours) == 2 and normalize_pause_zone(b.pause_zone)[0] == "REGULAR"
+    )
+    sel_2er_split = sum(
+        1 for b in selected if len(b.tours) == 2 and normalize_pause_zone(b.pause_zone)[0] == "SPLIT"
+    )
     sel_3er = sum(1 for b in selected if len(b.tours) == 3)
     sel_2er_total = sel_2er_regular + sel_2er_split
     safe_print(f"  SELECTED BLOCKS: 3er={sel_3er}, 2er_REG={sel_2er_regular}, 2er_SPLIT={sel_2er_split}, 1er={sel_1er}", flush=True)
@@ -3030,6 +3104,8 @@ def solve_forecast_v4(
     safe_print(f"Blocks: {len(blocks)} (1er={block_stats['blocks_1er']}, 2er={block_stats['blocks_2er']}, 3er={block_stats['blocks_3er']})", flush=True)
     if block_scores:
         safe_print(f"Policy scores loaded: {len(block_scores)} blocks", flush=True)
+
+    _log_pool_diagnostics(blocks, tours, block_index)
     
     # Phase 1: Capacity (use policy scores)
     selected_blocks, phase1_stats = solve_capacity_phase(
@@ -3047,6 +3123,8 @@ def solve_forecast_v4(
             block_stats=block_stats
         )
     
+    _log_block_mix("PHASE 1 selected", selected_blocks)
+
     # ======================================================================
     # PHASE 2: DRIVER ASSIGNMENT
     # ======================================================================
@@ -3079,6 +3157,9 @@ def solve_forecast_v4(
         logger.info(f"Note: {under_count} FTE drivers have < {config.min_hours_per_fte}h (informational)")
 
     
+    assigned_blocks = [block for assignment in assignments for block in assignment.blocks]
+    _log_block_mix("PHASE 2 assigned", assigned_blocks)
+
     # KPIs
     kpi = {
         "status": status,

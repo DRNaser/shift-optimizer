@@ -18,14 +18,16 @@ Key features:
 import json
 import time as time_module
 from pathlib import Path
-from collections import defaultdict
+from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from datetime import time
 from typing import Iterator, Optional
 import logging
+import math
 
 from src.domain.models import Block, Tour, Weekday
 from src.domain.constraints import HARD_CONSTRAINTS
+from src.domain.pause_zone import normalize_pause_zone
 
 # Setup logger
 logger = logging.getLogger("SmartBlockBuilder")
@@ -73,6 +75,9 @@ MAX_PAUSE_REGULAR = HARD_CONSTRAINTS.MAX_PAUSE_BETWEEN_TOURS  # 120 min
 SPLIT_PAUSE_MIN = HARD_CONSTRAINTS.SPLIT_PAUSE_MIN   # 240 min (4h)
 SPLIT_PAUSE_MAX = HARD_CONSTRAINTS.SPLIT_PAUSE_MAX   # 360 min (6h)
 MAX_SPREAD_SPLIT = HARD_CONSTRAINTS.MAX_SPREAD_SPLIT_MINUTES  # 840 min (14h)
+HARD_SPREAD_CAP_MINUTES = max(int(HARD_CONSTRAINTS.MAX_DAILY_SPAN_HOURS * 60), 930)
+SOFT_SPREAD_PENALTY_START_MINUTES = 870
+SOFT_SPREAD_PENALTY_PER_15_MIN = -5
 
 # Feature flag for split-shift generation
 ENABLE_SPLIT_SHIFTS = True  # Can be overridden via config
@@ -257,7 +262,7 @@ def build_weekly_blocks_smart(
     # Step 1: Generate ALL blocks
     gen_start = time_module.time()
     safe_log("[SmartBuilder] Step 1: Generating blocks...")
-    all_blocks = _generate_all_blocks(tours)
+    all_blocks, reject_stats = _generate_all_blocks(tours)
     gen_time = time_module.time() - gen_start
     
     count_1er = sum(1 for b in all_blocks if len(b.tours) == 1)
@@ -297,6 +302,7 @@ def build_weekly_blocks_smart(
     safe_print("[SmartBuilder] Step 3: Deduplicating...")
     deduped = _dedupe_blocks(scored)
     safe_print(f"[SmartBuilder] After dedupe: {len(deduped)} blocks")
+    pruned_by_score = max(0, len(scored) - len(deduped))
     dedup_1er = sum(1 for sb in deduped if len(sb.block.tours) == 1)
     dedup_2er = sum(1 for sb in deduped if len(sb.block.tours) == 2)
     dedup_3er = sum(1 for sb in deduped if len(sb.block.tours) == 3)
@@ -315,7 +321,6 @@ def build_weekly_blocks_smart(
     safe_log(f"[SmartBuilder] After capping: {len(final_blocks)} blocks")
     
     # ==== POOL HEALTH CHECK (after capping) ====
-    from collections import Counter
     import statistics
     
     if enable_diag:
@@ -367,10 +372,20 @@ def build_weekly_blocks_smart(
     stats["raw_2er"] = count_2er
     stats["raw_3er"] = count_3er
     stats["candidates_3er_pre_cap"] = cap_stats.get("pre_cap_3er", 0)
+    stats["reject_reasons"] = reject_stats.get("total", {})
+    stats["reject_reasons_by_day"] = reject_stats.get("by_day", {})
+    stats["reject_midnight_examples"] = reject_stats.get("midnight_examples", [])
+    stats["reject_pruned_by_score"] = pruned_by_score
     
     safe_print(f"[SmartBuilder] Final: {len(final_blocks)} blocks in {elapsed:.2f}s")
     if enable_diag:
         safe_print(f"[DIAG] candidates_3er_pre_cap: {stats['candidates_3er_pre_cap']}")
+    reject_stats["total"]["reject_pruned_by_score"] = pruned_by_score
+    reject_stats["total"]["reject_pruned_by_cap"] = cap_stats.get("reject_pruned_by_cap", 0)
+    reject_stats["total"]["reject_unknown_zone"] = cap_stats.get("unknown_pause_zone", 0)
+    safe_print(f"[DIAG] reject_pruned_by_score: {pruned_by_score}")
+    safe_print(f"[DIAG] reject_pruned_by_cap: {cap_stats.get('reject_pruned_by_cap', 0)}")
+    _log_reject_reasons(reject_stats)
     return final_blocks, stats
 
 
@@ -428,9 +443,13 @@ def _score_single_block(block: Block, policy: ManualPolicy) -> ScoredBlock:
             if w_str in canonical_set:
                 score += SCORE_CANONICAL_WIN
 
-    # Long span penalty
+    # Long span penalty (soft): prefer shorter spreads without hard-capping
     if block.total_work_hours > 12:
         score += PENALTY_LONG_SPAN
+    if block.span_minutes > SOFT_SPREAD_PENALTY_START_MINUTES:
+        over = block.span_minutes - SOFT_SPREAD_PENALTY_START_MINUTES
+        steps = math.ceil(over / 15)
+        score += steps * SOFT_SPREAD_PENALTY_PER_15_MIN
         
     # Hash for dedupe
     tour_ids = tuple(sorted(t.id for t in block.tours))
@@ -445,7 +464,7 @@ def _score_single_block(block: Block, policy: ManualPolicy) -> ScoredBlock:
     )
 
 
-def _generate_all_blocks(tours: list[Tour], enable_splits: bool = True) -> list[Block]:
+def _generate_all_blocks(tours: list[Tour], enable_splits: bool = True) -> tuple[list[Block], dict]:
     """
     Generate 1er, 2er, and 3er blocks using two-zone pause logic.
     
@@ -463,9 +482,19 @@ def _generate_all_blocks(tours: list[Tour], enable_splits: bool = True) -> list[
         tours_by_day[day].sort(key=lambda t: t.start_time)
     
     all_blocks: list[Block] = []
+    reject_stats = {
+        "total": Counter(),
+        "by_day": defaultdict(Counter),
+        "midnight_examples": [],
+    }
     
     for day, day_tours in tours_by_day.items():
-        can_follow_regular, can_follow_split = _build_adjacency(day_tours, enable_splits)
+        can_follow_regular, can_follow_split = _build_adjacency(
+            day_tours,
+            enable_splits,
+            reject_stats=reject_stats,
+            day_key=day.value,
+        )
         
         # 1er - ALWAYS (no gaps)
         for tour in day_tours:
@@ -482,7 +511,7 @@ def _generate_all_blocks(tours: list[Tour], enable_splits: bool = True) -> list[
         for i, t1 in enumerate(day_tours):
             for j in can_follow_regular[i]:
                 t2 = day_tours[j]
-                if _span_ok([t1, t2]):
+                if _span_ok([t1, t2], reject_stats=reject_stats, day_key=day.value):
                     gap = _calc_gap(t1, t2)
                     all_blocks.append(Block(
                         id=f"B2-{t1.id}-{t2.id}", 
@@ -499,7 +528,7 @@ def _generate_all_blocks(tours: list[Tour], enable_splits: bool = True) -> list[
                 for j in can_follow_split[i]:
                     t2 = day_tours[j]
                     # Check spread constraint for split blocks
-                    span = _calc_span([t1, t2])
+                    span = _calc_span([t1, t2], reject_stats=reject_stats, day_key=day.value)
                     if span <= MAX_SPREAD_SPLIT:
                         gap = _calc_gap(t1, t2)
                         all_blocks.append(Block(
@@ -510,18 +539,26 @@ def _generate_all_blocks(tours: list[Tour], enable_splits: bool = True) -> list[
                             max_pause_minutes=gap,
                             pause_zone="SPLIT"
                         ))
+                    else:
+                        _bump_reject(
+                            reject_stats,
+                            day.value,
+                            "reject_max_spread",
+                            span=span,
+                            tours=[t1, t2],
+                        )
         
         # 3er - Regular adjacency ONLY (no splits allowed)
         for i, t1 in enumerate(day_tours):
             for j in can_follow_regular[i]:
                 t2 = day_tours[j]
-                if not _span_ok([t1, t2]): 
+                if not _span_ok([t1, t2], reject_stats=reject_stats, day_key=day.value):
                     continue
                      
                 for k in can_follow_regular[j]:
                     if k == i: continue
                     t3 = day_tours[k]
-                    if _span_ok([t1, t2, t3]):
+                    if _span_ok([t1, t2, t3], reject_stats=reject_stats, day_key=day.value):
                         gap1 = _calc_gap(t1, t2)
                         gap2 = _calc_gap(t2, t3)
                         all_blocks.append(Block(
@@ -533,7 +570,7 @@ def _generate_all_blocks(tours: list[Tour], enable_splits: bool = True) -> list[
                             pause_zone="REGULAR"
                         ))
     
-    return all_blocks
+    return all_blocks, reject_stats
 
 
 def _calc_gap(t1: Tour, t2: Tour) -> int:
@@ -543,14 +580,22 @@ def _calc_gap(t1: Tour, t2: Tour) -> int:
     return t2_start - t1_end
 
 
-def _calc_span(tours: list[Tour]) -> int:
+def _calc_span(tours: list[Tour], reject_stats: dict | None = None, day_key: str | None = None) -> int:
     """Calculate span in minutes from first start to last end."""
     first_start = tours[0].start_time.hour * 60 + tours[0].start_time.minute
     last_end = tours[-1].end_time.hour * 60 + tours[-1].end_time.minute
-    return last_end - first_start
+    span = last_end - first_start
+    if span < 0 and reject_stats is not None:
+        _bump_reject(reject_stats, day_key, "reject_cross_midnight_time_math", tours=tours)
+    return span
 
 
-def _build_adjacency(tours: list[Tour], enable_splits: bool = True) -> tuple[dict[int, list[int]], dict[int, list[int]]]:
+def _build_adjacency(
+    tours: list[Tour],
+    enable_splits: bool = True,
+    reject_stats: dict | None = None,
+    day_key: str | None = None,
+) -> tuple[dict[int, list[int]], dict[int, list[int]]]:
     """
     Build two adjacency mappings for tours:
     - can_follow_regular: tours reachable with regular pause (30-120 min)
@@ -577,8 +622,15 @@ def _build_adjacency(tours: list[Tour], enable_splits: bool = True) -> tuple[dic
             # Zone 2: Split pause (240-360 min) - only if enabled
             elif enable_splits and SPLIT_PAUSE_MIN <= gap <= SPLIT_PAUSE_MAX:
                 can_follow_split[i].append(j)
-            
-            # Gaps 121-239 or >360 are forbidden - no entry
+
+            elif gap < 0:
+                _bump_reject(reject_stats, day_key, "reject_cross_midnight_time_math", gap=gap, tours=[t1, t2])
+            elif 0 <= gap < MIN_PAUSE_MINUTES:
+                _bump_reject(reject_stats, day_key, "reject_pause_too_short", gap=gap, tours=[t1, t2])
+            elif gap > SPLIT_PAUSE_MAX:
+                _bump_reject(reject_stats, day_key, "reject_pause_too_long", gap=gap, tours=[t1, t2])
+            else:
+                _bump_reject(reject_stats, day_key, "reject_pause_zone_bucket_miss", gap=gap, tours=[t1, t2])
             
     return can_follow_regular, can_follow_split
 
@@ -667,6 +719,9 @@ def _smart_cap_with_1er_guarantee(
     # =========================================================================
     protected_ids: set[str] = set()
     reason_codes: list[str] = []
+    unknown_pause_zone = sum(1 for sb in scored if normalize_pause_zone(sb.block.pause_zone)[0] == "NONE")
+    if unknown_pause_zone:
+        reason_codes.append(f"UNKNOWN_PAUSE_ZONE:{unknown_pause_zone}")
     
     # Build tour -> blocks index (deterministic: sorted tours)
     tour_to_blocks: dict[str, list[ScoredBlock]] = defaultdict(list)
@@ -748,11 +803,17 @@ def _smart_cap_with_1er_guarantee(
     for tour in sorted(tours, key=lambda t: t.id):
         tour_blocks = tour_to_blocks.get(tour.id, [])
         
-        # B2: Consistent split classification - use pause_zone.value consistently
+        # B2: Consistent split classification - use pause_zone normalization
         # Separate blocks by class
         blocks_3er = [sb for sb in tour_blocks if len(sb.block.tours) == 3]
-        blocks_2er_reg = [sb for sb in tour_blocks if len(sb.block.tours) == 2 and sb.block.pause_zone.value == "REGULAR"]
-        blocks_2er_split = [sb for sb in tour_blocks if len(sb.block.tours) == 2 and sb.block.pause_zone.value == "SPLIT"]
+        blocks_2er_reg = [
+            sb for sb in tour_blocks
+            if len(sb.block.tours) == 2 and normalize_pause_zone(sb.block.pause_zone)[0] == "REGULAR"
+        ]
+        blocks_2er_split = [
+            sb for sb in tour_blocks
+            if len(sb.block.tours) == 2 and normalize_pause_zone(sb.block.pause_zone)[0] == "SPLIT"
+        ]
         blocks_1er = [sb for sb in tour_blocks if len(sb.block.tours) == 1]
         
         # Deterministic sort: (-score, block.id) for stability
@@ -922,6 +983,8 @@ def _smart_cap_with_1er_guarantee(
         "scarce_tours_count": scarce_tours_count,
         "median_richness": round(median_richness, 1),
         "reason_codes": reason_codes,
+        "reject_pruned_by_cap": max(0, len(dominance_kept_ids) - len(result_blocks)),
+        "unknown_pause_zone": unknown_pause_zone,
     }
     
     return result_blocks, cap_stats
@@ -957,11 +1020,15 @@ def _sanity_check(blocks: list[Block], tours: list[Tour]) -> tuple[bool, list[st
     return (len(errors) == 0, errors)
 
 
-def _span_ok(tours: list[Tour]) -> bool:
+def _span_ok(tours: list[Tour], reject_stats: dict | None = None, day_key: str | None = None) -> bool:
     if not tours: return True
     starts = [t.start_time.hour * 60 + t.start_time.minute for t in tours]
     ends = [t.end_time.hour * 60 + t.end_time.minute for t in tours]
-    return (max(ends) - min(starts)) / 60.0 <= HARD_CONSTRAINTS.MAX_DAILY_SPAN_HOURS
+    span = max(ends) - min(starts)
+    if span > HARD_SPREAD_CAP_MINUTES:
+        _bump_reject(reject_stats, day_key, "reject_max_spread", span=span, tours=tours)
+        return False
+    return True
 
 
 def _compute_stats(blocks: list[Block], tours: list[Tour], elapsed: float, cap_stats: dict, scored: list[ScoredBlock]) -> dict:
@@ -1005,6 +1072,68 @@ def _compute_stats(blocks: list[Block], tours: list[Tour], elapsed: float, cap_s
         "block_scores": block_scores,
         "block_props": block_props
     }
+
+
+def _bump_reject(
+    reject_stats: dict | None,
+    day_key: str | None,
+    reason: str,
+    gap: int | None = None,
+    span: int | None = None,
+    tours: list[Tour] | None = None,
+) -> None:
+    if reject_stats is None:
+        return
+    reject_stats["total"][reason] += 1
+    if day_key is not None:
+        reject_stats["by_day"][day_key][reason] += 1
+    if reason == "reject_cross_midnight_time_math" and tours:
+        examples = reject_stats["midnight_examples"]
+        if len(examples) < 20:
+            sample = {
+                "tour_ids": [t.id for t in tours],
+                "starts": [t.start_time.isoformat() for t in tours],
+                "ends": [t.end_time.isoformat() for t in tours],
+                "gap": gap,
+                "span": span,
+            }
+            examples.append(sample)
+
+
+def _log_reject_reasons(reject_stats: dict) -> None:
+    total = reject_stats.get("total", {})
+    by_day = reject_stats.get("by_day", {})
+    if not total:
+        return
+    expected = [
+        "reject_pause_too_short",
+        "reject_pause_too_long",
+        "reject_max_spread",
+        "reject_lane_mismatch",
+        "reject_cross_midnight_time_math",
+        "reject_pruned_by_cap",
+        "reject_pruned_by_score",
+        "reject_pause_zone_bucket_miss",
+        "reject_unknown_zone",
+    ]
+    for key in expected:
+        total.setdefault(key, 0)
+    safe_print("[DIAG] reject_reasons_total:")
+    for reason, count in sorted(total.items()):
+        safe_print(f"  {reason}: {count}")
+    if by_day:
+        safe_print("[DIAG] reject_reasons_by_day:")
+        for day in sorted(by_day.keys()):
+            counts = by_day[day]
+            if not counts:
+                continue
+            joined = ", ".join(f"{reason}={count}" for reason, count in sorted(counts.items()))
+            safe_print(f"  {day}: {joined}")
+    midnight_examples = reject_stats.get("midnight_examples", [])
+    if midnight_examples:
+        safe_print("[DIAG] midnight_rollover_examples (up to 20):")
+        for sample in midnight_examples:
+            safe_print(f"  {sample}")
 
 
 # =============================================================================
