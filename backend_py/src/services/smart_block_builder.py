@@ -263,6 +263,19 @@ def build_weekly_blocks_smart(
     count_1er = sum(1 for b in all_blocks if len(b.tours) == 1)
     count_2er = sum(1 for b in all_blocks if len(b.tours) == 2)
     count_3er = sum(1 for b in all_blocks if len(b.tours) == 3)
+    per_day_3er = defaultdict(lambda: {"candidates_3er_total": 0, "unique_tours": set()})
+    for b in all_blocks:
+        if len(b.tours) == 3:
+            bucket = per_day_3er[b.day]
+            bucket["candidates_3er_total"] += 1
+            for t in b.tours:
+                bucket["unique_tours"].add(t.id)
+    for day, stats_day in per_day_3er.items():
+        safe_log(
+            f"[DIAG] {day.value if hasattr(day, 'value') else day}: "
+            f"candidates_3er_total={stats_day['candidates_3er_total']}, "
+            f"unique_tours_covered_by_3er_candidates={len(stats_day['unique_tours'])}"
+        )
     
     safe_log(f"[SmartBuilder] Generated {len(all_blocks)} blocks in {gen_time:.2f}s")
     if enable_diag:
@@ -366,6 +379,13 @@ def build_weekly_blocks_smart(
     stats["raw_1er"] = count_1er
     stats["raw_2er"] = count_2er
     stats["raw_3er"] = count_3er
+    stats["candidates_3er_per_day"] = {
+        (day.value if hasattr(day, "value") else str(day)): {
+            "candidates_3er_total": values["candidates_3er_total"],
+            "unique_tours_covered_by_3er_candidates": len(values["unique_tours"]),
+        }
+        for day, values in per_day_3er.items()
+    }
     stats["candidates_3er_pre_cap"] = cap_stats.get("pre_cap_3er", 0)
     
     safe_print(f"[SmartBuilder] Final: {len(final_blocks)} blocks in {elapsed:.2f}s")
@@ -532,6 +552,55 @@ def _generate_all_blocks(tours: list[Tour], enable_splits: bool = True) -> list[
                             max_pause_minutes=max(gap1, gap2),
                             pause_zone="REGULAR"
                         ))
+
+        # 3er coverage guarantee: ensure each tour can appear as middle when possible
+        existing_triples = {
+            tuple(sorted(t.id for t in b.tours))
+            for b in all_blocks
+            if len(b.tours) == 3 and b.day == day
+        }
+
+        def tour_minutes(tour: Tour) -> int:
+            return ((tour.end_time.hour * 60 + tour.end_time.minute) -
+                    (tour.start_time.hour * 60 + tour.start_time.minute))
+
+        for mid_idx, mid in enumerate(day_tours):
+            preds = [i for i in range(len(day_tours)) if mid_idx in can_follow_regular[i]]
+            succs = can_follow_regular.get(mid_idx, [])
+            if not preds or not succs:
+                continue
+            candidates = []
+            for i in preds:
+                t1 = day_tours[i]
+                if not _span_ok([t1, mid]):
+                    continue
+                for k in succs:
+                    if k == i:
+                        continue
+                    t3 = day_tours[k]
+                    if not _span_ok([t1, mid, t3]):
+                        continue
+                    total_work = tour_minutes(t1) + tour_minutes(mid) + tour_minutes(t3)
+                    span = _calc_span([t1, mid, t3])
+                    candidates.append((total_work, span, t1, t3))
+            if not candidates:
+                continue
+            candidates.sort(key=lambda item: (-item[0], item[1], item[2].id, item[3].id))
+            for total_work, _span, t1, t3 in candidates[:K_3ER_PER_TOUR]:
+                triple_key = tuple(sorted((t1.id, mid.id, t3.id)))
+                if triple_key in existing_triples:
+                    continue
+                gap1 = _calc_gap(t1, mid)
+                gap2 = _calc_gap(mid, t3)
+                all_blocks.append(Block(
+                    id=f"B3-{t1.id}-{mid.id}-{t3.id}",
+                    day=day,
+                    tours=[t1, mid, t3],
+                    is_split=False,
+                    max_pause_minutes=max(gap1, gap2),
+                    pause_zone="REGULAR"
+                ))
+                existing_triples.add(triple_key)
     
     return all_blocks
 

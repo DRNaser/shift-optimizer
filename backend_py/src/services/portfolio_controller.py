@@ -550,7 +550,7 @@ def run_portfolio(
         # ==========================================================================
         # S1.4: COMPUTE PACKABILITY METRICS (for block mix diagnostics)
         # ==========================================================================
-        from src.services.forecast_solver_v4 import compute_packability_metrics
+        from src.services.forecast_solver_v4 import compute_packability_metrics, fte_distribution_histogram
         
         packability_metrics = compute_packability_metrics(
             selected_blocks=selected_blocks,
@@ -564,6 +564,8 @@ def run_portfolio(
         fte_drivers = [a for a in assignments if a.driver_type == "FTE"]
         pt_drivers = [a for a in assignments if a.driver_type == "PT"]
         fte_hours = [a.total_hours for a in fte_drivers]
+        pt_hours = [a.total_hours for a in pt_drivers]
+        fte_histogram = fte_distribution_histogram(assignments)
         
         kpi = {
             "solver_arch": f"portfolio_{final_path.value.lower()}",
@@ -571,9 +573,11 @@ def run_portfolio(
             "total_hours": round(sum(t.duration_hours for t in tours), 2),
             "drivers_fte": len(fte_drivers),
             "drivers_pt": len(pt_drivers),
+            "pt_driver_reuse_ratio": round(sum(pt_hours) / len(pt_drivers), 2) if pt_drivers else 0,
             "fte_hours_min": round(min(fte_hours), 2) if fte_hours else 0,
             "fte_hours_max": round(max(fte_hours), 2) if fte_hours else 0,
             "fte_hours_avg": round(sum(fte_hours) / len(fte_hours), 2) if fte_hours else 0,
+            "fte_distribution_histogram": fte_histogram,
             "blocks_selected": phase1_stats.get("selected_blocks", len(selected_blocks)),
             "blocks_1er": phase1_stats.get("blocks_1er", 0),
             "blocks_2er": phase1_stats.get("blocks_2er", 0),
@@ -770,6 +774,7 @@ def _execute_path(
         assign_drivers_greedy,
         rebalance_to_min_fte_hours,
         eliminate_pt_drivers,
+        consolidate_low_hour_fte,
         DriverAssignment,
     )
     from src.services.heuristic_solver import HeuristicSolver
@@ -791,6 +796,7 @@ def _execute_path(
             
             # Light repair
             assignments, _ = rebalance_to_min_fte_hours(assignments, 40.0, 53.0)
+            assignments, _ = consolidate_low_hour_fte(assignments, 40.0, 53.0, 30.0)
             
             # Aggressive PT elimination (NEW)
             # S0.2: Use hard phase2_budget for PT elimination
@@ -820,6 +826,7 @@ def _execute_path(
             
             # Repair
             assignments, _ = rebalance_to_min_fte_hours(assignments, 40.0, 53.0)
+            assignments, _ = consolidate_low_hour_fte(assignments, 40.0, 53.0, 30.0)
             # S0.2: Use hard phase2_budget for PT elimination
             assignments, _ = eliminate_pt_drivers(assignments, 53.0, time_limit=min(phase2_budget * 0.3, 10.0))
             
@@ -868,6 +875,7 @@ def _execute_path(
                 assignments = convert_rosters_to_assignments(sp_result.selected_rosters, block_lookup)
                 if any(a.driver_type == "PT" for a in assignments):
                     assignments, repair_stats = rebalance_to_min_fte_hours(assignments, 40.0, 53.0)
+                    assignments, _ = consolidate_low_hour_fte(assignments, 40.0, 53.0, 30.0)
                     log_fn(
                         "SP repair: moved FTE→FTE="
                         f"{repair_stats.get('moved_blocks_fte_fte', 0)}, "

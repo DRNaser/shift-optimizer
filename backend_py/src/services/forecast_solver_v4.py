@@ -20,7 +20,7 @@ Variables: O(blocks) instead of O(blocks Ã— drivers) = 100x reduction
 from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime, time
-from typing import NamedTuple
+from typing import NamedTuple, Optional
 from enum import Enum
 import math
 from time import perf_counter
@@ -83,6 +83,7 @@ class ConfigV4(NamedTuple):
     pt_min_hours: float = 9.0  # Minimum hours for PT drivers (soft constraint)
     w_pt_underutil: int = 2000  # Penalty weight for PT under-utilization (shortfall)
     w_pt_day_spread: int = 1000  # Penalty per PT working day (minimize fragmentation)
+    pt_max_week_hours: float = 30.0  # PT bin-pack cap (used in SP PT seeding)
     # 3-tour recovery rules (HARD)
     min_rest_after_3t_minutes: int = 14 * 60  # 14h rest after 3-tour day
     max_next_day_tours_after_3t: int = 2  # Max tours allowed after 3-tour day
@@ -252,6 +253,73 @@ def ensure_singletons_for_all_tours(
 def _pause_zone_value(block: Block) -> str:
     pause_zone = block.pause_zone
     return pause_zone.value if hasattr(pause_zone, "value") else str(pause_zone)
+
+
+def _merge_repair_blocks(
+    selected: list[Block],
+    all_blocks: list[Block],
+    block_index: dict,
+    block_scores: Optional[dict] = None,
+) -> tuple[list[Block], dict]:
+    """Deterministic post-pass to merge singles into 3er/2er blocks when possible."""
+    selected_by_id = {b.id: b for b in selected}
+    tour_to_block = {t.id: b for b in selected for t in b.tours}
+
+    def block_minutes(block: Block) -> int:
+        if hasattr(block, "total_work_minutes"):
+            return int(block.total_work_minutes)
+        if hasattr(block, "total_work_hours"):
+            return int(block.total_work_hours * 60)
+        return 0
+
+    def candidate_score(block: Block) -> tuple:
+        score = block_scores.get(block.id, 0) if block_scores else 0
+        return (-score, -block_minutes(block), block.id)
+
+    def can_replace(candidate: Block) -> tuple[bool, list[Block]]:
+        cand_tours = {t.id for t in candidate.tours}
+        covering_blocks = []
+        for tid in cand_tours:
+            existing = tour_to_block.get(tid)
+            if not existing:
+                return False, []
+            covering_blocks.append(existing)
+        for b in covering_blocks:
+            if not {t.id for t in b.tours}.issubset(cand_tours):
+                return False, []
+        return True, list({b.id: b for b in covering_blocks}.values())
+
+    stats = {"replaced_blocks": 0, "added_blocks": 0}
+
+    def apply_candidates(candidates: list[Block]) -> None:
+        nonlocal selected_by_id, tour_to_block, stats
+        for cand in candidates:
+            ok, covering = can_replace(cand)
+            if not ok:
+                continue
+            for old in covering:
+                selected_by_id.pop(old.id, None)
+            selected_by_id[cand.id] = cand
+            for t in cand.tours:
+                tour_to_block[t.id] = cand
+            stats["replaced_blocks"] += len(covering)
+            stats["added_blocks"] += 1
+
+    blocks_3er = sorted([b for b in all_blocks if len(b.tours) == 3], key=candidate_score)
+    blocks_2er_reg = sorted(
+        [b for b in all_blocks if len(b.tours) == 2 and _pause_zone_value(b) == "REGULAR"],
+        key=candidate_score
+    )
+    blocks_2er_split = sorted(
+        [b for b in all_blocks if len(b.tours) == 2 and _pause_zone_value(b) == "SPLIT"],
+        key=candidate_score
+    )
+
+    apply_candidates(blocks_3er)
+    apply_candidates(blocks_2er_reg)
+    apply_candidates(blocks_2er_split)
+
+    return list(selected_by_id.values()), stats
 
 
 # =============================================================================
@@ -2093,17 +2161,31 @@ def _solve_capacity_single_cap(
         stage3_solver_for_fallback = stage2_solver_for_fallback
     
     # =========================================================================
-    # STAGE 4: LEXICOGRAPHIC MINIMIZE (1er -> 2er_split -> total_blocks)
+    # STAGE 4: LEXICOGRAPHIC MIX (max 3er, max 2er, min split, min 1er, min blocks)
     # =========================================================================
-    safe_print(f"\n  --- STAGE 4: LEXICOGRAPHIC MINIMIZE (1er, 2er_split, total_blocks) ---", flush=True)
-    total_blocks = sum(use[b] for b in range(len(blocks)))
-    W_1ER = 1_000_000
-    W_2S = 1_000
-    W_TB = 1
-    stage4_objective = (W_1ER * count_1er) + (W_2S * count_2er_split) + (W_TB * total_blocks)
     safe_print(
-        f"  STAGE 4 OBJ: {W_1ER}*count_1er + {W_2S}*count_2er_split + {W_TB}*total_blocks",
-        flush=True
+        "\n  --- STAGE 4: LEXICOGRAPHIC MIX (3er, 2er, split, 1er, total_blocks) ---",
+        flush=True,
+    )
+    total_blocks = sum(use[b] for b in range(len(blocks)))
+    count_2er_total = count_2er_regular + count_2er_split
+    W_3 = 1_000_000_000
+    W_2 = 1_000_000
+    W_SPLIT = 10_000
+    W_1ER = 100
+    W_TB = 1
+    stage4_objective = (
+        -W_3 * count_3er
+        -W_2 * count_2er_total
+        +W_SPLIT * count_2er_split
+        +W_1ER * count_1er
+        +W_TB * total_blocks
+    )
+    safe_print(
+        "  STAGE 4 OBJ: "
+        f"-{W_3}*count_3er -{W_2}*count_2er + {W_SPLIT}*count_2er_split "
+        f"+ {W_1ER}*count_1er + {W_TB}*total_blocks",
+        flush=True,
     )
     model.Minimize(stage4_objective)
     
@@ -2291,6 +2373,16 @@ def _solve_capacity_single_cap(
     # Compute elapsed time (from model build start)
     elapsed = perf_counter() - t0
     
+    # RC1: Merge repair pass (compress singles into multi-tour blocks)
+    pre_repair = selected
+    selected, merge_stats = _merge_repair_blocks(selected, blocks, block_index, block_scores)
+    if merge_stats["added_blocks"]:
+        safe_print(
+            f"  MERGE REPAIR: replaced {merge_stats['replaced_blocks']} blocks "
+            f"with {merge_stats['added_blocks']} merged blocks",
+            flush=True,
+        )
+
     # RC1: Detailed Stats by Category
     sel_1er = sum(1 for b in selected if len(b.tours) == 1)
     sel_2er_regular = sum(1 for b in selected if len(b.tours) == 2 and _pause_zone_value(b) == "REGULAR")
@@ -2331,6 +2423,11 @@ def _solve_capacity_single_cap(
         "2er": round(by_type["2er"] / total_selected, 3) if total_selected else 0,
         "3er": round(by_type["3er"] / total_selected, 3) if total_selected else 0,
     }
+    pre_repair_counts = {
+        "1er": sum(1 for b in pre_repair if len(b.tours) == 1),
+        "2er": sum(1 for b in pre_repair if len(b.tours) == 2),
+        "3er": sum(1 for b in pre_repair if len(b.tours) == 3),
+    }
     
     # RC1: Add Packing Telemetry
     pack_telemetry = {
@@ -2348,6 +2445,7 @@ def _solve_capacity_single_cap(
     # Compute packability metrics (missed opportunities)
     pack_metrics = compute_packability_metrics(selected, blocks, tours)
     pack_telemetry.update(pack_metrics)
+    pack_telemetry["avoidable_1er"] = max(0, by_type["1er"] - pack_metrics.get("forced_1er_count", 0))
     
     stats = {
         "status": "OK",
@@ -2359,6 +2457,7 @@ def _solve_capacity_single_cap(
         "total_hours": round(total_hours, 2),
         "time": round(elapsed, 2),
         "block_mix": block_mix,
+        "pre_repair_block_mix": pre_repair_counts,
         "split_2er_count": split_2er_count,
         "template_match_count": template_match_count,
         "day_cap_slack": slack_values,
@@ -3881,6 +3980,63 @@ def rebalance_to_min_fte_hours(
     )
     
     return assignments, stats
+
+
+def consolidate_low_hour_fte(
+    assignments: list[DriverAssignment],
+    min_fte_hours: float = 40.0,
+    max_fte_hours: float = 53.0,
+    remove_threshold: float = 30.0,
+) -> tuple[list[DriverAssignment], dict]:
+    """Attempt to eliminate very low-hour FTEs by redistributing their blocks."""
+    stats = {"fte_eliminated": 0, "moved_blocks": 0}
+    fte_targets = [a for a in assignments if a.driver_type == "FTE"]
+    low_ftes = sorted([a for a in fte_targets if a.total_hours < remove_threshold], key=lambda a: a.total_hours)
+    donors = sorted([a for a in fte_targets if a.total_hours >= min_fte_hours], key=lambda a: -a.total_hours)
+
+    for low in low_ftes:
+        movable = list(low.blocks)
+        moved_all = True
+        for block in movable:
+            placed = False
+            for donor in donors:
+                if donor.driver_id == low.driver_id:
+                    continue
+                if donor.total_hours + block.total_work_hours > max_fte_hours:
+                    continue
+                ok, _ = can_assign_block(donor.blocks, block)
+                if not ok:
+                    continue
+                if _move_block(low, donor, block):
+                    stats["moved_blocks"] += 1
+                    placed = True
+                    break
+            if not placed:
+                moved_all = False
+                break
+        if moved_all and not low.blocks:
+            stats["fte_eliminated"] += 1
+    return assignments, stats
+
+
+def fte_distribution_histogram(assignments: list[DriverAssignment]) -> dict:
+    """Bucket FTE hours for diagnostics."""
+    buckets = {"0-30": 0, "30-40": 0, "40-45": 0, "45-50": 0, "50+": 0}
+    for a in assignments:
+        if a.driver_type != "FTE":
+            continue
+        h = a.total_hours
+        if h < 30:
+            buckets["0-30"] += 1
+        elif h < 40:
+            buckets["30-40"] += 1
+        elif h < 45:
+            buckets["40-45"] += 1
+        elif h < 50:
+            buckets["45-50"] += 1
+        else:
+            buckets["50+"] += 1
+    return buckets
 
 
 def fill_in_days_after_heavy(

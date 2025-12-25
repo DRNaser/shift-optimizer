@@ -19,7 +19,8 @@ from time import monotonic
 from dataclasses import dataclass
 from typing import Optional
 
-from src.services.roster_column import RosterColumn, BlockInfo
+from src.services.roster_column import RosterColumn, BlockInfo, create_roster_from_blocks_pt
+from src.services.roster_column import can_add_block_to_roster
 from src.services.roster_column_generator import (
     RosterColumnGenerator, create_block_infos_from_blocks
 )
@@ -181,6 +182,37 @@ def solve_set_partitioning(
     log_fn(f"\nPT incremental pool: added {pt_added} PT columns for uncovered blocks")
 
     if pt_added < 50:
+        # Bin-pack PT rosters before broad PT generation
+        max_pt_hours = getattr(config, "pt_max_week_hours", 30.0) if config else 30.0
+        max_pt_minutes = int(max_pt_hours * 60)
+        seed_blocks = [b for b in block_infos if b.block_id in (under_blocks or all_block_ids)]
+        seed_blocks.sort(key=lambda b: (-b.work_min, b.block_id))
+        pt_bins: list[list[BlockInfo]] = []
+        for block in seed_blocks:
+            placed = False
+            for bin_blocks in pt_bins:
+                cur_minutes = sum(b.work_min for b in bin_blocks)
+                if cur_minutes + block.work_min > max_pt_minutes:
+                    continue
+                can_add, _ = can_add_block_to_roster(bin_blocks, block, cur_minutes)
+                if can_add:
+                    bin_blocks.append(block)
+                    placed = True
+                    break
+            if not placed:
+                pt_bins.append([block])
+            if len(pt_bins) >= 200:
+                break
+        pt_bin_added = 0
+        for bin_blocks in pt_bins:
+            column = create_roster_from_blocks_pt(
+                roster_id=generator._get_next_roster_id(),
+                block_infos=bin_blocks,
+            )
+            if column and generator.add_column(column):
+                pt_bin_added += 1
+        log_fn(f"PT bin-pack: added {pt_bin_added} packed PT columns")
+
         pt_gen_start = time.time()
         pt_count = generator.generate_pt_pool(target_size=500)
         generation_time += time.time() - pt_gen_start
