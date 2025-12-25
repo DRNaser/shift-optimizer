@@ -343,6 +343,7 @@ def run_portfolio(
         solve_capacity_twopass_balanced,  # Two-pass for BEST_BALANCED
         assign_drivers_greedy,
         DriverAssignment,
+        _build_block_gen_overrides,
     )
     from src.services.smart_block_builder import (
         build_weekly_blocks_smart,
@@ -367,6 +368,8 @@ def run_portfolio(
             output_profile=config.output_profile,
             gap_3er_min_minutes=config.gap_3er_min_minutes,
             cap_quota_3er=config.cap_quota_3er,
+            block_gen_overrides=_build_block_gen_overrides(config),
+            hot_tour_penalty_alpha=config.hot_tour_penalty_alpha,
         )
         block_time = perf_counter() - t_block
         

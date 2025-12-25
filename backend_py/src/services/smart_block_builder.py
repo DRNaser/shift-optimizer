@@ -301,6 +301,10 @@ def build_weekly_blocks_smart(
             safe_print(f"[DIAG] candidates_3er_after_gap_filter: {new_3er}")
 
     deg3_map, deg3_p95 = _compute_deg3_map(all_blocks)
+    deg3_vals_raw = [v for v in deg3_map.values() if v > 0]
+    deg3_max_raw = max(deg3_vals_raw) if deg3_vals_raw else 0
+    deg3_p95_raw = _percentile_int(deg3_vals_raw, 0.95) if deg3_vals_raw else 0
+    hot_block_share_raw = _compute_hot_block_share(all_blocks)
 
     # Step 2: Score blocks using policy
     safe_print("[SmartBuilder] Step 2: Scoring blocks with policy...")
@@ -371,6 +375,10 @@ def build_weekly_blocks_smart(
     
     safe_log(f"[POOL DEGREE 2er] {get_stats(deg2_vals)}")
     safe_log(f"[POOL DEGREE 3er] {get_stats(deg3_vals)}")
+    deg3_vals_nonzero = [v for v in deg3_vals if v > 0]
+    deg3_max_capped = max(deg3_vals_nonzero) if deg3_vals_nonzero else 0
+    deg3_p95_capped = _percentile_int(deg3_vals_nonzero, 0.95) if deg3_vals_nonzero else 0
+    hot_block_share_capped = _compute_hot_block_share(final_blocks)
 
     # Step 5: Sanity checks (returns (ok, errors) instead of raising)
     sanity_ok, sanity_errors = _sanity_check(final_blocks, tours)
@@ -387,6 +395,12 @@ def build_weekly_blocks_smart(
     stats["raw_2er"] = count_2er
     stats["raw_3er"] = count_3er
     stats["candidates_3er_pre_cap"] = cap_stats.get("pre_cap_3er", 0)
+    stats["deg3_max_raw"] = deg3_max_raw
+    stats["deg3_p95_raw"] = deg3_p95_raw
+    stats["hot_block_share_raw"] = hot_block_share_raw
+    stats["deg3_max_capped"] = deg3_max_capped
+    stats["deg3_p95_capped"] = deg3_p95_capped
+    stats["hot_block_share_capped"] = hot_block_share_capped
     
     safe_print(f"[SmartBuilder] Final: {len(final_blocks)} blocks in {elapsed:.2f}s")
     if enable_diag:
@@ -745,6 +759,20 @@ def _hotness_bucket(deg: int, p95: int) -> int:
     if deg >= 1 * p95:
         return 1
     return 0
+
+
+def _compute_hot_block_share(blocks: list[Block], hot_k: int = 10) -> float:
+    blocks_3er = [b for b in blocks if len(b.tours) == 3]
+    if not blocks_3er:
+        return 0.0
+    deg3_map, _ = _compute_deg3_map(blocks_3er)
+    top_tours = sorted(deg3_map.items(), key=lambda item: (-item[1], item[0]))[:hot_k]
+    hot_ids = {tour_id for tour_id, _ in top_tours}
+    hot_block_hits = 0
+    for block in blocks_3er:
+        if any(tour.id in hot_ids for tour in block.tours):
+            hot_block_hits += 1
+    return hot_block_hits / len(blocks_3er)
 
 
 def _dedupe_blocks(scored: list[ScoredBlock]) -> list[ScoredBlock]:

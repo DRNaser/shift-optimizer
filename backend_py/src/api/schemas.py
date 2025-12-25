@@ -244,6 +244,13 @@ class ConfigOverrides(BaseModel):
     gap_3er_min_minutes: int | None = Field(default=None, ge=15, le=90)
     cap_quota_3er: float | None = Field(default=None, ge=0.0, le=1.0)
     pass2_min_time_s: float | None = Field(default=None, ge=1.0, description="Minimum time guarantee for Pass-2 optimization")
+    block_gen_min_pause_minutes: int | None = Field(default=None, ge=30, le=60)
+    block_gen_max_pause_regular_minutes: int | None = Field(default=None, ge=30, le=90)
+    block_gen_max_daily_span_hours: float | None = Field(default=None, ge=8.0, le=16.0)
+    block_gen_max_spread_split_minutes: int | None = Field(default=None, ge=600, le=960)
+    block_gen_split_pause_min_minutes: int | None = Field(default=None, ge=180, le=480)
+    block_gen_split_pause_max_minutes: int | None = Field(default=None, ge=180, le=480)
+    hot_tour_penalty_alpha: int | None = Field(default=None, ge=0, le=20)
 
     # DIAGNOSTIC: Solver Mode Override
     solver_mode: str | None = Field(default=None, description="Force specific solver path: GREEDY, CPSAT, SETPART, HEURISTIC")
