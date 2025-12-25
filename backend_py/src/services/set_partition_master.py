@@ -310,20 +310,30 @@ def solve_rmp(
         model.Add(sum(y[i] for i in col_indices) == 1)
     
     # =========================================================================
-    # OBJECTIVE: Minimize drivers with PT penalty + Overtime penalty (>53h)
-    # FTE columns cost 1.0, PT columns cost 3.0
-    # Overtime (>53h) adds 0.5 per hour to discourage overuse unless needed
+    # OBJECTIVE: Minimize drivers with strong PT penalties and soft FTE minimum.
+    # - Base cost per FTE driver
+    # - PT driver start penalty + per-hour PT cost (PT only as overflow)
+    # - Soft penalty for FTE under 40h (cost-based minimum)
+    # - Overtime (>53h) penalty
     # =========================================================================
-    PT_PENALTY = 3.0
+    FTE_BASE_COST = 1.0
+    PT_DRIVER_PENALTY = 10.0
+    PT_HOUR_COST = 0.2
+    FTE_MIN_HOURS_TARGET = 40.0
+    FTE_UNDERUTIL_COST_PER_HOUR = 0.2
     OVERTIME_THRESHOLD = 53.0
     OVERTIME_COST_PER_HOUR = 0.5
     
     costs = []
     for i, col in enumerate(columns):
         # Base cost
-        cost = 1.0
-        if hasattr(col, 'roster_type') and col.roster_type == "PT":
-            cost = PT_PENALTY
+        cost = FTE_BASE_COST
+        if hasattr(col, "roster_type") and col.roster_type == "PT":
+            cost += PT_DRIVER_PENALTY + (col.total_hours * PT_HOUR_COST)
+        else:
+            if col.total_hours < FTE_MIN_HOURS_TARGET:
+                shortfall = FTE_MIN_HOURS_TARGET - col.total_hours
+                cost += shortfall * FTE_UNDERUTIL_COST_PER_HOUR
         
         # Overtime penalty
         if col.total_hours > OVERTIME_THRESHOLD:

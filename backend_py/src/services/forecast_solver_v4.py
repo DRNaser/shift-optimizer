@@ -3709,12 +3709,12 @@ def rebalance_to_min_fte_hours(
     max_fte_hours: float = 53.0
 ) -> tuple[list[DriverAssignment], dict]:
     """
-    Enhanced repair pass: ensure all FTE drivers have >= min_fte_hours.
+    Enhanced repair pass: move blocks to better meet min_fte_hours.
     
     Strategy (in order):
     1. FTEâ†’FTE balancing: Move blocks from overfull FTEs to underfull FTEs
     2. PTâ†’FTE stealing: Move blocks from PT drivers to underfull FTEs
-    3. Reclassify: Convert still-underfull FTEs to PT (last resort)
+    3. Leave remaining underfull FTEs unchanged (min hours treated as soft cost)
     """
     stats = {
         "moved_blocks_fte_fte": 0,
@@ -3822,17 +3822,23 @@ def rebalance_to_min_fte_hours(
             if _move_block(source_pt, underfull, block):
                 stats["moved_blocks_pt_fte"] += 1
     
-    # Phase 3: Reclassify remaining underfull FTEs
-    logger.info("Repair Phase 3: Reclassifying remaining underfull FTEs...")
+    # Phase 3: Leave remaining underfull FTEs as-is (soft minimum)
+    remaining_underfull = sum(
+        1 for a in assignments if a.driver_type == "FTE" and a.total_hours < min_fte_hours
+    )
+    if remaining_underfull:
+        logger.info(
+            "Repair Phase 3: %s FTEs remain under %.1fh (soft minimum; no reclassification).",
+            remaining_underfull,
+            min_fte_hours,
+        )
     
-    for a in assignments:
-        if a.driver_type == "FTE" and a.total_hours < min_fte_hours:
-            a.driver_type = "PT"
-            stats["reclassified_fte_to_pt"] += 1
-    
-    logger.info(f"Repair stats: FTEâ†’FTE moves={stats['moved_blocks_fte_fte']}, "
-                f"PTâ†’FTE moves={stats['moved_blocks_pt_fte']}, "
-                f"reclassified={stats['reclassified_fte_to_pt']}")
+    logger.info(
+        "Repair stats: FTEâ†’FTE moves=%s, PTâ†’FTE moves=%s, reclassified=%s",
+        stats["moved_blocks_fte_fte"],
+        stats["moved_blocks_pt_fte"],
+        stats["reclassified_fte_to_pt"],
+    )
     
     return assignments, stats
 

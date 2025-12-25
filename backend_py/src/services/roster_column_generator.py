@@ -1,7 +1,7 @@
 """
 Roster Column Generator - ALNS Heuristic for Column Generation
 
-Generates valid RosterColumns (42-53h, all constraints satisfied) for 
+Generates valid RosterColumns (soft 40h target, <=55h max) for 
 the Set-Partitioning master problem.
 
 Moves:
@@ -22,7 +22,7 @@ from src.services.roster_column import (
 
 logger = logging.getLogger("ColumnGenerator")
 
-MIN_WEEK_MINUTES = int(MIN_WEEK_HOURS * 60)  # 2520
+MIN_WEEK_MINUTES = int(MIN_WEEK_HOURS * 60)  # 2400 (soft target for FTE, hard cap for PT)
 MAX_WEEK_MINUTES = int(MAX_WEEK_HOURS * 60)  # 3180
 
 
@@ -30,7 +30,7 @@ class RosterColumnGenerator:
     """
     Heuristic column generator for Set-Partitioning.
     
-    Generates valid 42-53h rosters that satisfy all hard constraints.
+    Generates rosters that satisfy hard constraints with a soft 40h target.
     """
     
     def __init__(
@@ -202,10 +202,6 @@ class RosterColumnGenerator:
             if can_add:
                 current_blocks.append(cand)
                 current_minutes += cand.work_min
-        
-        # Check if we reached minimum
-        if current_minutes < MIN_WEEK_MINUTES:
-            return None  # Couldn't reach 42h
         
         # Create and validate roster
         roster = create_roster_from_blocks(
@@ -379,10 +375,6 @@ class RosterColumnGenerator:
             if can_add:
                 current_blocks.append(cand)
                 current_minutes += cand.work_min
-        
-        # Check if we reached minimum
-        if current_minutes < MIN_WEEK_MINUTES:
-            return None
         
         # Create and validate roster
         roster = create_roster_from_blocks(
@@ -668,9 +660,7 @@ class RosterColumnGenerator:
                 continue
             
             # Create column based on driver type
-            total_hours = sum(b.work_min for b in block_infos) / 60.0
-            
-            if assignment.driver_type == "PT" or total_hours < MIN_WEEK_HOURS:
+            if assignment.driver_type == "PT":
                 column = create_roster_from_blocks_pt(
                     roster_id=self._get_next_roster_id(),
                     block_infos=block_infos,
