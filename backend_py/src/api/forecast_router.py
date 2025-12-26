@@ -794,6 +794,9 @@ def _convert_response(result, request: ScheduleRequest, tours: list[Tour]) -> Sc
         block_mix=kpi.get("block_mix"),
         template_match_count=kpi.get("template_match_count"),
         split_2er_count=kpi.get("split_2er_count"),
+        phase2_status=kpi.get("status", result.status),
+        path_used=kpi.get("path_used"),
+        blocks_selected=kpi.get("blocks_selected"),
     )
     
     # Validation

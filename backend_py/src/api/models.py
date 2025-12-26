@@ -135,6 +135,9 @@ class StatsOutputFE(BaseModel):
     block_mix: Optional[dict[str, float]] = None
     template_match_count: Optional[int] = None
     split_2er_count: Optional[int] = None
+    phase2_status: Optional[str] = None
+    path_used: Optional[str] = None
+    blocks_selected: Optional[int] = None
 
 
 class ValidationOutputFE(BaseModel):
