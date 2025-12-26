@@ -84,6 +84,8 @@ def solve_set_partitioning(
     log_fn(f"Blocks: {len(blocks)}")
     log_fn(f"Max rounds: {max_rounds}")
     log_fn(f"Initial pool target: {initial_pool_size}")
+    log_fn(f"Seed: {seed}")
+    log_fn(f"RMP time limit: {rmp_time_limit:.1f}s")
     
     # MANDATORY: Log LNS status immediately for diagnostic visibility
     enable_lns = config and getattr(config, 'enable_lns_low_hour_consolidation', False)
@@ -196,6 +198,7 @@ def solve_set_partitioning(
             if remaining <= 0:
                 log_fn(f"GLOBAL DEADLINE EXCEEDED at round {round_num} - returning best effort")
                 break
+            log_fn(f"Round {round_num}: global remaining {remaining:.1f}s")
         
         log_fn(f"\n--- Round {round_num}/{max_rounds} ---")
         log_fn(f"Pool size: {len(generator.pool)}")
@@ -209,6 +212,7 @@ def solve_set_partitioning(
             remaining = global_deadline - monotonic()
             # Use min of configured limit and remaining time (but at least 1s)
             effective_rmp_limit = min(rmp_time_limit, max(1.0, remaining))
+        log_fn(f"RMP time limit: {effective_rmp_limit:.1f}s")
         
         rmp_start = time.time()
         rmp_result = solve_rmp(

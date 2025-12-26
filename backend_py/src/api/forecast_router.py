@@ -18,6 +18,7 @@ from src.api.models import (
     StatsOutputFE, ValidationOutputFE, WeekdayFE, WEEKDAY_MAP, WEEKDAY_REVERSE
 )
 from src.domain.models import Tour, Weekday
+from src.domain.constraints import HARD_CONSTRAINTS
 from src.services.forecast_solver_v4 import solve_forecast_v4, ConfigV4
 from src.services.log_stream import emit_log, get_log_generator, clear_logs, attach_sse_handler
 from src.services.portfolio_controller import solve_forecast_portfolio
@@ -55,7 +56,7 @@ async def health_check():
         constraints={
             "min_hours_per_fte": 42.0,
             "max_hours_per_fte": 53.0,
-            "max_daily_span_hours": 14.0,
+            "max_daily_span_hours": HARD_CONSTRAINTS.MAX_DAILY_SPAN_HOURS,
         }
     )
 
@@ -135,8 +136,8 @@ async def get_constraints():
         "hard": {
             "min_hours_per_fte": 42.0,
             "max_hours_per_fte": 53.0,
-            "max_daily_span_hours": 14.0,
-            "min_rest_hours": 11.0,
+            "max_daily_span_hours": HARD_CONSTRAINTS.MAX_DAILY_SPAN_HOURS,
+            "min_rest_hours": HARD_CONSTRAINTS.MIN_REST_HOURS,
         },
         "soft": {
             "prefer_larger_blocks": True,
