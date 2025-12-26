@@ -59,6 +59,8 @@ from src.services.smart_block_builder import (
     build_weekly_blocks_smart,
     build_block_index,
     verify_coverage,
+    BlockGenOverrides,
+    DEFAULT_BLOCKGEN_OVERRIDES,
 )
 
 
@@ -163,11 +165,44 @@ class ConfigV4(NamedTuple):
     lns_receiver_k_values: tuple = (3, 5, 8, 12)     # Escalating receiver neighborhood sizes
     lns_attempt_budget_s: float = 2.0                # Budget per single kill attempt
     lns_max_attempts: int = 30                       # Maximum kill attempts
+    
+    # =========================================================================
+    # BLOCKGEN OVERRIDES (RELAXED for headcount reduction - v5.1)
+    # =========================================================================
+    block_gen_min_pause_minutes: int = 30               # Keep 30 min minimum
+    block_gen_max_pause_regular_minutes: int = 1440     # RELAXED: 60→1440 (24h)
+    block_gen_split_pause_min_minutes: int = 30         # RELAXED: 360→30 (flexible)
+    block_gen_split_pause_max_minutes: int = 1440       # RELAXED: 360→1440 (24h)
+    block_gen_max_daily_span_hours: float = 24.0        # RELAXED: 15.5→24 (unlimited)
+    block_gen_max_spread_split_minutes: int = 1440      # RELAXED: 840→1440 (24h)
+    
+    # Anti-Overlap Diversification
+    hot_tour_penalty_alpha: float = 0.0                # Default 0.0 = disabled
+    
+    # =========================================================================
+    # FIXED FTE POOL STRATEGY (v5.2 - 150 FTE Fix Pool)
+    # =========================================================================
+    use_fixed_fte_pool: bool = False      # Default False: Fix pool logic is opt-in (causes high PT count currently)
+    num_fte_pool: int = 150               # Fixed FTE pool size
+    fte_min_hours: float = 40.0           # FTE minimum hours (< 40h becomes PT)
+    fte_max_hours: float = 55.0           # FTE maximum hours (hard limit)
 
 
 # =============================================================================
 # RESULT MODELS
 # =============================================================================
+
+def config_to_block_gen_overrides(config: ConfigV4) -> BlockGenOverrides:
+    """Create BlockGenOverrides from ConfigV4 for block generation."""
+    return BlockGenOverrides(
+        min_pause_minutes=config.block_gen_min_pause_minutes,
+        max_pause_regular_minutes=config.block_gen_max_pause_regular_minutes,
+        split_pause_min_minutes=config.block_gen_split_pause_min_minutes,
+        split_pause_max_minutes=config.block_gen_split_pause_max_minutes,
+        max_daily_span_hours=config.block_gen_max_daily_span_hours,
+        max_spread_split_minutes=config.block_gen_max_spread_split_minutes,
+        hot_tour_penalty_alpha=config.hot_tour_penalty_alpha,
+    )
 
 @dataclass 
 class DriverAssignment:
@@ -504,9 +539,9 @@ def create_rerun_config(config: ConfigV4) -> ConfigV4:
     
     This ensures Path-B produces a different solution.
     """
-    # NamedTuple is immutable, so we return a new one with same values
-    # The multiplier is used in packability cost adjustments at runtime
-    return config  # The multiplier is accessed directly from config
+    # NamedTuple is immutable, use _replace to create modified version
+    new_w_choice_1er = config.w_choice_1er * config.rerun_1er_penalty_multiplier
+    return config._replace(w_choice_1er=new_w_choice_1er)
 
 
 # =============================================================================
@@ -1470,7 +1505,7 @@ def _solve_capacity_single_cap(
     # Patch 3: If any tours are missing, return INFEASIBLE immediately
     if missing_tours:
         safe_print(f"  [ERROR] {len(missing_tours)} tours cannot be covered: {missing_tours}", flush=True)
-        return None, {"status": "INFEASIBLE", "missing_tours": missing_tours}
+        return None  # Return None to indicate infeasibility (matches function signature)
     
     safe_print("Coverage constraints added.", flush=True)
     
@@ -1795,15 +1830,20 @@ def _solve_capacity_single_cap(
     
     status_pass1 = solver_pass1.Solve(model)
     
+    # PHASE-1 STATUS CONTRACT: Track best_so_far to avoid UNKNOWN escaping Phase-1
+    best_so_far_solver = None    # Solver instance with values we can extract
+    
     if status_pass1 == cp_model.OPTIMAL:
         safe_print(f"  PASS 1: OPTIMAL", flush=True)
         pass1_is_optimal = True
+        best_so_far_solver = solver_pass1  # Save for fallback
     elif status_pass1 == cp_model.FEASIBLE:
         safe_print(f"  PASS 1: FEASIBLE (not proven optimal)", flush=True)
         pass1_is_optimal = False
+        best_so_far_solver = solver_pass1  # Save for fallback
     else:
-        safe_print(f"  PASS 1 FAILED: {status_str(status_pass1)}", flush=True)
-        return None
+        safe_print(f"  PASS 1 FAILED: {status_str(status_pass1)} (NO SOLUTION AVAILABLE)", flush=True)
+        return None  # Only return None if we have NO solution at all
     
     headcount_pass1 = int(solver_pass1.Value(max_day))
     safe_print(f"  PASS 1 RESULT: headcount = {headcount_pass1} blocks/peak-day", flush=True)
@@ -1845,15 +1885,25 @@ def _solve_capacity_single_cap(
     status_s1 = solver_s1.Solve(model)
     
     # K2: Status handling - distinguish OPTIMAL vs FEASIBLE (Edit 1: use status_str)
+    # PHASE-1 STATUS CONTRACT: Stage failures use fallback, UNKNOWN never escapes
     if status_s1 == cp_model.OPTIMAL:
         safe_print(f"  STAGE 1: {status_str(status_s1)}", flush=True)
+        best_so_far_solver = solver_s1  # Update best
     elif status_s1 == cp_model.FEASIBLE:
         safe_print(f"  STAGE 1: {status_str(status_s1)} (not proven optimal)", flush=True)
+        best_so_far_solver = solver_s1  # Update best
     else:
-        safe_print(f"  STAGE 1 FAILED: {status_str(status_s1)}", flush=True)
+        safe_print(f"  STAGE 1 FAILED: {status_str(status_s1)} (using Pass 1 fallback)", flush=True)
         if status_s1 == cp_model.MODEL_INVALID:
             safe_print(f"  ERROR: Model is invalid. Check count expressions.", flush=True)
-        return None
+        # PHASE-1 STATUS CONTRACT: Use best_so_far instead of returning None
+        # Extract solution from best_so_far_solver (Pass 1)
+        if best_so_far_solver is not None:
+            selected = [blocks[b] for b in range(len(blocks)) if best_so_far_solver.Value(use[b]) == 1]
+            safe_print(f"  FALLBACK: Using Pass 1 solution ({len(selected)} blocks)", flush=True)
+            # Return with OK status since we have a valid solution
+            return _build_phase1_result_from_solution(selected, blocks, tours, block_index, block_props, block_scores, t0, avail_1er, avail_2er_reg, avail_2er_split, avail_3er, tour_has_multi)
+        return None  # Only if no solution at all
     
     # K1: Use solver.Value(expr) instead of ObjectiveValue() for robustness
     best_count_3er = solver_s1.Value(count_3er)
@@ -1878,13 +1928,33 @@ def _solve_capacity_single_cap(
     
     status_s2 = solver_s2.Solve(model)
     
+    # PHASE-1 STATUS CONTRACT: Stage 2 failures use fallback
     if status_s2 == cp_model.OPTIMAL:
         safe_print(f"  STAGE 2: OPTIMAL", flush=True)
+        best_so_far_solver = solver_s2  # Update best
     elif status_s2 == cp_model.FEASIBLE:
         safe_print(f"  STAGE 2: FEASIBLE (not proven optimal)", flush=True)
+        best_so_far_solver = solver_s2  # Update best
     else:
-        safe_print(f"  STAGE 2 FAILED: {status_str(status_s2)}", flush=True)
-        return None
+        safe_print(f"  STAGE 2 FAILED: {status_str(status_s2)} (using Stage 1 fallback)", flush=True)
+        # PHASE-1 STATUS CONTRACT: Use best_so_far instead of returning None
+        if best_so_far_solver is not None:
+            selected = [blocks[b] for b in range(len(blocks)) if best_so_far_solver.Value(use[b]) == 1]
+            safe_print(f"  FALLBACK: Using Stage 1 solution ({len(selected)} blocks)", flush=True)
+            # Build minimal stats for fallback
+            elapsed = perf_counter() - t0
+            by_type = {"1er": sum(1 for b in selected if len(b.tours) == 1),
+                       "2er": sum(1 for b in selected if len(b.tours) == 2),
+                       "3er": sum(1 for b in selected if len(b.tours) == 3)}
+            by_day = defaultdict(int)
+            for block in selected:
+                by_day[block.day.value] += 1
+            total_hours = sum(b.total_work_hours for b in selected)
+            return selected, {"status": "OK", "selected_blocks": len(selected), "blocks_1er": by_type["1er"],
+                             "blocks_2er": by_type["2er"], "blocks_3er": by_type["3er"],
+                             "blocks_by_day": dict(by_day), "total_hours": round(total_hours, 2),
+                             "time": round(elapsed, 2), "fallback_stage": "Stage 1"}
+        return None  # Only if no solution at all
     
     best_count_2er_regular = solver_s2.Value(count_2er_regular)
     safe_print(f"  STAGE 2 RESULT: count_2er_regular = {int(best_count_2er_regular)}", flush=True)
@@ -1940,11 +2010,28 @@ def _solve_capacity_single_cap(
     
     # UNKNOWN = timeout (ok for 2s budget), FEASIBLE/OPTIMAL = passing
     # Only INFEASIBLE and MODEL_INVALID are actual failures
+    # PHASE-1 STATUS CONTRACT: Use fallback on preflight failure
     if status_preflight in (cp_model.INFEASIBLE, cp_model.MODEL_INVALID):
         safe_print(f"  PRE-FLIGHT FAILED: Model is {status_str(status_preflight)} after Stage 2 fixation", flush=True)
         safe_print(f"  -> Stage 1 fixed: count_3er = {int(best_count_3er)}", flush=True)
         safe_print(f"  -> Stage 2 fixed: count_2er_regular = {int(best_count_2er_regular)}", flush=True)
-        return None
+        # PHASE-1 STATUS CONTRACT: Use best_so_far instead of returning None
+        if best_so_far_solver is not None:
+            selected = [blocks[b] for b in range(len(blocks)) if best_so_far_solver.Value(use[b]) == 1]
+            safe_print(f"  FALLBACK: Using Stage 2 solution ({len(selected)} blocks)", flush=True)
+            elapsed = perf_counter() - t0
+            by_type = {"1er": sum(1 for b in selected if len(b.tours) == 1),
+                       "2er": sum(1 for b in selected if len(b.tours) == 2),
+                       "3er": sum(1 for b in selected if len(b.tours) == 3)}
+            by_day = defaultdict(int)
+            for block in selected:
+                by_day[block.day.value] += 1
+            total_hours = sum(b.total_work_hours for b in selected)
+            return selected, {"status": "OK", "selected_blocks": len(selected), "blocks_1er": by_type["1er"],
+                             "blocks_2er": by_type["2er"], "blocks_3er": by_type["3er"],
+                             "blocks_by_day": dict(by_day), "total_hours": round(total_hours, 2),
+                             "time": round(elapsed, 2), "fallback_stage": "Stage 2"}
+        return None  # Only if no solution at all
     
     safe_print(f"  PRE-FLIGHT PASSED (model valid)", flush=True)
     
@@ -1961,13 +2048,32 @@ def _solve_capacity_single_cap(
     
     status_s3 = solver_s3.Solve(model)
     
+    # PHASE-1 STATUS CONTRACT: Stage 3 failures use fallback
     if status_s3 == cp_model.OPTIMAL:
         safe_print(f"  STAGE 3: OPTIMAL", flush=True)
+        best_so_far_solver = solver_s3  # Update best
     elif status_s3 == cp_model.FEASIBLE:
         safe_print(f"  STAGE 3: FEASIBLE (not proven optimal)", flush=True)
+        best_so_far_solver = solver_s3  # Update best
     else:
-        safe_print(f"  STAGE 3 FAILED: {status_str(status_s3)}", flush=True)
-        return None
+        safe_print(f"  STAGE 3 FAILED: {status_str(status_s3)} (using Stage 2 fallback)", flush=True)
+        # PHASE-1 STATUS CONTRACT: Use best_so_far instead of returning None
+        if best_so_far_solver is not None:
+            selected = [blocks[b] for b in range(len(blocks)) if best_so_far_solver.Value(use[b]) == 1]
+            safe_print(f"  FALLBACK: Using Stage 2 solution ({len(selected)} blocks)", flush=True)
+            elapsed = perf_counter() - t0
+            by_type = {"1er": sum(1 for b in selected if len(b.tours) == 1),
+                       "2er": sum(1 for b in selected if len(b.tours) == 2),
+                       "3er": sum(1 for b in selected if len(b.tours) == 3)}
+            by_day = defaultdict(int)
+            for block in selected:
+                by_day[block.day.value] += 1
+            total_hours = sum(b.total_work_hours for b in selected)
+            return selected, {"status": "OK", "selected_blocks": len(selected), "blocks_1er": by_type["1er"],
+                             "blocks_2er": by_type["2er"], "blocks_3er": by_type["3er"],
+                             "blocks_by_day": dict(by_day), "total_hours": round(total_hours, 2),
+                             "time": round(elapsed, 2), "fallback_stage": "Stage 2"}
+        return None  # Only if no solution at all
     
     best_count_2er_split = solver_s3.Value(count_2er_split)
     safe_print(f"  STAGE 3 RESULT: count_2er_split = {int(best_count_2er_split)}", flush=True)
@@ -1995,21 +2101,36 @@ def _solve_capacity_single_cap(
         safe_print(f"  STAGE 4: OPTIMAL", flush=True)
     elif status_s4 == cp_model.FEASIBLE:
         safe_print(f"  STAGE 4: FEASIBLE (not proven optimal)", flush=True)
+    elif status_s4 == cp_model.UNKNOWN:
+        safe_print(f"  STAGE 4: UNKNOWN (using Stage 3 fallback)", flush=True)
     else:
         safe_print(f"  STAGE 4 FAILED: {status_str(status_s4)}", flush=True)
         return None
     
-    best_count_1er = solver_s4.Value(count_1er)
-    safe_print(f"  STAGE 4 RESULT: count_1er = {int(best_count_1er)}", flush=True)
-    
-    # Fix count_1er for stage 5
-    model.Add(count_1er == int(best_count_1er))
-    
-    # K5: Explicitly save Stage 4 solution for fallback
-    stage4_solution = [solver_s4.Value(use[b]) for b in range(len(blocks))]
-    
-    # K3: Hints for Stage 5 (using helper to prevent duplicates)
-    reset_hints_from_solver(model, use, solver_s4)
+    if status_s4 in (cp_model.OPTIMAL, cp_model.FEASIBLE):
+        best_count_1er = solver_s4.Value(count_1er)
+        safe_print(f"  STAGE 4 RESULT: count_1er = {int(best_count_1er)}", flush=True)
+
+        # Fix count_1er for stage 5
+        model.Add(count_1er == int(best_count_1er))
+
+        # K5: Explicitly save Stage 4 solution for fallback
+        stage4_solution = [solver_s4.Value(use[b]) for b in range(len(blocks))]
+
+        # K3: Hints for Stage 5 (using helper to prevent duplicates)
+        reset_hints_from_solver(model, use, solver_s4)
+    else:
+        best_count_1er = solver_s3.Value(count_1er)
+        safe_print(f"  STAGE 4 FALLBACK RESULT: count_1er = {int(best_count_1er)}", flush=True)
+
+        # Fix count_1er for stage 5 using Stage 3 value
+        model.Add(count_1er == int(best_count_1er))
+
+        # Use Stage 3 solution as fallback
+        stage4_solution = [solver_s3.Value(use[b]) for b in range(len(blocks))]
+
+        # Hints for Stage 5 based on Stage 3 solution
+        reset_hints_from_solver(model, use, solver_s3)
     
     # =========================================================================
     # STAGE 5: SECONDARY OPTIMIZATION under fixed packing
@@ -2995,10 +3116,11 @@ def solve_forecast_v4(
     total_hours = sum(t.duration_hours for t in tours)
     logger.info(f"Total hours: {total_hours:.1f}h")
     
-    # Phase A: Build blocks
+    # Phase A: Build blocks with overrides from config
     t_block = perf_counter()
     safe_print("PHASE A: Block building start...", flush=True)
-    blocks, block_stats = build_weekly_blocks_smart(tours)
+    block_gen_overrides = config_to_block_gen_overrides(config)
+    blocks, block_stats = build_weekly_blocks_smart(tours, overrides=block_gen_overrides)
     block_time = perf_counter() - t_block
     safe_print(f"PHASE A: Block building done in {block_time:.2f}s, generated {len(blocks)} blocks", flush=True)
     
@@ -3078,7 +3200,66 @@ def solve_forecast_v4(
     if under_count > 0:
         logger.info(f"Note: {under_count} FTE drivers have < {config.min_hours_per_fte}h (informational)")
 
+    # ======================================================================
+    # v5.2: 150-FTE FIXED POOL - Reclassify FTE < 40h to PT
+    # ======================================================================
+    if config.use_fixed_fte_pool:
+        logger.info(f"\n{'='*60}")
+        logger.info("v5.2: FIXED FTE POOL - Reclassifying underfull FTEs")
+        logger.info(f"{'='*60}")
+        
+        fte_min = config.fte_min_hours
+        fte_before = sum(1 for a in assignments if a.driver_type == "FTE")
+        pt_before = sum(1 for a in assignments if a.driver_type == "PT")
+        
+        # Find FTE < fte_min_hours and reclassify to PT
+        new_assignments = []
+        reclassified_count = 0
+        pt_counter = pt_before + 1
+        
+        for a in assignments:
+            if a.driver_type == "FTE" and a.total_hours < fte_min:
+                # Reclassify as PT
+                reclassified_count += 1
+                new_a = DriverAssignment(
+                    driver_id=f"PT_{pt_counter:03d}",
+                    driver_type="PT",
+                    blocks=a.blocks,
+                    total_hours=a.total_hours,
+                    days_worked=a.days_worked,
+                    analysis=a.analysis,
+                )
+                new_assignments.append(new_a)
+                pt_counter += 1
+                logger.info(f"  {a.driver_id} ({a.total_hours:.1f}h) -> PT_{pt_counter-1:03d}")
+            else:
+                new_assignments.append(a)
+        
+        assignments = new_assignments
+        
+        fte_after = sum(1 for a in assignments if a.driver_type == "FTE")
+        pt_after = sum(1 for a in assignments if a.driver_type == "PT")
+        
+        logger.info(f"Reclassified: {reclassified_count} FTE -> PT")
+        logger.info(f"Before: {fte_before} FTE + {pt_before} PT = {fte_before + pt_before}")
+        logger.info(f"After:  {fte_after} FTE + {pt_after} PT = {fte_after + pt_after}")
+        
+        # Update phase2_stats
+        phase2_stats["drivers_fte"] = fte_after
+        phase2_stats["drivers_pt"] = pt_after
+        phase2_stats["reclassified_fte_to_pt"] = reclassified_count
+        
+        # Recalculate FTE stats (only count real FTEs now)
+        fte_only = [a for a in assignments if a.driver_type == "FTE" and a.blocks]
+        if fte_only:
+            phase2_stats["fte_hours_min"] = min(a.total_hours for a in fte_only)
+            phase2_stats["fte_hours_max"] = max(a.total_hours for a in fte_only)
+            phase2_stats["fte_hours_avg"] = sum(a.total_hours for a in fte_only) / len(fte_only)
+            phase2_stats["under_hours_count"] = sum(1 for a in fte_only if a.total_hours < fte_min)
+        
+        fte_count = fte_after
     
+
     # KPIs
     kpi = {
         "status": status,
@@ -3316,10 +3497,11 @@ def solve_forecast_fte_only(
     
     config = ConfigV4(seed=seed)
     
-    # Phase A: Build blocks
+    # Phase A: Build blocks with overrides from config
     t_block = perf_counter()
     safe_print("PHASE A: Block building...", flush=True)
-    blocks, block_stats = build_weekly_blocks_smart(tours)
+    block_gen_overrides = config_to_block_gen_overrides(config)
+    blocks, block_stats = build_weekly_blocks_smart(tours, overrides=block_gen_overrides)
     block_time = perf_counter() - t_block
     safe_print(f"Generated {len(blocks)} blocks in {block_time:.1f}s", flush=True)
     
@@ -4141,10 +4323,11 @@ def solve_forecast_set_partitioning(
     logger.info(f"Total hours: {total_hours:.1f}h")
     logger.info(f"Expected drivers: {int(total_hours/53)}-{int(total_hours/40)}")
     
-    # Phase A: Build blocks (reuse existing)
+    # Phase A: Build blocks with overrides from config
     t_block = perf_counter()
     safe_print("PHASE A: Block building...", flush=True)
-    blocks, block_stats = build_weekly_blocks_smart(tours)
+    block_gen_overrides = config_to_block_gen_overrides(config)
+    blocks, block_stats = build_weekly_blocks_smart(tours, overrides=block_gen_overrides)
     block_time = perf_counter() - t_block
     safe_print(f"Generated {len(blocks)} blocks in {block_time:.1f}s", flush=True)
     
@@ -4381,3 +4564,145 @@ def solve_forecast_set_partitioning(
         solve_times=solve_times,
         block_stats=block_stats
     )
+
+
+# =============================================================================
+# DOMAIN LNS INTERFACE: solve_capacity_phase_with_fixes
+# =============================================================================
+
+def solve_capacity_phase_with_fixes(
+    blocks: list,
+    tours: list,
+    block_index: dict,
+    config,
+    fixed_use_block: dict = None,
+    hints_use_block: dict = None,
+    temp_constraints: list = None,
+    time_limit: float = 15.0,
+):
+    """
+    Phase 1 solver variant for Domain LNS neighborhood solves.
+    
+    This rebuilds a fresh CpModel with:
+    - Fixed blocks constrained to their values (model.Add(use[b] == v))
+    - Hints for warm start (model.AddHint)
+    - Temporary protection constraints
+    - Short time limit
+    
+    Args:
+        blocks: All candidate blocks
+        tours: All tours
+        block_index: tour_id -> list of blocks covering it
+        config: ConfigV4 instance
+        fixed_use_block: dict[block_id] -> 0/1 for hard fixes
+        hints_use_block: dict[block_id] -> 0/1 for warm start
+        temp_constraints: list of (var_name, op, value) tuples
+        time_limit: Max solve time in seconds
+    
+    Returns:
+        (status: str, selected_blocks: list)
+        status is "OPTIMAL", "FEASIBLE", "INFEASIBLE", or "UNKNOWN"
+    """
+    from ortools.sat.python import cp_model
+    
+    fixed_use_block = fixed_use_block or {}
+    hints_use_block = hints_use_block or {}
+    temp_constraints = temp_constraints or []
+    
+    model = cp_model.CpModel()
+    
+    # Variables: one per block
+    use = {}
+    block_id_to_idx = {}
+    for b, block in enumerate(blocks):
+        use[b] = model.NewBoolVar(f"use_{b}")
+        block_id_to_idx[block.id] = b
+    
+    # === DOMAIN LNS: Apply fixed values ===
+    fixed_count = 0
+    for block_id, value in fixed_use_block.items():
+        if block_id in block_id_to_idx:
+            idx = block_id_to_idx[block_id]
+            model.Add(use[idx] == value)
+            fixed_count += 1
+    
+    # === DOMAIN LNS: Apply hints ===
+    for block_id, value in hints_use_block.items():
+        if block_id in block_id_to_idx:
+            idx = block_id_to_idx[block_id]
+            model.AddHint(use[idx], value)
+    
+    # Coverage constraints (each tour exactly once)
+    for tour in tours:
+        blocks_with_tour = block_index.get(tour.id, [])
+        if not blocks_with_tour:
+            continue  # Tour not covered - model may be infeasible
+        
+        sum_vars = []
+        for b in blocks_with_tour:
+            if b.id in block_id_to_idx:
+                sum_vars.append(use[block_id_to_idx[b.id]])
+        
+        if sum_vars:
+            model.Add(sum(sum_vars) == 1)
+    
+    # Count block types for protection constraints
+    blocks_3er_idx = [b for b, block in enumerate(blocks) if len(block.tours) >= 3]
+    blocks_2er_idx = [b for b, block in enumerate(blocks) if len(block.tours) == 2]
+    blocks_1er_idx = [b for b, block in enumerate(blocks) if len(block.tours) == 1]
+    
+    total_3er_var = model.NewIntVar(0, len(blocks_3er_idx), "total_3er_var")
+    total_2er_var = model.NewIntVar(0, len(blocks_2er_idx), "total_2er_var")
+    
+    model.Add(total_3er_var == sum(use[b] for b in blocks_3er_idx))
+    model.Add(total_2er_var == sum(use[b] for b in blocks_2er_idx))
+    
+    # === DOMAIN LNS: Apply temporary protection constraints ===
+    for constraint in temp_constraints:
+        var_name, op, value = constraint
+        if var_name == "total_3er_var" and op == ">=":
+            model.Add(total_3er_var >= value)
+        elif var_name == "total_2er_var" and op == ">=":
+            model.Add(total_2er_var >= value)
+    
+    # Objective: maximize 3er + 0.5*2er - 0.1*1er (simplified for LNS)
+    total_1er_var = model.NewIntVar(0, len(blocks_1er_idx), "total_1er_var")
+    model.Add(total_1er_var == sum(use[b] for b in blocks_1er_idx))
+    
+    # Scale for integer coefficients
+    obj_terms = []
+    for b in blocks_3er_idx:
+        obj_terms.append(use[b] * 1000)  # +1000 per 3er
+    for b in blocks_2er_idx:
+        obj_terms.append(use[b] * 500)   # +500 per 2er
+    for b in blocks_1er_idx:
+        obj_terms.append(use[b] * (-100))  # -100 per 1er
+    
+    model.Maximize(sum(obj_terms))
+    
+    # Solve
+    solver = cp_model.CpSolver()
+    solver.parameters.max_time_in_seconds = time_limit
+    solver.parameters.num_search_workers = 1  # Determinism
+    solver.parameters.random_seed = 42
+    
+    status = solver.Solve(model)
+    
+    status_str = {
+        cp_model.OPTIMAL: "OPTIMAL",
+        cp_model.FEASIBLE: "FEASIBLE",
+        cp_model.INFEASIBLE: "INFEASIBLE",
+        cp_model.UNKNOWN: "UNKNOWN",
+        cp_model.MODEL_INVALID: "MODEL_INVALID",
+    }.get(status, "UNKNOWN")
+    
+    if status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
+        return status_str, []
+    
+    # Extract solution
+    selected_blocks = [
+        block for b, block in enumerate(blocks)
+        if solver.Value(use[b]) == 1
+    ]
+    
+    return status_str, selected_blocks

@@ -38,6 +38,7 @@ downloads/
 eggs/
 .eggs/
 lib/
+!frontend_next/lib/
 lib64/
 parts/
 sdist/
@@ -66,3 +67,8 @@ backend_py/artifacts/
 backend_py/lns_*.json
 backend_py/rc*.json
 backend_py/server.err
+
+# Frontend V5 Exceptions
+!frontend_v5/
+!frontend_v5/lib/
+

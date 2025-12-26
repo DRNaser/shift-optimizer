@@ -55,6 +55,7 @@ def run_smoke_60s():
     return data
 
 
+@pytest.mark.smoke
 class TestSmokeGate1:
     """Gate 1: Coverage + Constraints (always pass regardless of budget)."""
     
@@ -144,6 +145,7 @@ def run_performance_120s():
     return data
 
 
+@pytest.mark.performance
 class TestPerformanceGate2:
     """Gate 2: Full performance metrics (120s runs)."""
     
@@ -187,3 +189,40 @@ class TestPerformanceGate2:
         assert result.returncode == 0, "Validation script crashed"
         assert "Status: VALID [OK]" in result.stdout
         assert "Zone Violations: 0 [OK]" in result.stdout
+    
+    def test_twopass_executed(self, run_performance_120s):
+        """Gate-2: Verify two-pass optimization ran (Contract v2.0)."""
+        stats = run_performance_120s.get("stats", {})
+        
+        twopass_executed = stats.get("twopass_executed")
+        pass1_time = stats.get("pass1_time_s", 0)
+        
+        print(f"twopass_executed: {twopass_executed}")
+        print(f"pass1_time_s: {pass1_time}")
+        
+        # With 120s budget, Pass-2 SHOULD execute
+        # If not, check if Pass-1 consumed too much budget
+        if not twopass_executed:
+            assert pass1_time < 110, (
+                f"Pass-1 consumed {pass1_time:.1f}s of 120s budget, "
+                f"leaving insufficient time for Pass-2. Consider increasing budget."
+            )
+        
+        assert twopass_executed is True, (
+            f"twopass_executed must be True for 120s budget. "
+            f"pass1_time_s={pass1_time}s. Check solver logs."
+        )
+    
+    def test_schema_version_in_output(self, run_performance_120s):
+        """Verify schema_version exists in output (Contract v2.0)."""
+        # Check for schema_version or version field
+        schema_version = run_performance_120s.get("schema_version")
+        version = run_performance_120s.get("version")
+        
+        print(f"schema_version: {schema_version}, version: {version}")
+        
+        # At minimum, version should indicate 2.x
+        assert schema_version == "2.0" or (version and version.startswith("2")), (
+            f"Expected schema_version='2.0' or version starting with '2', "
+            f"got schema_version={schema_version}, version={version}"
+        )

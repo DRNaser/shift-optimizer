@@ -30,7 +30,7 @@ class HardConstraints:
     MAX_WEEKLY_HOURS: float = 55.0
     """Maximum working hours per driver per week."""
     
-    MAX_DAILY_SPAN_HOURS = 15.5  # Maximum span from first start to last end
+    MAX_DAILY_SPAN_HOURS = 24.0  # RELAXED: Was 15.5h → now 24h (unlimited)
     
     MIN_REST_HOURS: float = 11.0
     """Minimum rest time between end of last tour one day and start of first tour next day."""
@@ -66,18 +66,18 @@ class HardConstraints:
     MIN_PAUSE_BETWEEN_TOURS: int = 30
     """Minimum break between consecutive tours in a block."""
     
-    MAX_PAUSE_BETWEEN_TOURS: int = 60
-    """Maximum gap between consecutive tours for REGULAR blocks (1 hour - v5 tighter packing)."""
+    MAX_PAUSE_BETWEEN_TOURS: int = 1440
+    """RELAXED: Was 60 min → now 1440 min (24h, unlimited for headcount reduction)."""
     
-    # Split-shift configuration (Two-Zone Pause Model - v5 Updated)
-    SPLIT_PAUSE_MIN: int = 360
-    """Gap for split-shift blocks (exactly 6 hours)."""
+    # Split-shift configuration (RELAXED for flexible scheduling)
+    SPLIT_PAUSE_MIN: int = 30
+    """RELAXED: Was 360 min → now 30 min (same as MIN_PAUSE, fully flexible)."""
     
-    SPLIT_PAUSE_MAX: int = 360
-    """Gap for split-shift blocks (exactly 6 hours - same as MIN for exact match)."""
+    SPLIT_PAUSE_MAX: int = 1440
+    """RELAXED: Was 360 min → now 1440 min (24h, unlimited)."""
     
-    MAX_SPREAD_SPLIT_MINUTES: int = 840
-    """Maximum spread (first_start -> last_end) for split blocks (14 hours)."""
+    MAX_SPREAD_SPLIT_MINUTES: int = 1440
+    """RELAXED: Was 840 min → now 1440 min (24h, unlimited for headcount reduction)."""
     
     # Note: Gaps 61-359 and 361+ are FORBIDDEN (neither regular nor split)
 

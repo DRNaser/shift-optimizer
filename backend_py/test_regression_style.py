@@ -9,16 +9,19 @@ Target Corridors (from traindata.xlsx analysis):
 - 1er: 3-10% (target: 6%)
 - Split-2er rate: 30-45% (target: 37%)
 - Saturday 1er: 12-20% (target: 15%)
+
+NOTE: This is a manual script, not a pytest test.
 """
 
-import json
 import sys
+
+# Skip at module level for pytest collection
+if "pytest" in sys.modules:
+    import pytest
+    pytest.skip("Manual script - requires style_report.json", allow_module_level=True)
+
+import json
 from pathlib import Path
-
-# Add parent to path for imports
-sys.path.insert(0, str(Path(__file__).parent))
-
-from test_solver_v4 import load_tours  # Reuse tour loading
 
 
 def load_style_report() -> dict:

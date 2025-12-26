@@ -14,7 +14,7 @@ import logging
 from typing import Optional
 from ortools.sat.python import cp_model
 
-from src.services.roster_column import RosterColumn
+from src.services.roster_column import RosterColumn, MIN_WEEK_HOURS
 
 logger = logging.getLogger("SetPartitionMaster")
 
@@ -310,28 +310,39 @@ def solve_rmp(
         model.Add(sum(y[i] for i in col_indices) == 1)
     
     # =========================================================================
-    # OBJECTIVE: Minimize drivers with PT penalty + Overtime penalty (>53h)
-    # FTE columns cost 1.0, PT columns cost 3.0
-    # Overtime (>53h) adds 0.5 per hour to discourage overuse unless needed
+    # OBJECTIVE: Integer-scaled costs to strongly discourage PT/singleton usage
+    # FTE: 100
+    # PT: 10000 + 200/hour
+    # Singleton (1 block): +50000
+    # Underutilization: 500/hour shortfall from MIN_WEEK_HOURS
     # =========================================================================
-    PT_PENALTY = 3.0
-    OVERTIME_THRESHOLD = 53.0
-    OVERTIME_COST_PER_HOUR = 0.5
-    
+    FTE_COST = 100
+    PT_BASE_COST = 10_000
+    PT_COST_PER_HOUR = 200
+    SINGLETON_COST = 50_000
+    UNDERUTIL_COST_PER_HOUR = 500
+    min_week_minutes = int(MIN_WEEK_HOURS * 60)
+
     costs = []
     for i, col in enumerate(columns):
-        # Base cost
-        cost = 1.0
-        if hasattr(col, 'roster_type') and col.roster_type == "PT":
-            cost = PT_PENALTY
-        
-        # Overtime penalty
-        if col.total_hours > OVERTIME_THRESHOLD:
-            excess = col.total_hours - OVERTIME_THRESHOLD
-            cost += excess * OVERTIME_COST_PER_HOUR
-            
+        total_minutes = col.total_minutes
+        total_hours = total_minutes / 60.0
+        roster_type = getattr(col, "roster_type", "FTE")
+
+        if roster_type == "PT":
+            cost = PT_BASE_COST + int(round(PT_COST_PER_HOUR * total_hours))
+        else:
+            cost = FTE_COST
+
+        if col.num_blocks == 1:
+            cost += SINGLETON_COST
+
+        if total_minutes < min_week_minutes:
+            shortfall_minutes = min_week_minutes - total_minutes
+            cost += int(round(UNDERUTIL_COST_PER_HOUR * shortfall_minutes / 60.0))
+
         costs.append(cost * y[i])
-    
+
     model.Minimize(sum(costs))
     
     # =========================================================================

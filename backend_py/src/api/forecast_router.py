@@ -18,6 +18,7 @@ from src.api.models import (
     StatsOutputFE, ValidationOutputFE, WeekdayFE, WEEKDAY_MAP, WEEKDAY_REVERSE
 )
 from src.domain.models import Tour, Weekday
+from src.domain.constraints import HARD_CONSTRAINTS
 from src.services.forecast_solver_v4 import solve_forecast_v4, ConfigV4
 from src.services.log_stream import emit_log, get_log_generator, clear_logs, attach_sse_handler
 from src.services.portfolio_controller import solve_forecast_portfolio
@@ -54,8 +55,8 @@ async def health_check():
         version="4.0",
         constraints={
             "min_hours_per_fte": 42.0,
-            "max_hours_per_fte": 53.0,
-            "max_daily_span_hours": 14.0,
+            "max_hours_per_fte": HARD_CONSTRAINTS.MAX_WEEKLY_HOURS,
+            "max_daily_span_hours": HARD_CONSTRAINTS.MAX_DAILY_SPAN_HOURS,
         }
     )
 
@@ -134,9 +135,9 @@ async def get_constraints():
     return {
         "hard": {
             "min_hours_per_fte": 42.0,
-            "max_hours_per_fte": 53.0,
-            "max_daily_span_hours": 14.0,
-            "min_rest_hours": 11.0,
+            "max_hours_per_fte": HARD_CONSTRAINTS.MAX_WEEKLY_HOURS,
+            "max_daily_span_hours": HARD_CONSTRAINTS.MAX_DAILY_SPAN_HOURS,
+            "min_rest_hours": HARD_CONSTRAINTS.MIN_REST_HOURS,
         },
         "soft": {
             "prefer_larger_blocks": True,
@@ -337,12 +338,18 @@ async def get_run_status(run_id: str):
     }
 
 
-@router.get("/runs/{run_id}/plan")
+@router.get("/runs/{run_id}/plan", response_model=ScheduleResponse)
 async def get_run_plan(run_id: str):
     """Get the plan/result of a run."""
     if run_id not in RUNS_CACHE:
         raise HTTPException(status_code=404, detail="Run not found")
-    return RUNS_CACHE[run_id]
+    obj = RUNS_CACHE[run_id]
+    print(f"DEBUG CACHE: Type={type(obj)}")
+    if hasattr(obj, "schema_version"):
+        print(f"DEBUG CACHE: schema_version={obj.schema_version}")
+    else:
+        print("DEBUG CACHE: Object has no schema_version attr")
+    return obj
 
 
 @router.get("/runs/{run_id}/report")
@@ -763,6 +770,7 @@ def _convert_response(result, request: ScheduleRequest, tours: list[Tour]) -> Sc
                 driver_id=driver.driver_id,
                 total_work_hours=block.total_work_hours,
                 span_hours=block.total_work_hours,  # Simplified
+                pause_zone=getattr(block, 'pause_zone', 'REGULAR') if hasattr(block, 'pause_zone') else ('SPLIT' if block.is_split else 'REGULAR'),
             )
             
             assignments.append(AssignmentOutputFE(
@@ -812,4 +820,5 @@ def _convert_response(result, request: ScheduleRequest, tours: list[Tour]) -> Sc
         stats=stats,
         version="4.0",
         solver_type=request.solver_type,
+        schema_version="2.0",  # RC0 Contract: explicitly set
     )

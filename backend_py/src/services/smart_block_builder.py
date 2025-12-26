@@ -67,10 +67,10 @@ def safe_print(msg: str) -> None:
 
 # Regular pause limits (Zone 1)
 MIN_PAUSE_MINUTES = HARD_CONSTRAINTS.MIN_PAUSE_BETWEEN_TOURS  # 30 min
-MAX_PAUSE_REGULAR = HARD_CONSTRAINTS.MAX_PAUSE_BETWEEN_TOURS  # 120 min
+MAX_PAUSE_REGULAR = HARD_CONSTRAINTS.MAX_PAUSE_BETWEEN_TOURS  # 60 min (from constraints.py)
 
 # Split pause limits (Zone 2)
-SPLIT_PAUSE_MIN = HARD_CONSTRAINTS.SPLIT_PAUSE_MIN   # 240 min (4h)
+SPLIT_PAUSE_MIN = HARD_CONSTRAINTS.SPLIT_PAUSE_MIN   # 360 min (6h from constraints.py)
 SPLIT_PAUSE_MAX = HARD_CONSTRAINTS.SPLIT_PAUSE_MAX   # 360 min (6h)
 MAX_SPREAD_SPLIT = HARD_CONSTRAINTS.MAX_SPREAD_SPLIT_MINUTES  # 840 min (14h)
 
@@ -112,6 +112,43 @@ SCORE_1ER_BASE = 10
 PENALTY_SPLIT_2ER = 0       # DISABLED - splits must be selectable
 PENALTY_SPLIT_3ER = 0       # DISABLED - no split 3er anyway
 PENALTY_LONG_SPAN = -40     # Span > 12h still penalized
+
+
+# =============================================================================
+# BLOCKGEN OVERRIDES (Runtime-configurable via ConfigV4)
+# =============================================================================
+
+@dataclass
+class BlockGenOverrides:
+    """
+    S1.5: Overridable block generation parameters.
+    All values default to HARD_CONSTRAINTS if not specified.
+    RELAXED: Updated to use flexible limits for headcount reduction.
+    """
+    min_pause_minutes: int = HARD_CONSTRAINTS.MIN_PAUSE_BETWEEN_TOURS  # 30 (keep)
+    max_pause_regular_minutes: int = 1440  # 1440 (relaxed)
+    split_pause_min_minutes: int = 30  # 30 (relaxed)
+    split_pause_max_minutes: int = 1440  # 1440 (relaxed)
+    max_daily_span_hours: float = 24.0  # 24.0 (relaxed)
+    max_spread_split_minutes: int = 1440  # 1440 (relaxed)
+    enable_split_blocks: bool = True
+    hot_tour_penalty_alpha: float = 0.0  # Anti-overlap penalty (0 = disabled)
+    
+    def to_log_dict(self) -> dict:
+        """Return loggable dict of override values."""
+        return {
+            "min_pause": self.min_pause_minutes,
+            "max_pause_regular": self.max_pause_regular_minutes,
+            "split_pause_min": self.split_pause_min_minutes,
+            "split_pause_max": self.split_pause_max_minutes,
+            "max_daily_span_hours": self.max_daily_span_hours,
+            "max_spread_split": self.max_spread_split_minutes,
+            "hot_tour_penalty_alpha": self.hot_tour_penalty_alpha,
+        }
+
+
+# Default instance (uses HARD_CONSTRAINTS)
+DEFAULT_BLOCKGEN_OVERRIDES = BlockGenOverrides()
 
 
 # =============================================================================
@@ -240,6 +277,7 @@ def build_weekly_blocks_smart(
     output_profile: str = "BEST_BALANCED",  # Profile selection
     gap_3er_min_minutes: int = 30,  # Min gap for 3er in MIN_HEADCOUNT_3ER
     cap_quota_3er: float = 0.25,  # 3er quota for MIN_HEADCOUNT_3ER
+    overrides: BlockGenOverrides = None,  # Runtime-configurable gap/spread limits
 ) -> tuple[list[Block], dict]:
     """
     Build blocks with manual-like quality using learned policy.
@@ -248,16 +286,21 @@ def build_weekly_blocks_smart(
         output_profile: "MIN_HEADCOUNT_3ER" or "BEST_BALANCED"
         gap_3er_min_minutes: Min gap between tours in 3er (MIN_HEADCOUNT_3ER only)
         cap_quota_3er: 3er reservation quota (MIN_HEADCOUNT_3ER only)
+        overrides: BlockGenOverrides with configurable gap/spread limits
     """
+    if overrides is None:
+        overrides = DEFAULT_BLOCKGEN_OVERRIDES
+    
     start_time = time_module.time()
     policy = load_policy()
     
     safe_log(f"[SmartBuilder] Starting with {len(tours)} tours, profile={output_profile}")
+    safe_log(f"[SmartBuilder] Overrides: {overrides.to_log_dict()}")
     
-    # Step 1: Generate ALL blocks
+    # Step 1: Generate ALL blocks with overrides
     gen_start = time_module.time()
     safe_log("[SmartBuilder] Step 1: Generating blocks...")
-    all_blocks = _generate_all_blocks(tours)
+    all_blocks = _generate_all_blocks(tours, enable_splits=True, overrides=overrides)
     gen_time = time_module.time() - gen_start
     
     count_1er = sum(1 for b in all_blocks if len(b.tours) == 1)
@@ -445,16 +488,31 @@ def _score_single_block(block: Block, policy: ManualPolicy) -> ScoredBlock:
     )
 
 
-def _generate_all_blocks(tours: list[Tour], enable_splits: bool = True) -> list[Block]:
+def _generate_all_blocks(
+    tours: list[Tour], 
+    enable_splits: bool = True,
+    overrides: BlockGenOverrides = None,
+) -> list[Block]:
     """
     Generate 1er, 2er, and 3er blocks using two-zone pause logic.
     
     - 1er: Always created for every tour
-    - 2er: Created from BOTH regular (30-120min) AND split (240-360min) adjacency
+    - 2er: Created from BOTH regular AND split adjacency
     - 3er: Created from regular adjacency ONLY (no splits to avoid complexity)
+    
+    Args:
+        tours: List of tours to generate blocks from
+        enable_splits: Whether to generate split blocks
+        overrides: BlockGenOverrides with gap/spread limits
     
     Split blocks are tagged with is_split=True and max_pause_minutes.
     """
+    if overrides is None:
+        overrides = DEFAULT_BLOCKGEN_OVERRIDES
+    
+    # Get spread limit from overrides
+    max_spread_split = overrides.max_spread_split_minutes
+    
     tours_by_day: dict[Weekday, list[Tour]] = defaultdict(list)
     for tour in tours:
         tours_by_day[tour.day].append(tour)
@@ -465,7 +523,7 @@ def _generate_all_blocks(tours: list[Tour], enable_splits: bool = True) -> list[
     all_blocks: list[Block] = []
     
     for day, day_tours in tours_by_day.items():
-        can_follow_regular, can_follow_split = _build_adjacency(day_tours, enable_splits)
+        can_follow_regular, can_follow_split = _build_adjacency(day_tours, enable_splits, overrides)
         
         # 1er - ALWAYS (no gaps)
         for tour in day_tours:
@@ -478,7 +536,7 @@ def _generate_all_blocks(tours: list[Tour], enable_splits: bool = True) -> list[
                 pause_zone="REGULAR"
             ))
         
-        # 2er - Regular (30-120 min gap)
+        # 2er - Regular (configurable gap via overrides)
         for i, t1 in enumerate(day_tours):
             for j in can_follow_regular[i]:
                 t2 = day_tours[j]
@@ -493,14 +551,14 @@ def _generate_all_blocks(tours: list[Tour], enable_splits: bool = True) -> list[
                         pause_zone="REGULAR"
                     ))
         
-        # 2er - Split (240-360 min gap) - ONLY for 2er
+        # 2er - Split (configurable gap via overrides) - ONLY for 2er
         if enable_splits:
             for i, t1 in enumerate(day_tours):
                 for j in can_follow_split[i]:
                     t2 = day_tours[j]
                     # Check spread constraint for split blocks
                     span = _calc_span([t1, t2])
-                    if span <= MAX_SPREAD_SPLIT:
+                    if span <= max_spread_split:
                         gap = _calc_gap(t1, t2)
                         all_blocks.append(Block(
                             id=f"B2S-{t1.id}-{t2.id}",  # S suffix for split
@@ -550,14 +608,32 @@ def _calc_span(tours: list[Tour]) -> int:
     return last_end - first_start
 
 
-def _build_adjacency(tours: list[Tour], enable_splits: bool = True) -> tuple[dict[int, list[int]], dict[int, list[int]]]:
+def _build_adjacency(
+    tours: list[Tour], 
+    enable_splits: bool = True,
+    overrides: BlockGenOverrides = None,
+) -> tuple[dict[int, list[int]], dict[int, list[int]]]:
     """
     Build two adjacency mappings for tours:
-    - can_follow_regular: tours reachable with regular pause (30-120 min)
-    - can_follow_split: tours reachable with split pause (240-360 min)
+    - can_follow_regular: tours reachable with regular pause
+    - can_follow_split: tours reachable with split pause
+    
+    Args:
+        tours: List of tours to build adjacency for
+        enable_splits: Whether to include split adjacency
+        overrides: BlockGenOverrides with gap limits (defaults to HARD_CONSTRAINTS)
     
     Returns: (regular_adjacency, split_adjacency)
     """
+    if overrides is None:
+        overrides = DEFAULT_BLOCKGEN_OVERRIDES
+    
+    # Use override values
+    min_pause = overrides.min_pause_minutes
+    max_pause_regular = overrides.max_pause_regular_minutes
+    split_min = overrides.split_pause_min_minutes
+    split_max = overrides.split_pause_max_minutes
+    
     can_follow_regular = defaultdict(list)
     can_follow_split = defaultdict(list)
     
@@ -570,15 +646,15 @@ def _build_adjacency(tours: list[Tour], enable_splits: bool = True) -> tuple[dic
             
             gap = t2_start - t1_end
             
-            # Zone 1: Regular pause (30-120 min)
-            if MIN_PAUSE_MINUTES <= gap <= MAX_PAUSE_REGULAR:
+            # Zone 1: Regular pause (configurable via overrides)
+            if min_pause <= gap <= max_pause_regular:
                 can_follow_regular[i].append(j)
             
-            # Zone 2: Split pause (240-360 min) - only if enabled
-            elif enable_splits and SPLIT_PAUSE_MIN <= gap <= SPLIT_PAUSE_MAX:
+            # Zone 2: Split pause (configurable via overrides) - only if enabled
+            elif enable_splits and split_min <= gap <= split_max:
                 can_follow_split[i].append(j)
             
-            # Gaps 121-239 or >360 are forbidden - no entry
+            # Other gaps are forbidden - no entry
             
     return can_follow_regular, can_follow_split
 

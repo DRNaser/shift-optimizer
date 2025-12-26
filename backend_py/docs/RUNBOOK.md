@@ -3,6 +3,9 @@
 **Release Candidate: v2.0.0-rc0**  
 **Schema Version: 2.0**
 
+> [!IMPORTANT]
+> **Architektur-Referenz**: Für tiefgreifende technische Details siehe [System Dokumentation](file:///.gemini/antigravity/brain/system_documentation.md) - die Source of Truth für Code-Strukturen, Module-Inventar, Constraint-Enforcement und Debug-Flows.
+
 ---
 
 ## Prerequisites

@@ -148,11 +148,14 @@ def _generate_triple_blocks(day: Weekday, tours: list[Tour]) -> Iterator[Block]:
                 continue
             for t3 in tours[j + 1:]:
                 if tours_can_combine(t2, t3):
-                    yield Block(
-                        id=generate_block_id(),
-                        day=day,
-                        tours=[t1, t2, t3]
-                    )
+                    candidate_tours = [t1, t2, t3]
+                    # Validate span constraint (same as build_blocks_greedy)
+                    if _span_hours(candidate_tours) <= HARD_CONSTRAINTS.MAX_DAILY_SPAN_HOURS:
+                        yield Block(
+                            id=generate_block_id(),
+                            day=day,
+                            tours=candidate_tours
+                        )
 
 
 def build_blocks_greedy(

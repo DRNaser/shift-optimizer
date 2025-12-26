@@ -163,6 +163,31 @@ class StatsOutput(BaseModel):
     pass2_time_s: float | None = None  # Pass 2 execution time
     drivers_total_pass1: int | None = None  # D_min = drivers from pass 1
     drivers_total_pass2: int | None = None  # Drivers from pass 2 (may differ)
+    
+    # =========================================================================
+    # STAGE0 / PHASE1 TELEMETRY
+    # =========================================================================
+    stage0_raw_obj: int | None = None      # Stage0 objective on raw pool (before capping)
+    stage0_raw_bound: int | None = None    # Stage0 bound on raw pool
+    stage0_raw_status: str | None = None   # Stage0 status on raw pool
+    stage0_capped_obj: int | None = None   # Stage0 objective on capped pool (Source of Truth)
+    stage0_capped_bound: int | None = None # Stage0 bound on capped pool
+    stage0_capped_status: str | None = None # Stage0 status on capped pool
+    delta_raw_vs_capped: int | None = None # Difference: raw_obj - capped_obj (capping impact)
+    n3_selected: int | None = None         # Number of 3er blocks selected in Phase1
+    
+    # =========================================================================
+    # OVERLAP DIAGNOSTICS
+    # =========================================================================
+    deg3_max: int | None = None            # Max 3er-degree of any tour
+    deg3_p95: float | None = None          # 95th percentile of 3er-degree
+    hot_block_share: float | None = None   # Share of blocks covering hot tours
+    
+    # =========================================================================
+    # OVERRIDE AUDIT
+    # =========================================================================
+    overrides_applied: dict | None = None  # Keys and values that were applied
+    overrides_clamped: dict | None = None  # Keys that were clamped (original -> clamped)
 
 
 class ValidationOutput(BaseModel):
@@ -252,6 +277,20 @@ class ConfigOverrides(BaseModel):
     enable_lns_low_hour_consolidation: bool | None = None
     lns_time_budget_s: float | None = Field(default=None, ge=1.0)
     lns_low_hour_threshold_h: float | None = Field(default=None, ge=10.0)
+    
+    # v5: Day Cap (Operational Constraint)
+    day_cap_hard: int | None = Field(default=None, ge=100, le=500, description="Max blocks per peak day (default: 220)")
+    
+    # =========================================================================
+    # BLOCKGEN OVERRIDES (with safety caps)
+    # =========================================================================
+    block_gen_min_pause_minutes: int | None = Field(default=None, ge=15, le=60, description="Min pause between tours (default: 30)")
+    block_gen_max_pause_regular_minutes: int | None = Field(default=None, ge=30, le=90, description="Max pause for regular blocks (default: 60)")
+    block_gen_split_pause_min_minutes: int | None = Field(default=None, ge=180, le=480, description="Min split pause (default: 360)")
+    block_gen_split_pause_max_minutes: int | None = Field(default=None, ge=180, le=480, description="Max split pause (default: 360)")
+    block_gen_max_daily_span_hours: float | None = Field(default=None, ge=12.0, le=16.0, description="Max daily span hours (default: 15.5)")
+    block_gen_max_spread_split_minutes: int | None = Field(default=None, ge=600, le=960, description="Max spread for split blocks (default: 840)")
+    hot_tour_penalty_alpha: float | None = Field(default=None, ge=0.0, le=1.0, description="Anti-overlap penalty alpha (default: 0.0 = disabled)")
 
 
 class RunConfig(BaseModel):

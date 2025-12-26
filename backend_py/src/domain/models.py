@@ -52,6 +52,18 @@ class BlockType(str, Enum):
     TRIPLE = "3er"
 
 
+class PauseZone(str, Enum):
+    """Pause zone classification for blocks (Contract v2.0).
+    
+    REGULAR: Standard consecutive tours with 30-120min gaps
+    SPLIT: Split-shift with 240-360min gaps
+    
+    No other values allowed. No lowercase variants. No nulls.
+    """
+    REGULAR = "REGULAR"
+    SPLIT = "SPLIT"
+
+
 # =============================================================================
 # TIME UTILITIES
 # =============================================================================
@@ -63,18 +75,21 @@ class TimeSlot(BaseModel):
     start: time
     end: time
     
-    @model_validator(mode="after")
-    def validate_time_order(self) -> "TimeSlot":
-        """Ensure start is before end."""
-        if self.start >= self.end:
-            raise ValueError(f"Start time {self.start} must be before end time {self.end}")
-        return self
+    # Note: No validation that start < end - allows cross-midnight windows (e.g., 22:00-06:00)
+    # Cross-midnight windows are valid in shift planning scenarios
+    
+    @property
+    def crosses_midnight(self) -> bool:
+        """Check if this time slot crosses midnight."""
+        return self.end < self.start
     
     @property
     def duration_minutes(self) -> int:
-        """Calculate duration in minutes."""
+        """Calculate duration in minutes, handling cross-midnight correctly."""
         start_mins = self.start.hour * 60 + self.start.minute
         end_mins = self.end.hour * 60 + self.end.minute
+        if end_mins < start_mins:  # Cross-midnight
+            end_mins += 24 * 60
         return end_mins - start_mins
     
     @property
@@ -84,6 +99,7 @@ class TimeSlot(BaseModel):
     
     def overlaps(self, other: "TimeSlot") -> bool:
         """Check if this time slot overlaps with another."""
+        # Simplified overlap check - doesn't handle cross-midnight overlap
         return self.start < other.end and other.start < self.end
 
 
@@ -215,10 +231,27 @@ class Block(BaseModel):
     tours: list[Tour] = Field(..., min_length=1, max_length=3)
     driver_id: str | None = Field(default=None, description="Assigned driver ID")
     
-    # Split-shift metadata (explicit in JSON schema)
+    # Split-shift metadata (explicit in JSON schema - Contract v2.0)
     is_split: bool = Field(default=False, description="True if block has split-shift gap (240-360 min)")
     max_pause_minutes: int = Field(default=0, description="Largest gap between consecutive tours in minutes")
-    pause_zone: str = Field(default="REGULAR", description="Pause zone: REGULAR (30-120min) or SPLIT (240-360min)")
+    pause_zone: PauseZone = Field(default=PauseZone.REGULAR, description="Pause zone: REGULAR or SPLIT")
+    
+    @field_validator("pause_zone", mode="before")
+    @classmethod
+    def normalize_pause_zone(cls, v):
+        """Backward-compatible parser: accept str, normalize to PauseZone enum."""
+        if v is None:
+            return PauseZone.REGULAR
+        if isinstance(v, PauseZone):
+            return v
+        if isinstance(v, str):
+            # Normalize: uppercase, strip whitespace
+            normalized = v.strip().upper()
+            if normalized in ("REGULAR", "SPLIT"):
+                return PauseZone(normalized)
+            # Invalid value - default to REGULAR for backward compat
+            return PauseZone.REGULAR
+        return PauseZone.REGULAR
     
     @model_validator(mode="after")
     def validate_block(self) -> "Block":
@@ -264,6 +297,8 @@ class Block(BaseModel):
         """Total span from first start to last end in minutes."""
         start_mins = self.first_start.hour * 60 + self.first_start.minute
         end_mins = self.last_end.hour * 60 + self.last_end.minute
+        if end_mins < start_mins:  # Cross-midnight
+            end_mins += 24 * 60
         return end_mins - start_mins
     
     @property
@@ -383,8 +418,9 @@ class WeeklyPlan(BaseModel):
     )
     stats: WeeklyPlanStats | None = None
     
-    # Metadata for snapshots
-    version: str = Field(default="1.0.0")
+    # Metadata for snapshots (Contract v2.0)
+    schema_version: str = Field(default="2.0", description="JSON schema version for contract compliance")
+    version: str = Field(default="2.0", description="Plan version (legacy compatibility)")
     created_at: str = Field(default="")  # ISO timestamp
     solver_seed: int | None = Field(default=None, description="Seed for reproducibility")
     

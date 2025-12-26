@@ -3,10 +3,11 @@ import os
 import requests
 import json
 import datetime
+from pathlib import Path
 
 # Configuration
 API_URL = "http://localhost:8000/api/v1"
-INPUT_FILE = r"C:\Users\n.zaher\OneDrive - LTS Transport u. Logistik GmbH\Desktop\shift-optimizer\forecast-test.txt"
+INPUT_FILE = str(Path(__file__).parent.parent / "forecast-test.txt")
 
 # Mappings
 DAY_MAP = {

@@ -313,16 +313,17 @@ def time_to_minutes(t) -> int:
 def block_to_info(block: Block, day_idx: int) -> BlockInfo:
     """Convert v4 Block to BlockInfo for LNS."""
     try:
-        log_progress(f"  Converting block {block.id} (type={type(block).__name__})")
-        log_progress(f"    Block attributes: {dir(block)}")
-        log_progress(f"    Getting first_start...")
+        # PERFORMANCE FIX: Disabled excessive introspection logging
+        # log_progress(f"  Converting block {block.id} (type={type(block).__name__})")
+        # log_progress(f"    Block attributes: {dir(block)}")  # HUGE OVERHEAD!
+        # log_progress(f"    Getting first_start...")
         start_min = time_to_minutes(block.first_start)
-        log_progress(f"    first_start OK: {block.first_start}")
-        log_progress(f"    Getting last_end...")
+        # log_progress(f"    first_start OK: {block.first_start}")
+        # log_progress(f"    Getting last_end...")
         end_min = time_to_minutes(block.last_end)
-        log_progress(f"    last_end OK: {block.last_end}")
+        # log_progress(f"    last_end OK: {block.last_end}")
         duration_min = int(block.total_work_hours * 60)
-        log_progress(f"    Block conversion complete: start={start_min}, end={end_min}, duration={duration_min}")
+        # log_progress(f"    Block conversion complete: start={start_min}, end={end_min}, duration={duration_min}")
         return BlockInfo(
             block_id=block.id,
             day_idx=day_idx,

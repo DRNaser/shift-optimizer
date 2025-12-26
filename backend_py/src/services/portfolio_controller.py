@@ -73,15 +73,16 @@ class BudgetSlice:
     def from_total(cls, total: float) -> 'BudgetSlice':
         """
         Create budget slices from total budget.
-        Distribution: profiling=2%, phase1=50%, phase2=15%, lns=28%, buffer=5%
+        Distribution: profiling=2%, phase1=20%, phase2=65%, lns=8%, buffer=5%
+        Phase 2 gets majority for Day-Choice headcount optimization.
         """
         return cls(
             total=total,
-            profiling=total * 0.02,  # 0.6s for 30s budget
-            phase1=total * 0.50,     # 15s for 30s budget
-            phase2=total * 0.15,     # 4.5s for 30s budget
-            lns=total * 0.28,        # 8.4s for 30s budget
-            buffer=total * 0.05,     # 1.5s for 30s budget
+            profiling=total * 0.02,  # Instance profiling
+            phase1=total * 0.20,     # Block selection (reduced to minimum)
+            phase2=total * 0.65,     # Day-Choice assignment (maximum time)
+            lns=total * 0.08,        # LNS refinement (minimal)
+            buffer=total * 0.05,     # Safety buffer
         )
     
     def to_dict(self) -> dict:
@@ -347,7 +348,9 @@ def run_portfolio(
     from src.services.smart_block_builder import (
         build_weekly_blocks_smart,
         build_block_index,
+        BlockGenOverrides,
     )
+    from src.services.forecast_solver_v4 import config_to_block_gen_overrides
     
     # Use default config if not provided
     if config is None:
@@ -360,6 +363,10 @@ def run_portfolio(
         log("PHASE 0: Block building...")
         t_block = perf_counter()
         
+        # Create BlockGenOverrides from config
+        block_gen_overrides = config_to_block_gen_overrides(config)
+        log(f"BlockGen Overrides: {block_gen_overrides.to_log_dict()}")
+        
         blocks, block_stats = build_weekly_blocks_smart(
             tours,
             cap_quota_2er=config.cap_quota_2er,
@@ -367,6 +374,7 @@ def run_portfolio(
             output_profile=config.output_profile,
             gap_3er_min_minutes=config.gap_3er_min_minutes,
             cap_quota_3er=config.cap_quota_3er,
+            overrides=block_gen_overrides,
         )
         block_time = perf_counter() - t_block
         
@@ -400,7 +408,11 @@ def run_portfolio(
         log("=" * 70)
         
         # v5: Always use Path C (Set-Partitioning) - no PolicyEngine branching
-        initial_path = PS.C
+        log("=" * 70)
+        log("PIPELINE MODE: PATH C (Day-Choice Optimization)")
+        log("=" * 70)
+        log(f"v5: Fixed pipeline - executing Path C (Day-Choice)")
+        initial_path = PS.C  # v5: Fixed to Path C
         reason_codes = ["V5_FIXED_PIPELINE"]
         
         # Parameters from config where possible (Single Source of Truth)
@@ -836,45 +848,113 @@ def _execute_path(
             result["status"] = "OK"
             
         elif path == PS.C:
-            # Path C: Set-Partitioning + Fallback
-            log_fn(f"Path C: Set-Partitioning...")
+            # Path C: Day-Choice Assignment (Direct from Phase 1 blocks)
+            log_fn(f"[DEBUG] ===== ENTERING PATH C =====")
+            log_fn(f"Path C: Day-Choice Direct Assignment...")
             t_phase2 = perf_counter()
             
-            from src.services.set_partition_solver import solve_set_partitioning, convert_rosters_to_assignments
-            
-            # S0.2: Use combined phase2 + lns budget for SP
-            sp_budget = phase2_budget + lns_budget
-            
-            # Use the global deadline passed from run_portfolio (absolute, not recomputed)
-            sp_deadline = global_deadline  # Already absolute monotonic deadline
-            
-            sp_result = solve_set_partitioning(
-                blocks=selected_blocks,
-                max_rounds=params.sp_max_rounds,
-                initial_pool_size=params.pool_cap,
-                columns_per_round=params.column_gen_quota,
-                rmp_time_limit=params.pricing_time_limit_s,
-                seed=seed,
-                log_fn=log_fn,
-                config=config,  # NEW: Pass config for LNS
-                global_deadline=sp_deadline,  # FIX: Enforce time budget
+            log_fn(f"[DEBUG] Importing daychoice_solver...")
+            from src.services.daychoice_solver import (
+                solve_phase2_daychoice, 
+                DayChoiceConfig, 
+                compute_peak_day_bound,
+                reclassify_underfull_ftes_to_pt,  # v5.2: 150-FTE Fixed Pool
             )
+            log_fn(f"[DEBUG] Import successful")
             
-            result["phase2_time"] = perf_counter() - t_phase2
+            # Use full Phase 2 budget for Day-Choice (no SP overhead)
+            assignment_budget = phase2_budget + lns_budget
+            log_fn(f"[DEBUG] Budget: {assignment_budget:.1f}s")
             
-            if sp_result.status == "OK":
-                block_lookup = {b.id: b for b in selected_blocks}
-                assignments = convert_rosters_to_assignments(sp_result.selected_rosters, block_lookup)
-                result["assignments"] = assignments
-                result["status"] = "OK"
+            log_fn(f"  Phase 2: Day-Choice Assignment (budget={assignment_budget:.1f}s)...")
+            t_assign = perf_counter()
+            
+            # Compute peak-day lower bound
+            log_fn(f"[DEBUG] Computing peak-day bound for {len(selected_blocks)} blocks...")
+            peak_info = compute_peak_day_bound(selected_blocks)
+            log_fn(f"[DEBUG] Peak-day bound computed")
+            peak_day_blocks = peak_info["peak_day_blocks"]
+            log_fn(f"    Peak-day lower bound: {peak_day_blocks} blocks on {peak_info['peak_day']}")
+            log_fn(f"    Blocks by day: {peak_info['blocks_by_day']}")
+            
+            # Get driver cap from config
+            # v5.2: If using fixed FTE pool, set driver_cap to num_fte_pool (150)
+            if getattr(config, 'use_fixed_fte_pool', False):
+                driver_cap = getattr(config, 'num_fte_pool', 150)
+                log_fn(f"    [v5.2] Using fixed FTE pool: {driver_cap} drivers")
             else:
-                # SP failed - greedy fallback
-                log_fn(f"SP failed ({sp_result.status}), falling back to greedy...")
-                assignments, _ = assign_drivers_greedy(selected_blocks, config)
-                assignments, _ = rebalance_to_min_fte_hours(assignments, 40.0, 53.0)
-                assignments, _ = eliminate_pt_drivers(assignments, 53.0, time_limit=30.0)
-                result["assignments"] = assignments
-                result["status"] = "GREEDY_FALLBACK"
+                driver_cap = getattr(config, 'day_cap_hard', None) or getattr(config, 'driver_cap', None)
+            
+            # Early infeasibility check
+            if driver_cap and peak_day_blocks > driver_cap:
+                log_fn(f"    INFEASIBLE_BY_DAY_LOWER_BOUND: peak={peak_day_blocks} > cap={driver_cap}")
+                result["status"] = "INFEASIBLE_BY_DAY_LOWER_BOUND"
+                result["peak_day_blocks"] = peak_day_blocks
+                result["driver_cap"] = driver_cap
+            else:
+                # Configure Day-Choice solver
+                log_fn(f"[DEBUG] Creating DayChoiceConfig...")
+                daychoice_config = DayChoiceConfig(
+                    driver_cap=driver_cap,  # None = minimize headcount
+                    min_hours_target=40.0,
+                    max_hours_target=50.0,
+                    max_hours_hard=55.0,
+                    min_rest_minutes=660,  # 11h
+                    no_consecutive_3er=True,  # No 3+3 rule
+                    time_limit_s=assignment_budget,
+                    seed=seed,
+                )
+                log_fn(f"[DEBUG] Config created, calling solve_phase2_daychoice...")
+                
+                # Run Day-Choice Phase 2 directly on Phase 1 blocks
+                phase2_result = solve_phase2_daychoice(
+                    selected_blocks=selected_blocks,
+                    config=daychoice_config,
+                    log_fn=log_fn,
+                )
+                log_fn(f"[DEBUG] solve_phase2_daychoice returned")
+                
+                # v5.2: Reclassify FTE < 40h → PT (150-FTE fixed pool strategy)
+                if phase2_result.status in ["OPTIMAL", "FEASIBLE"] and phase2_result.assignments:
+                    log_fn(" ")
+                    log_fn(f"[v5.2] Applying fixed 150-FTE pool strategy...")
+                    reclassified, reclass_stats = reclassify_underfull_ftes_to_pt(
+                        assignments=phase2_result.assignments,
+                        fte_min_hours=40.0,
+                        log_fn=log_fn,
+                    )
+                    phase2_result.assignments = reclassified
+                    log_fn(f"[v5.2] Reclassified {reclass_stats['fte_to_pt_count']} underfull FTE → PT")
+                    log_fn(f"[v5.2] Final: {reclass_stats['final_fte_count']} FTE + {reclass_stats['final_pt_count']} PT")
+                
+                assign_time = perf_counter() - t_assign
+                log_fn(f"  Phase 2 completed in {assign_time:.1f}s, status={phase2_result.status}")
+                
+                result["phase2_time"] = perf_counter() - t_phase2
+                result["phase2_path"] = "DAYCHOICE_DIRECT"
+                result["peak_day_blocks"] = peak_day_blocks
+                
+                if phase2_result.status in ["OPTIMAL", "FEASIBLE"]:
+                    result["assignments"] = phase2_result.assignments
+                    result["status"] = "OK"
+                    result["drivers_used"] = phase2_result.drivers_used
+                    result["rest_violations"] = phase2_result.rest_violations
+                    result["consecutive_3er_violations"] = phase2_result.consecutive_3er_violations
+                    log_fn(f"  Final: {phase2_result.drivers_used} drivers (avg {phase2_result.avg_hours:.1f}h/driver)")
+                elif phase2_result.best_feasible:
+                    # Timeout but found some feasible solution
+                    result["assignments"] = phase2_result.best_feasible
+                    result["status"] = "PHASE2_BEST_EFFORT"
+                    result["drivers_used"] = len(phase2_result.best_feasible)
+                    log_fn(f"  Best-effort: {len(phase2_result.best_feasible)} drivers (timeout)")
+                else:
+                    # Day-Choice failed - greedy fallback
+                    log_fn(f"  Day-Choice failed, falling back to greedy...")
+                    from src.services.forecast_solver_v4 import assign_drivers_greedy
+                    assignments, _ = assign_drivers_greedy(selected_blocks, config)
+                    result["assignments"] = assignments
+                    result["status"] = "GREEDY_FALLBACK"
+                    result["drivers_used"] = len(assignments)
     
     except Exception as e:
         log_fn(f"Path {path.value} failed with exception: {e}")

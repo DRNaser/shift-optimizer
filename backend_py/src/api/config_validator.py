@@ -93,6 +93,22 @@ TUNABLE_FIELDS = {
     "w_balance_underfull": {"type": "float", "default": 100.0, "min": 0.0, "max": 1000.0},
     "w_pt_penalty": {"type": "float", "default": 500.0, "min": 0.0, "max": 5000.0},
     "w_balance_variance": {"type": "float", "default": 50.0, "min": 0.0, "max": 500.0},
+    
+    # =========================================================================
+    # v5: DAY CAP (Operational Constraint)
+    # =========================================================================
+    "day_cap_hard": {"type": "int", "default": 220, "min": 100, "max": 500},
+    
+    # =========================================================================
+    # BLOCKGEN OVERRIDES (with safety caps)
+    # =========================================================================
+    "block_gen_min_pause_minutes": {"type": "int", "default": 30, "min": 15, "max": 60},
+    "block_gen_max_pause_regular_minutes": {"type": "int", "default": 60, "min": 30, "max": 90},
+    "block_gen_split_pause_min_minutes": {"type": "int", "default": 360, "min": 180, "max": 480},
+    "block_gen_split_pause_max_minutes": {"type": "int", "default": 360, "min": 180, "max": 480},
+    "block_gen_max_daily_span_hours": {"type": "float", "default": 15.5, "min": 12.0, "max": 16.0},
+    "block_gen_max_spread_split_minutes": {"type": "int", "default": 840, "min": 600, "max": 960},
+    "hot_tour_penalty_alpha": {"type": "float", "default": 0.0, "min": 0.0, "max": 1.0},
 }
 
 

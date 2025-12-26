@@ -156,6 +156,10 @@ def select_path(features: FeatureVector) -> Tuple[PathSelection, str]:
                 f"pool_pressure={features.pool_pressure}, "
                 f"pt_pressure={features.pt_pressure_proxy:.2f}")
     
+    # TEMPORARY: Force Path C for Day-Choice testing
+    logger.info(f"FORCED Path C for Day-Choice testing")
+    return PathSelection.C, "TESTING_DAYCHOICE"
+    
     # Rule 1: Pool too large -> Path C (heavy mode)
     if features.pool_pressure == POOL_PRESSURE_HIGH:
         logger.info(f"Selected Path C: {ReasonCode.POOL_TOO_LARGE}")

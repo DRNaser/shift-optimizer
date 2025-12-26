@@ -53,6 +53,50 @@ async def get_metrics():
 
 
 # =============================================================================
+# HEALTH CHECK ENDPOINTS (Kubernetes Probes)
+# =============================================================================
+
+@router_v2.get("/healthz")
+async def liveness():
+    """
+    Liveness probe - is the process alive?
+    Used by Kubernetes to restart unhealthy pods.
+    """
+    return {"status": "alive", "version": "2.0.0"}
+
+
+@router_v2.get("/readyz")
+async def readiness():
+    """
+    Readiness probe - can we accept traffic?
+    Used by Kubernetes to control traffic routing.
+    Includes config visibility for operational debugging.
+    """
+    import subprocess
+    
+    def get_git_commit() -> str:
+        try:
+            return subprocess.check_output(
+                ['git', 'rev-parse', '--short', 'HEAD'],
+                stderr=subprocess.DEVNULL
+            ).decode().strip()
+        except Exception:
+            return "unknown"
+    
+    default_config = ConfigV4()
+    return {
+        "status": "ready",
+        "solver": "warm",
+        "ortools_version": "9.11.4210",
+        "app_version": "2.0.0",
+        "git_commit": get_git_commit(),
+        "config": {
+            "cap_quota_2er": default_config.cap_quota_2er,
+        }
+    }
+
+
+# =============================================================================
 # CONFIG SCHEMA
 # =============================================================================
 

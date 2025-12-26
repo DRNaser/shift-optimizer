@@ -203,9 +203,8 @@ class RosterColumnGenerator:
                 current_blocks.append(cand)
                 current_minutes += cand.work_min
         
-        # Check if we reached minimum
-        if current_minutes < MIN_WEEK_MINUTES:
-            return None  # Couldn't reach 42h
+        # Note: Minimum hours are now a soft cost, not hard rejection
+        # create_roster_from_blocks will validate other constraints
         
         # Create and validate roster
         roster = create_roster_from_blocks(
@@ -380,9 +379,8 @@ class RosterColumnGenerator:
                 current_blocks.append(cand)
                 current_minutes += cand.work_min
         
-        # Check if we reached minimum
-        if current_minutes < MIN_WEEK_MINUTES:
-            return None
+        # Note: Minimum hours are now a soft cost, not hard rejection
+        # create_roster_from_blocks will validate other constraints
         
         # Create and validate roster
         roster = create_roster_from_blocks(

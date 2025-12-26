@@ -2,22 +2,37 @@
 TEST SCALABLE SOLVER
 ====================
 Tests the v3 solver with real forecast data.
+
+NOTE: This script uses forecast_weekly_solver_v3 which is deprecated.
+Guarded to prevent pytest collection errors.
 """
 
-import json
 import sys
+
+# Skip at module level for pytest collection - v3 solver is deprecated
+if "pytest" in sys.modules:
+    import pytest
+    pytest.skip("forecast_weekly_solver_v3 is deprecated - use v4", allow_module_level=True)
+
+import json
 from pathlib import Path
 from datetime import time
 
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent))
 
+# Conditional import for the deprecated module
+try:
+    from src.services.forecast_weekly_solver_v3 import (
+        ForecastWeeklySolverV3,
+        ForecastConfigV3,
+        solve_forecast_v3
+    )
+    V3_AVAILABLE = True
+except ImportError:
+    V3_AVAILABLE = False
+
 from src.domain.models import Tour, Weekday
-from src.services.forecast_weekly_solver_v3 import (
-    ForecastWeeklySolverV3,
-    ForecastConfigV3,
-    solve_forecast_v3
-)
 
 # Weekday mapping
 DAY_MAP = {
@@ -56,6 +71,11 @@ def load_forecast_json(path: Path) -> list[Tour]:
 
 
 def main():
+    if not V3_AVAILABLE:
+        print("ERROR: forecast_weekly_solver_v3 is not available (deprecated)")
+        print("Please use forecast_solver_v4 instead.")
+        return 1
+    
     # Find forecast file
     if len(sys.argv) > 1:
         forecast_path = Path(sys.argv[1])

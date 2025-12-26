@@ -104,6 +104,7 @@ class BlockOutputFE(BaseModel):
     driver_id: Optional[str] = None
     total_work_hours: float
     span_hours: float
+    pause_zone: str  # RC0 Contract: "REGULAR" or "SPLIT" - REQUIRED, no default
 
 
 class AssignmentOutputFE(BaseModel):
@@ -154,6 +155,7 @@ class ScheduleResponse(BaseModel):
     stats: StatsOutputFE
     version: str = "4.0"
     solver_type: str
+    schema_version: str  # RC0 Contract: must be "2.0" - REQUIRED, no default
 
 
 class HealthResponse(BaseModel):

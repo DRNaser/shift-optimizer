@@ -1,0 +1,1069 @@
+id: 0
+event: run_started
+data: {"run_id": "run_9c60e670596c", "seq": 0, "ts": "2025-12-25T02:42:19.519617", "level": "INFO", "event": "run_started", "phase": null, "payload": {"seed": 42, "time_budget": 600.0, "budget_slices": {"total": 600.0, "profiling": 12.0, "phase1": 300.0, "phase2": 90.0, "lns": 168.0, "buffer": 30.0}, "input_summary": {"tours": 1385, "drivers": 400, "tours_sorted": true}, "config_effective_hash": "be0fb78a1e4c9920", "overrides_applied": {"output_profile": "MIN_HEADCOUNT_3ER", "seed": 42}, "overrides_rejected": {}}}
+
+id: 1
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 1, "ts": "2025-12-25T02:42:19.519663", "level": "INFO", "event": "solver_log", "phase": null, "payload": {"msg": "======================================================================"}}
+
+id: 2
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 2, "ts": "2025-12-25T02:42:19.519682", "level": "INFO", "event": "solver_log", "phase": null, "payload": {"msg": "PORTFOLIO CONTROLLER - Starting optimization"}}
+
+id: 3
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 3, "ts": "2025-12-25T02:42:19.519694", "level": "INFO", "event": "solver_log", "phase": null, "payload": {"msg": "======================================================================"}}
+
+id: 4
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 4, "ts": "2025-12-25T02:42:19.519708", "level": "INFO", "event": "solver_log", "phase": null, "payload": {"msg": "Tours: 1385, Time budget: 600.0s, Seed: 42"}}
+
+id: 5
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 5, "ts": "2025-12-25T02:42:19.519731", "level": "INFO", "event": "solver_log", "phase": null, "payload": {"msg": "S0.2 Budget Slices: phase1=300.0s, phase2=90.0s, lns=168.0s"}}
+
+id: 6
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 6, "ts": "2025-12-25T02:42:19.519753", "level": "INFO", "event": "solver_log", "phase": "PHASE1_CAPACITY", "payload": {"msg": "PHASE 0: Block building..."}}
+
+id: 7
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 7, "ts": "2025-12-25T02:42:24.031968", "level": "INFO", "event": "solver_log", "phase": "PHASE1_CAPACITY", "payload": {"msg": "Generated 14023 blocks in 4.5s (profile=MIN_HEADCOUNT_3ER)"}}
+
+id: 8
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 8, "ts": "2025-12-25T02:42:24.042750", "level": "INFO", "event": "solver_log", "phase": "PHASE1_CAPACITY", "payload": {"msg": "PHASE 1: Instance profiling..."}}
+
+id: 9
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 9, "ts": "2025-12-25T02:42:24.082053", "level": "INFO", "event": "solver_log", "phase": "PHASE1_CAPACITY", "payload": {"msg": "Features: peakiness=0.33, pool_pressure=LOW, lower_bound=116"}}
+
+id: 10
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 10, "ts": "2025-12-25T02:42:24.082100", "level": "INFO", "event": "solver_log", "phase": "PHASE1_CAPACITY", "payload": {"msg": "======================================================================"}}
+
+id: 11
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 11, "ts": "2025-12-25T02:42:24.082127", "level": "INFO", "event": "solver_log", "phase": "PHASE1_CAPACITY", "payload": {"msg": "v5 PIPELINE: Fixed Single Path (Set-Partitioning)"}}
+
+id: 12
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 12, "ts": "2025-12-25T02:42:24.082148", "level": "INFO", "event": "solver_log", "phase": "PHASE1_CAPACITY", "payload": {"msg": "======================================================================"}}
+
+id: 13
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 13, "ts": "2025-12-25T02:42:24.082240", "level": "INFO", "event": "solver_log", "phase": "PHASE1_CAPACITY", "payload": {"msg": "  Path: HEAVY (Set-Partitioning)"}}
+
+id: 14
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 14, "ts": "2025-12-25T02:42:24.082262", "level": "INFO", "event": "solver_log", "phase": "LNS", "payload": {"msg": "  LNS iterations: 30"}}
+
+id: 15
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 15, "ts": "2025-12-25T02:42:24.082284", "level": "INFO", "event": "solver_log", "phase": "LNS", "payload": {"msg": "  Destroy fraction: 0.15"}}
+
+id: 16
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 16, "ts": "2025-12-25T02:42:24.082304", "level": "INFO", "event": "solver_log", "phase": "LNS", "payload": {"msg": "  DAY_CAP: 220"}}
+
+event: heartbeat
+data: {"run_id": "run_9c60e670596c", "event": "heartbeat", "ts": "2025-12-25T02:44:10", "payload": {"status": "RUNNING"}}
+
+event: heartbeat
+data: {"run_id": "run_9c60e670596c", "event": "heartbeat", "ts": "2025-12-25T02:44:15", "payload": {"status": "RUNNING"}}
+
+event: heartbeat
+data: {"run_id": "run_9c60e670596c", "event": "heartbeat", "ts": "2025-12-25T02:44:20", "payload": {"status": "RUNNING"}}
+
+event: heartbeat
+data: {"run_id": "run_9c60e670596c", "event": "heartbeat", "ts": "2025-12-25T02:44:25", "payload": {"status": "RUNNING"}}
+
+event: heartbeat
+data: {"run_id": "run_9c60e670596c", "event": "heartbeat", "ts": "2025-12-25T02:44:30", "payload": {"status": "RUNNING"}}
+
+event: heartbeat
+data: {"run_id": "run_9c60e670596c", "event": "heartbeat", "ts": "2025-12-25T02:44:35", "payload": {"status": "RUNNING"}}
+
+event: heartbeat
+data: {"run_id": "run_9c60e670596c", "event": "heartbeat", "ts": "2025-12-25T02:44:40", "payload": {"status": "RUNNING"}}
+
+event: heartbeat
+data: {"run_id": "run_9c60e670596c", "event": "heartbeat", "ts": "2025-12-25T02:44:45", "payload": {"status": "RUNNING"}}
+
+event: heartbeat
+data: {"run_id": "run_9c60e670596c", "event": "heartbeat", "ts": "2025-12-25T02:44:50", "payload": {"status": "RUNNING"}}
+
+event: heartbeat
+data: {"run_id": "run_9c60e670596c", "event": "heartbeat", "ts": "2025-12-25T02:44:55", "payload": {"status": "RUNNING"}}
+
+event: heartbeat
+data: {"run_id": "run_9c60e670596c", "event": "heartbeat", "ts": "2025-12-25T02:45:00", "payload": {"status": "RUNNING"}}
+
+event: heartbeat
+data: {"run_id": "run_9c60e670596c", "event": "heartbeat", "ts": "2025-12-25T02:45:05", "payload": {"status": "RUNNING"}}
+
+event: heartbeat
+data: {"run_id": "run_9c60e670596c", "event": "heartbeat", "ts": "2025-12-25T02:45:10", "payload": {"status": "RUNNING"}}
+
+event: heartbeat
+data: {"run_id": "run_9c60e670596c", "event": "heartbeat", "ts": "2025-12-25T02:45:15", "payload": {"status": "RUNNING"}}
+
+event: heartbeat
+data: {"run_id": "run_9c60e670596c", "event": "heartbeat", "ts": "2025-12-25T02:45:20", "payload": {"status": "RUNNING"}}
+
+event: heartbeat
+data: {"run_id": "run_9c60e670596c", "event": "heartbeat", "ts": "2025-12-25T02:45:25", "payload": {"status": "RUNNING"}}
+
+event: heartbeat
+data: {"run_id": "run_9c60e670596c", "event": "heartbeat", "ts": "2025-12-25T02:45:31", "payload": {"status": "RUNNING"}}
+
+event: heartbeat
+data: {"run_id": "run_9c60e670596c", "event": "heartbeat", "ts": "2025-12-25T02:45:36", "payload": {"status": "RUNNING"}}
+
+event: heartbeat
+data: {"run_id": "run_9c60e670596c", "event": "heartbeat", "ts": "2025-12-25T02:45:41", "payload": {"status": "RUNNING"}}
+
+event: heartbeat
+data: {"run_id": "run_9c60e670596c", "event": "heartbeat", "ts": "2025-12-25T02:45:46", "payload": {"status": "RUNNING"}}
+
+event: heartbeat
+data: {"run_id": "run_9c60e670596c", "event": "heartbeat", "ts": "2025-12-25T02:45:51", "payload": {"status": "RUNNING"}}
+
+event: heartbeat
+data: {"run_id": "run_9c60e670596c", "event": "heartbeat", "ts": "2025-12-25T02:45:56", "payload": {"status": "RUNNING"}}
+
+event: heartbeat
+data: {"run_id": "run_9c60e670596c", "event": "heartbeat", "ts": "2025-12-25T02:46:01", "payload": {"status": "RUNNING"}}
+
+event: heartbeat
+data: {"run_id": "run_9c60e670596c", "event": "heartbeat", "ts": "2025-12-25T02:46:06", "payload": {"status": "RUNNING"}}
+
+event: heartbeat
+data: {"run_id": "run_9c60e670596c", "event": "heartbeat", "ts": "2025-12-25T02:46:11", "payload": {"status": "RUNNING"}}
+
+event: heartbeat
+data: {"run_id": "run_9c60e670596c", "event": "heartbeat", "ts": "2025-12-25T02:46:16", "payload": {"status": "RUNNING"}}
+
+event: heartbeat
+data: {"run_id": "run_9c60e670596c", "event": "heartbeat", "ts": "2025-12-25T02:46:21", "payload": {"status": "RUNNING"}}
+
+event: heartbeat
+data: {"run_id": "run_9c60e670596c", "event": "heartbeat", "ts": "2025-12-25T02:46:26", "payload": {"status": "RUNNING"}}
+
+event: heartbeat
+data: {"run_id": "run_9c60e670596c", "event": "heartbeat", "ts": "2025-12-25T02:46:31", "payload": {"status": "RUNNING"}}
+
+event: heartbeat
+data: {"run_id": "run_9c60e670596c", "event": "heartbeat", "ts": "2025-12-25T02:46:36", "payload": {"status": "RUNNING"}}
+
+event: heartbeat
+data: {"run_id": "run_9c60e670596c", "event": "heartbeat", "ts": "2025-12-25T02:46:41", "payload": {"status": "RUNNING"}}
+
+event: heartbeat
+data: {"run_id": "run_9c60e670596c", "event": "heartbeat", "ts": "2025-12-25T02:46:46", "payload": {"status": "RUNNING"}}
+
+event: heartbeat
+data: {"run_id": "run_9c60e670596c", "event": "heartbeat", "ts": "2025-12-25T02:46:51", "payload": {"status": "RUNNING"}}
+
+event: heartbeat
+data: {"run_id": "run_9c60e670596c", "event": "heartbeat", "ts": "2025-12-25T02:46:56", "payload": {"status": "RUNNING"}}
+
+event: heartbeat
+data: {"run_id": "run_9c60e670596c", "event": "heartbeat", "ts": "2025-12-25T02:47:01", "payload": {"status": "RUNNING"}}
+
+event: heartbeat
+data: {"run_id": "run_9c60e670596c", "event": "heartbeat", "ts": "2025-12-25T02:47:07", "payload": {"status": "RUNNING"}}
+
+event: heartbeat
+data: {"run_id": "run_9c60e670596c", "event": "heartbeat", "ts": "2025-12-25T02:47:12", "payload": {"status": "RUNNING"}}
+
+id: 17
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 17, "ts": "2025-12-25T02:47:15.697080", "level": "INFO", "event": "solver_log", "phase": "PHASE1_CAPACITY", "payload": {"msg": "PHASE 1 COMPLETE: selected_blocks=885, tours=1385"}}
+
+id: 18
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 18, "ts": "2025-12-25T02:47:15.697140", "level": "INFO", "event": "solver_log", "phase": "PHASE1_CAPACITY", "payload": {"msg": "Selected 885 blocks in 291.6s"}}
+
+id: 19
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 19, "ts": "2025-12-25T02:47:15.697177", "level": "INFO", "event": "solver_log", "phase": "PHASE4_OPTIMIZATION", "payload": {"msg": "PHASE 4: Executing Path HEAVY (phase2=90.0s, lns=168.0s)..."}}
+
+id: 20
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 20, "ts": "2025-12-25T02:47:15.697222", "level": "INFO", "event": "solver_log", "phase": "PHASE4_OPTIMIZATION", "payload": {"msg": "Path C: Set-Partitioning..."}}
+
+id: 21
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 21, "ts": "2025-12-25T02:47:15.697255", "level": "INFO", "event": "solver_log", "phase": "PHASE4_OPTIMIZATION", "payload": {"msg": "======================================================================"}}
+
+id: 22
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 22, "ts": "2025-12-25T02:47:15.697277", "level": "INFO", "event": "solver_log", "phase": "PHASE4_OPTIMIZATION", "payload": {"msg": "SET-PARTITIONING SOLVER - Starting"}}
+
+id: 23
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 23, "ts": "2025-12-25T02:47:15.697297", "level": "INFO", "event": "solver_log", "phase": "PHASE4_OPTIMIZATION", "payload": {"msg": "======================================================================"}}
+
+id: 24
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 24, "ts": "2025-12-25T02:47:15.697318", "level": "INFO", "event": "solver_log", "phase": "PHASE4_OPTIMIZATION", "payload": {"msg": "Blocks: 885"}}
+
+id: 25
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 25, "ts": "2025-12-25T02:47:15.697339", "level": "INFO", "event": "solver_log", "phase": "PHASE4_OPTIMIZATION", "payload": {"msg": "Max rounds: 100"}}
+
+id: 26
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 26, "ts": "2025-12-25T02:47:15.697359", "level": "INFO", "event": "solver_log", "phase": "PHASE4_OPTIMIZATION", "payload": {"msg": "Initial pool target: 5000"}}
+
+id: 27
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 27, "ts": "2025-12-25T02:47:18.822150", "level": "INFO", "event": "solver_log", "phase": "PHASE4_OPTIMIZATION", "payload": {"msg": "Initial pool: 884 columns, 884 generated"}}
+
+id: 28
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 28, "ts": "2025-12-25T02:47:18.823417", "level": "INFO", "event": "solver_log", "phase": "PHASE4_OPTIMIZATION", "payload": {"msg": "Hours range: 45.0h - 54.0h"}}
+
+id: 29
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 29, "ts": "2025-12-25T02:47:18.823449", "level": "INFO", "event": "solver_log", "phase": "PHASE4_OPTIMIZATION", "payload": {"msg": "Uncovered blocks: 0"}}
+
+id: 30
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 30, "ts": "2025-12-25T02:47:18.824354", "level": "INFO", "event": "solver_log", "phase": "PHASE4_OPTIMIZATION", "payload": {"msg": "\nInitial FTE pool stats:"}}
+
+id: 31
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 31, "ts": "2025-12-25T02:47:18.824381", "level": "INFO", "event": "solver_log", "phase": "PHASE4_OPTIMIZATION", "payload": {"msg": "  Pool size: 884"}}
+
+id: 32
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 32, "ts": "2025-12-25T02:47:18.824402", "level": "INFO", "event": "solver_log", "phase": "PHASE4_OPTIMIZATION", "payload": {"msg": "  Uncovered blocks: 0"}}
+
+id: 33
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 33, "ts": "2025-12-25T02:47:18.824422", "level": "INFO", "event": "solver_log", "phase": "PHASE4_OPTIMIZATION", "payload": {"msg": "Generating PT column pool..."}}
+
+id: 34
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 34, "ts": "2025-12-25T02:47:19.013119", "level": "INFO", "event": "solver_log", "phase": "PHASE4_OPTIMIZATION", "payload": {"msg": "Generated 154 PT columns"}}
+
+id: 35
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 35, "ts": "2025-12-25T02:47:19.013830", "level": "INFO", "event": "solver_log", "phase": "PHASE4_OPTIMIZATION", "payload": {"msg": "\nPool after PT generation:"}}
+
+id: 36
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 36, "ts": "2025-12-25T02:47:19.013848", "level": "INFO", "event": "solver_log", "phase": "PHASE4_OPTIMIZATION", "payload": {"msg": "  Pool size: 1038 (154 PT columns)"}}
+
+id: 37
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 37, "ts": "2025-12-25T02:47:20.120497", "level": "INFO", "event": "solver_log", "phase": "PHASE4_OPTIMIZATION", "payload": {"msg": "Relaxed RMP Status: OPTIMAL in 0.69s"}}
+
+id: 38
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 38, "ts": "2025-12-25T02:47:20.132502", "level": "INFO", "event": "solver_log", "phase": "PHASE4_OPTIMIZATION", "payload": {"msg": "Under-covered blocks: 0"}}
+
+id: 39
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 39, "ts": "2025-12-25T02:47:20.132553", "level": "INFO", "event": "solver_log", "phase": "PHASE4_OPTIMIZATION", "payload": {"msg": "Over-covered blocks: 180 (total over: 420)"}}
+
+id: 40
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 40, "ts": "2025-12-25T02:47:20.132582", "level": "INFO", "event": "solver_log", "phase": "PHASE4_OPTIMIZATION", "payload": {"msg": "Selected columns: 211"}}
+
+id: 41
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 41, "ts": "2025-12-25T02:47:20.132636", "level": "INFO", "event": "solver_log", "phase": "PHASE4_OPTIMIZATION", "payload": {"msg": "Top over blocks: [('B3-T-10-2-0-T-22-2-9-T-38-2-2', 42), ('B1-T-27-3-3', 28), ('B1-T-22-2-1', 22), ('B1-T-35-1-0', 18), ('B1-T-34-5-3', 11), ('B2-T-19-5-1-T-36-5-0', 10), ('B2-T-16-1-3-T-33-1-4', 10), ('B2-T-17-0-0-T-39-0-0', 9), ('B1-T-32-4-1', 9), ('B2-T-12-2-7-T-24-2-1', 8)]"}}
+
+id: 42
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 42, "ts": "2025-12-25T02:47:20.135421", "level": "INFO", "event": "solver_log", "phase": "PHASE4_OPTIMIZATION", "payload": {"msg": "Relaxed RMP Status: OPTIMAL"}}
+
+id: 43
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 43, "ts": "2025-12-25T02:47:20.135459", "level": "INFO", "event": "solver_log", "phase": "PHASE4_OPTIMIZATION", "payload": {"msg": "Relaxed diagnosis: under=0, over=420"}}
+
+id: 44
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 44, "ts": "2025-12-25T02:47:20.135480", "level": "INFO", "event": "solver_log", "phase": "PHASE4_OPTIMIZATION", "payload": {"msg": "Best so far: under=885, over=885"}}
+
+id: 45
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 45, "ts": "2025-12-25T02:47:20.135504", "level": "INFO", "event": "solver_log", "phase": "PHASE4_OPTIMIZATION", "payload": {"msg": "Progress! New best: under=0, over=420"}}
+
+id: 46
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 46, "ts": "2025-12-25T02:47:20.136986", "level": "INFO", "event": "solver_log", "phase": "PHASE4_OPTIMIZATION", "payload": {"msg": "Target seeds: 829 (under: 0, rare: 829)"}}
+
+id: 47
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 47, "ts": "2025-12-25T02:47:21.147124", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "Solving RMP..."}}
+
+id: 48
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 48, "ts": "2025-12-25T02:47:21.176969", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "RMP Status: INFEASIBLE in 0.03s"}}
+
+id: 49
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 49, "ts": "2025-12-25T02:47:21.178719", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "============================================================"}}
+
+id: 50
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 50, "ts": "2025-12-25T02:47:21.178743", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "RELAXED RMP (Diagnostic)"}}
+
+id: 51
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 51, "ts": "2025-12-25T02:47:21.178754", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "============================================================"}}
+
+id: 52
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 52, "ts": "2025-12-25T02:47:21.178765", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "Columns in pool: 1181"}}
+
+id: 53
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 53, "ts": "2025-12-25T02:47:21.178776", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "Total blocks (Target): 885"}}
+
+id: 54
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 54, "ts": "2025-12-25T02:47:21.181496", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "Rare blocks (lowest coverage): ['B2-T-23-4-1-T-40-4-13:2', 'B2-T-25-4-2-T-43-4-4:2', 'B2-T-21-4-2-T-39-4-2:2', 'B2-T-24-4-1-T-41-4-0:2', 'B2-T-25-4-7-T-43-4-0:2']"}}
+
+id: 55
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 55, "ts": "2025-12-25T02:47:21.382275", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "Solving relaxed RMP..."}}
+
+event: heartbeat
+data: {"run_id": "run_9c60e670596c", "event": "heartbeat", "ts": "2025-12-25T02:47:26", "payload": {"status": "RUNNING"}}
+
+id: 56
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 56, "ts": "2025-12-25T02:47:31.391675", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "Relaxed RMP Status: FEASIBLE in 10.01s"}}
+
+id: 57
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 57, "ts": "2025-12-25T02:47:31.409906", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "Under-covered blocks: 0"}}
+
+id: 58
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 58, "ts": "2025-12-25T02:47:31.409995", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "Over-covered blocks: 224 (total over: 312)"}}
+
+id: 59
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 59, "ts": "2025-12-25T02:47:31.410028", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "Selected columns: 215"}}
+
+id: 60
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 60, "ts": "2025-12-25T02:47:31.410085", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "Top over blocks: [('B1-T-35-5-0', 9), ('B3-T-2-0-1-T-24-0-2-T-46-0-0', 7), ('B1-T-43-5-4', 6), ('B3-T-10-2-0-T-22-2-9-T-38-2-2', 6), ('B1-T-34-5-3', 5), ('B2-T-19-5-1-T-36-5-0', 5), ('B1-T-22-2-2', 4), ('B3-T-1-4-0-T-19-4-4-T-36-4-9', 4), ('B2-T-16-5-10-T-33-5-1', 4), ('B1-T-27-3-3', 4)]"}}
+
+id: 61
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 61, "ts": "2025-12-25T02:47:31.413884", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "Relaxed RMP Status: FEASIBLE"}}
+
+id: 62
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 62, "ts": "2025-12-25T02:47:31.413961", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "Relaxed diagnosis: under=0, over=312"}}
+
+id: 63
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 63, "ts": "2025-12-25T02:47:31.413987", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "Best so far: under=0, over=420"}}
+
+id: 64
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 64, "ts": "2025-12-25T02:47:31.414015", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "Progress! New best: under=0, over=312"}}
+
+id: 65
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 65, "ts": "2025-12-25T02:47:31.415459", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "Target seeds: 731 (under: 0, rare: 731)"}}
+
+id: 66
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 66, "ts": "2025-12-25T02:47:32.446464", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "Targeted repair generated: 197 columns"}}
+
+id: 67
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 67, "ts": "2025-12-25T02:47:32.446527", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "Generated 197 new columns (pool: 1181 -> 1378)"}}
+
+id: 68
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 68, "ts": "2025-12-25T02:47:32.446557", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "\n--- Round 3/100 ---"}}
+
+id: 69
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 69, "ts": "2025-12-25T02:47:32.446579", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "Pool size: 1378"}}
+
+id: 70
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 70, "ts": "2025-12-25T02:47:32.446689", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "============================================================"}}
+
+id: 71
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 71, "ts": "2025-12-25T02:47:32.446717", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "RESTRICTED MASTER PROBLEM (RMP)"}}
+
+id: 72
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 72, "ts": "2025-12-25T02:47:32.446736", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "============================================================"}}
+
+id: 73
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 73, "ts": "2025-12-25T02:47:32.446756", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "Columns in pool: 1378"}}
+
+id: 74
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 74, "ts": "2025-12-25T02:47:32.446777", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "Total blocks (Target): 885"}}
+
+id: 75
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 75, "ts": "2025-12-25T02:47:32.446799", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "Time limit: 15.0s"}}
+
+event: heartbeat
+data: {"run_id": "run_9c60e670596c", "event": "heartbeat", "ts": "2025-12-25T02:47:37", "payload": {"status": "RUNNING"}}
+
+event: heartbeat
+data: {"run_id": "run_9c60e670596c", "event": "heartbeat", "ts": "2025-12-25T02:47:42", "payload": {"status": "RUNNING"}}
+
+id: 76
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 76, "ts": "2025-12-25T02:47:43.079649", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "Relaxed RMP Status: UNKNOWN in 10.01s"}}
+
+id: 77
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 77, "ts": "2025-12-25T02:47:43.079761", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "WARNING: Relaxed RMP not solved! Status: UNKNOWN"}}
+
+id: 78
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 78, "ts": "2025-12-25T02:47:43.083974", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "Relaxed RMP Status: UNKNOWN"}}
+
+id: 79
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 79, "ts": "2025-12-25T02:47:43.084042", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "UNKNOWN/INFEASIBLE status, no incumbent - skipping progress update"}}
+
+id: 80
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 80, "ts": "2025-12-25T02:47:43.084069", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "No progress for 1 rounds"}}
+
+id: 81
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 81, "ts": "2025-12-25T02:47:43.087427", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "Target seeds: 885 (under: 885, rare: 170)"}}
+
+id: 82
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 82, "ts": "2025-12-25T02:47:43.087461", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "Avoid set: 12 blocks"}}
+
+id: 83
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 83, "ts": "2025-12-25T02:47:43.087493", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "Targeted repair: 200 seeds, 12 avoided"}}
+
+id: 84
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 84, "ts": "2025-12-25T02:47:44.050837", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "Targeted repair generated: 194 columns"}}
+
+id: 85
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 85, "ts": "2025-12-25T02:47:44.050895", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "Generated 194 new columns (pool: 1378 -> 1572)"}}
+
+id: 86
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 86, "ts": "2025-12-25T02:47:44.309788", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "Solving RMP..."}}
+
+id: 87
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 87, "ts": "2025-12-25T02:47:44.387168", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "RMP Status: INFEASIBLE in 0.08s"}}
+
+id: 88
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 88, "ts": "2025-12-25T02:47:44.390203", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "============================================================"}}
+
+id: 89
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 89, "ts": "2025-12-25T02:47:44.390271", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "RELAXED RMP (Diagnostic)"}}
+
+id: 90
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 90, "ts": "2025-12-25T02:47:44.390329", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "============================================================"}}
+
+id: 91
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 91, "ts": "2025-12-25T02:47:44.390358", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "Columns in pool: 1572"}}
+
+id: 92
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 92, "ts": "2025-12-25T02:47:44.390382", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "Total blocks (Target): 885"}}
+
+id: 93
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 93, "ts": "2025-12-25T02:47:44.394006", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "Rare blocks (lowest coverage): ['B1-T-3-5-4:5', 'B1-T-3-5-1:5', 'B1-T-46-4-3:5', 'B1-T-3-5-2:5', 'B1-T-3-5-3:5']"}}
+
+id: 94
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 94, "ts": "2025-12-25T02:47:44.709519", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "Solving relaxed RMP..."}}
+
+event: heartbeat
+data: {"run_id": "run_9c60e670596c", "event": "heartbeat", "ts": "2025-12-25T02:47:49", "payload": {"status": "RUNNING"}}
+
+id: 95
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 95, "ts": "2025-12-25T02:47:54.720570", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "Relaxed RMP Status: UNKNOWN in 10.01s"}}
+
+id: 96
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 96, "ts": "2025-12-25T02:47:54.720625", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "WARNING: Relaxed RMP not solved! Status: UNKNOWN"}}
+
+id: 97
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 97, "ts": "2025-12-25T02:47:54.724379", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "Relaxed RMP Status: UNKNOWN"}}
+
+id: 98
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 98, "ts": "2025-12-25T02:47:54.724470", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "UNKNOWN/INFEASIBLE status, no incumbent - skipping progress update"}}
+
+id: 99
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 99, "ts": "2025-12-25T02:47:54.724499", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "No progress for 2 rounds"}}
+
+id: 100
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 100, "ts": "2025-12-25T02:47:54.725200", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "Target seeds: 885 (under: 885, rare: 0)"}}
+
+id: 101
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 101, "ts": "2025-12-25T02:47:54.725232", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "Avoid set: 12 blocks"}}
+
+id: 102
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 102, "ts": "2025-12-25T02:47:54.725266", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "Targeted repair: 200 seeds, 12 avoided"}}
+
+id: 103
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 103, "ts": "2025-12-25T02:47:55.710153", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "Targeted repair generated: 200 columns"}}
+
+id: 104
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 104, "ts": "2025-12-25T02:47:55.710256", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "Generated 200 new columns (pool: 1572 -> 1772)"}}
+
+id: 105
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 105, "ts": "2025-12-25T02:47:55.991536", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "Solving RMP..."}}
+
+id: 106
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 106, "ts": "2025-12-25T02:47:56.113945", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "RMP Status: INFEASIBLE in 0.12s"}}
+
+id: 107
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 107, "ts": "2025-12-25T02:47:56.116856", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "============================================================"}}
+
+id: 108
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 108, "ts": "2025-12-25T02:47:56.116898", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "RELAXED RMP (Diagnostic)"}}
+
+id: 109
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 109, "ts": "2025-12-25T02:47:56.116926", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "============================================================"}}
+
+id: 110
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 110, "ts": "2025-12-25T02:47:56.116960", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "Columns in pool: 1772"}}
+
+id: 111
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 111, "ts": "2025-12-25T02:47:56.116984", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "Total blocks (Target): 885"}}
+
+id: 112
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 112, "ts": "2025-12-25T02:47:56.120896", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "Rare blocks (lowest coverage): ['B2-T-12-5-3-T-31-5-0:7', 'B2-T-9-5-4-T-27-5-7:7', 'B1-T-40-4-3:7', 'B1-T-6-5-7:7', 'B1-T-5-5-0:7']"}}
+
+id: 113
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 113, "ts": "2025-12-25T02:47:56.467089", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "Solving relaxed RMP..."}}
+
+event: heartbeat
+data: {"run_id": "run_9c60e670596c", "event": "heartbeat", "ts": "2025-12-25T02:48:01", "payload": {"status": "RUNNING"}}
+
+id: 114
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 114, "ts": "2025-12-25T02:48:06.464573", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "Relaxed RMP Status: UNKNOWN in 10.00s"}}
+
+id: 115
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 115, "ts": "2025-12-25T02:48:06.464625", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "WARNING: Relaxed RMP not solved! Status: UNKNOWN"}}
+
+id: 116
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 116, "ts": "2025-12-25T02:48:06.468373", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "Relaxed RMP Status: UNKNOWN"}}
+
+id: 117
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 117, "ts": "2025-12-25T02:48:06.468450", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "UNKNOWN/INFEASIBLE status, no incumbent - skipping progress update"}}
+
+id: 118
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 118, "ts": "2025-12-25T02:48:06.468478", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "No progress for 3 rounds"}}
+
+id: 119
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 119, "ts": "2025-12-25T02:48:06.469127", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "Target seeds: 885 (under: 885, rare: 0)"}}
+
+id: 120
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 120, "ts": "2025-12-25T02:48:06.469152", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "Avoid set: 12 blocks"}}
+
+id: 121
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 121, "ts": "2025-12-25T02:48:06.469183", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "Targeted repair: 200 seeds, 12 avoided"}}
+
+id: 122
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 122, "ts": "2025-12-25T02:48:07.435290", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "Targeted repair generated: 197 columns"}}
+
+id: 123
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 123, "ts": "2025-12-25T02:48:07.435344", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "Generated 197 new columns (pool: 1772 -> 1969)"}}
+
+id: 124
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 124, "ts": "2025-12-25T02:48:07.720471", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "Solving RMP..."}}
+
+id: 125
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 125, "ts": "2025-12-25T02:48:08.806823", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "RMP Status: INFEASIBLE in 1.09s"}}
+
+id: 126
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 126, "ts": "2025-12-25T02:48:08.809711", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "============================================================"}}
+
+id: 127
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 127, "ts": "2025-12-25T02:48:08.809744", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "RELAXED RMP (Diagnostic)"}}
+
+id: 128
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 128, "ts": "2025-12-25T02:48:08.809766", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "============================================================"}}
+
+id: 129
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 129, "ts": "2025-12-25T02:48:08.809795", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "Columns in pool: 1969"}}
+
+id: 130
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 130, "ts": "2025-12-25T02:48:08.809816", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "Total blocks (Target): 885"}}
+
+id: 131
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 131, "ts": "2025-12-25T02:48:08.814271", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "Rare blocks (lowest coverage): ['B1-T-6-5-7:8', 'B1-T-4-5-6:8', 'B1-T-6-5-0:8', 'B1-T-45-4-11:8', 'B1-T-6-5-13:8']"}}
+
+id: 132
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 132, "ts": "2025-12-25T02:48:09.160537", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "Solving relaxed RMP..."}}
+
+event: heartbeat
+data: {"run_id": "run_9c60e670596c", "event": "heartbeat", "ts": "2025-12-25T02:48:14", "payload": {"status": "RUNNING"}}
+
+id: 133
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 133, "ts": "2025-12-25T02:48:18.861107", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "Relaxed RMP Status: UNKNOWN in 9.70s"}}
+
+id: 134
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 134, "ts": "2025-12-25T02:48:18.861133", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "WARNING: Relaxed RMP not solved! Status: UNKNOWN"}}
+
+id: 135
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 135, "ts": "2025-12-25T02:48:18.864989", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "Relaxed RMP Status: UNKNOWN"}}
+
+id: 136
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 136, "ts": "2025-12-25T02:48:18.865049", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "UNKNOWN/INFEASIBLE status, no incumbent - skipping progress update"}}
+
+id: 137
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 137, "ts": "2025-12-25T02:48:18.865073", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "No progress for 4 rounds"}}
+
+id: 138
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 138, "ts": "2025-12-25T02:48:18.866565", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "Target seeds: 885 (under: 885, rare: 59)"}}
+
+id: 139
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 139, "ts": "2025-12-25T02:48:18.866592", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "Avoid set: 12 blocks"}}
+
+id: 140
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 140, "ts": "2025-12-25T02:48:18.866648", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "Targeted repair: 200 seeds, 12 avoided"}}
+
+id: 141
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 141, "ts": "2025-12-25T02:48:19.801127", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "Targeted repair generated: 199 columns"}}
+
+id: 142
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 142, "ts": "2025-12-25T02:48:19.801188", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "Generated 199 new columns (pool: 1969 -> 2168)"}}
+
+id: 143
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 143, "ts": "2025-12-25T02:48:20.119138", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "Solving RMP..."}}
+
+event: heartbeat
+data: {"run_id": "run_9c60e670596c", "event": "heartbeat", "ts": "2025-12-25T02:48:25", "payload": {"status": "RUNNING"}}
+
+id: 144
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 144, "ts": "2025-12-25T02:48:29.086398", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "RMP Status: INFEASIBLE in 8.97s"}}
+
+id: 145
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 145, "ts": "2025-12-25T02:48:29.089383", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "============================================================"}}
+
+id: 146
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 146, "ts": "2025-12-25T02:48:29.089423", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "RELAXED RMP (Diagnostic)"}}
+
+id: 147
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 147, "ts": "2025-12-25T02:48:29.089447", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "============================================================"}}
+
+id: 148
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 148, "ts": "2025-12-25T02:48:29.089473", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "Columns in pool: 2168"}}
+
+id: 149
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 149, "ts": "2025-12-25T02:48:29.089547", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "Total blocks (Target): 885"}}
+
+id: 150
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 150, "ts": "2025-12-25T02:48:29.094256", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "Rare blocks (lowest coverage): ['B1-T-45-4-11:9', 'B1-T-3-5-4:9', 'B1-T-45-4-8:9', 'B1-T-3-5-1:9', 'B1-T-46-4-3:9']"}}
+
+id: 151
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 151, "ts": "2025-12-25T02:48:29.454889", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "Solving relaxed RMP..."}}
+
+event: heartbeat
+data: {"run_id": "run_9c60e670596c", "event": "heartbeat", "ts": "2025-12-25T02:48:34", "payload": {"status": "RUNNING"}}
+
+id: 152
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 152, "ts": "2025-12-25T02:48:39.442130", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "Relaxed RMP Status: UNKNOWN in 9.99s"}}
+
+id: 153
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 153, "ts": "2025-12-25T02:48:39.442180", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "WARNING: Relaxed RMP not solved! Status: UNKNOWN"}}
+
+id: 154
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 154, "ts": "2025-12-25T02:48:39.446761", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "Relaxed RMP Status: UNKNOWN"}}
+
+id: 155
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 155, "ts": "2025-12-25T02:48:39.446806", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "UNKNOWN/INFEASIBLE status, no incumbent - skipping progress update"}}
+
+id: 156
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 156, "ts": "2025-12-25T02:48:39.446817", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "No progress for 5 rounds"}}
+
+id: 157
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 157, "ts": "2025-12-25T02:48:39.449938", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "Target seeds: 885 (under: 885, rare: 177)"}}
+
+id: 158
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 158, "ts": "2025-12-25T02:48:39.449985", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "Avoid set: 12 blocks"}}
+
+id: 159
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 159, "ts": "2025-12-25T02:48:39.450016", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "Targeted repair: 200 seeds, 12 avoided"}}
+
+id: 160
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 160, "ts": "2025-12-25T02:48:40.454485", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "Targeted repair generated: 190 columns"}}
+
+id: 161
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 161, "ts": "2025-12-25T02:48:40.454540", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "Generated 190 new columns (pool: 2168 -> 2358)"}}
+
+id: 162
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 162, "ts": "2025-12-25T02:48:40.454566", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "Increased min coverage quota to 13"}}
+
+id: 163
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 163, "ts": "2025-12-25T02:48:40.454592", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "\n--- Round 8/100 ---"}}
+
+id: 164
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 164, "ts": "2025-12-25T02:48:40.454613", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "Pool size: 2358"}}
+
+id: 165
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 165, "ts": "2025-12-25T02:48:40.454728", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "============================================================"}}
+
+id: 166
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 166, "ts": "2025-12-25T02:48:40.454750", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "RESTRICTED MASTER PROBLEM (RMP)"}}
+
+id: 167
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 167, "ts": "2025-12-25T02:48:40.454768", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "============================================================"}}
+
+id: 168
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 168, "ts": "2025-12-25T02:48:40.454787", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "Columns in pool: 2358"}}
+
+id: 169
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 169, "ts": "2025-12-25T02:48:40.454807", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "Total blocks (Target): 885"}}
+
+event: heartbeat
+data: {"run_id": "run_9c60e670596c", "event": "heartbeat", "ts": "2025-12-25T02:48:45", "payload": {"status": "RUNNING"}}
+
+event: heartbeat
+data: {"run_id": "run_9c60e670596c", "event": "heartbeat", "ts": "2025-12-25T02:48:50", "payload": {"status": "RUNNING"}}
+
+id: 170
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 170, "ts": "2025-12-25T02:48:55.667682", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "RMP Status: UNKNOWN in 14.98s"}}
+
+id: 171
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 171, "ts": "2025-12-25T02:48:55.669770", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "============================================================"}}
+
+id: 172
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 172, "ts": "2025-12-25T02:48:55.669791", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "RELAXED RMP (Diagnostic)"}}
+
+id: 173
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 173, "ts": "2025-12-25T02:48:55.669814", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "============================================================"}}
+
+id: 174
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 174, "ts": "2025-12-25T02:48:55.669825", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "Columns in pool: 2358"}}
+
+id: 175
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 175, "ts": "2025-12-25T02:48:55.669834", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "Total blocks (Target): 885"}}
+
+id: 176
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 176, "ts": "2025-12-25T02:48:55.672792", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "Rare blocks (lowest coverage): ['B2-T-12-5-3-T-31-5-0:11', 'B2-T-12-5-2-T-30-5-3:11', 'B2-T-16-5-11-T-34-5-4:11', 'B2-T-9-5-4-T-27-5-7:11', 'B1-T-40-4-3:11']"}}
+
+id: 177
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 177, "ts": "2025-12-25T02:48:55.882525", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "Solving relaxed RMP..."}}
+
+event: heartbeat
+data: {"run_id": "run_9c60e670596c", "event": "heartbeat", "ts": "2025-12-25T02:49:01", "payload": {"status": "RUNNING"}}
+
+id: 178
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 178, "ts": "2025-12-25T02:49:05.865553", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "Relaxed RMP Status: UNKNOWN in 9.98s"}}
+
+id: 179
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 179, "ts": "2025-12-25T02:49:05.865601", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "WARNING: Relaxed RMP not solved! Status: UNKNOWN"}}
+
+id: 180
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 180, "ts": "2025-12-25T02:49:05.869623", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "Relaxed RMP Status: UNKNOWN"}}
+
+id: 181
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 181, "ts": "2025-12-25T02:49:05.869686", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "UNKNOWN/INFEASIBLE status, no incumbent - skipping progress update"}}
+
+id: 182
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 182, "ts": "2025-12-25T02:49:05.869717", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "No progress for 6 rounds"}}
+
+id: 183
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 183, "ts": "2025-12-25T02:49:05.873444", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "Target seeds: 885 (under: 885, rare: 269)"}}
+
+id: 184
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 184, "ts": "2025-12-25T02:49:05.873464", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "Avoid set: 12 blocks"}}
+
+id: 185
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 185, "ts": "2025-12-25T02:49:05.873479", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "Targeted repair: 200 seeds, 12 avoided"}}
+
+id: 186
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 186, "ts": "2025-12-25T02:49:06.783580", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "Targeted repair generated: 193 columns"}}
+
+id: 187
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 187, "ts": "2025-12-25T02:49:06.783641", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "Generated 193 new columns (pool: 2358 -> 2551)"}}
+
+id: 188
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 188, "ts": "2025-12-25T02:49:07.146158", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "Solving RMP..."}}
+
+event: heartbeat
+data: {"run_id": "run_9c60e670596c", "event": "heartbeat", "ts": "2025-12-25T02:49:12", "payload": {"status": "RUNNING"}}
+
+event: heartbeat
+data: {"run_id": "run_9c60e670596c", "event": "heartbeat", "ts": "2025-12-25T02:49:17", "payload": {"status": "RUNNING"}}
+
+id: 189
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 189, "ts": "2025-12-25T02:49:22.154347", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "RMP Status: UNKNOWN in 15.01s"}}
+
+id: 190
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 190, "ts": "2025-12-25T02:49:22.158005", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "============================================================"}}
+
+id: 191
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 191, "ts": "2025-12-25T02:49:22.158054", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "RELAXED RMP (Diagnostic)"}}
+
+id: 192
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 192, "ts": "2025-12-25T02:49:22.158083", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "============================================================"}}
+
+id: 193
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 193, "ts": "2025-12-25T02:49:22.158111", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "Columns in pool: 2551"}}
+
+id: 194
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 194, "ts": "2025-12-25T02:49:22.158135", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "Total blocks (Target): 885"}}
+
+id: 195
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 195, "ts": "2025-12-25T02:49:22.163321", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "Rare blocks (lowest coverage): ['B2-T-9-5-4-T-27-5-7:12', 'B1-T-6-5-7:12', 'B1-T-5-5-0:12', 'B1-T-4-5-12:12', 'B1-T-6-5-6:12']"}}
+
+id: 196
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 196, "ts": "2025-12-25T02:49:22.477485", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "Solving relaxed RMP..."}}
+
+event: heartbeat
+data: {"run_id": "run_9c60e670596c", "event": "heartbeat", "ts": "2025-12-25T02:49:27", "payload": {"status": "RUNNING"}}
+
+id: 197
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 197, "ts": "2025-12-25T02:49:32.488161", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "Relaxed RMP Status: FEASIBLE in 10.01s"}}
+
+id: 198
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 198, "ts": "2025-12-25T02:49:32.513346", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "Under-covered blocks: 0"}}
+
+id: 199
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 199, "ts": "2025-12-25T02:49:32.513407", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "Over-covered blocks: 175 (total over: 429)"}}
+
+id: 200
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 200, "ts": "2025-12-25T02:49:32.513439", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "Selected columns: 210"}}
+
+id: 201
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 201, "ts": "2025-12-25T02:49:32.513518", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "Top over blocks: [('B3-T-10-2-0-T-22-2-9-T-38-2-2', 45), ('B1-T-27-3-3', 28), ('B1-T-22-2-1', 22), ('B1-T-35-1-0', 19), ('B1-T-34-5-3', 11), ('B2-T-19-5-1-T-36-5-0', 11), ('B2-T-16-1-3-T-33-1-4', 10), ('B2-T-23-1-2-T-38-1-1', 9), ('B3-T-2-0-1-T-24-0-2-T-46-0-0', 9), ('B2-T-17-0-0-T-39-0-0', 9)]"}}
+
+id: 202
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 202, "ts": "2025-12-25T02:49:32.518661", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "Relaxed RMP Status: FEASIBLE"}}
+
+id: 203
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 203, "ts": "2025-12-25T02:49:32.518746", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "Relaxed diagnosis: under=0, over=429"}}
+
+id: 204
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 204, "ts": "2025-12-25T02:49:32.518774", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "Best so far: under=0, over=312"}}
+
+id: 205
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 205, "ts": "2025-12-25T02:49:32.518797", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "No progress for 7 rounds"}}
+
+id: 206
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 206, "ts": "2025-12-25T02:49:32.519928", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "Target seeds: 364 (under: 0, rare: 364)"}}
+
+id: 207
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 207, "ts": "2025-12-25T02:49:33.554153", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "Targeted repair generated: 109 columns"}}
+
+id: 208
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 208, "ts": "2025-12-25T02:49:33.554214", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "Generated 109 new columns (pool: 2551 -> 2660)"}}
+
+id: 209
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 209, "ts": "2025-12-25T02:49:33.554240", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "Increased min coverage quota to 17"}}
+
+id: 210
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 210, "ts": "2025-12-25T02:49:33.554266", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "\n--- Round 10/100 ---"}}
+
+id: 211
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 211, "ts": "2025-12-25T02:49:33.554288", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "Pool size: 2660"}}
+
+id: 212
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 212, "ts": "2025-12-25T02:49:33.554387", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "============================================================"}}
+
+id: 213
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 213, "ts": "2025-12-25T02:49:33.554408", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "RESTRICTED MASTER PROBLEM (RMP)"}}
+
+id: 214
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 214, "ts": "2025-12-25T02:49:33.554427", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "============================================================"}}
+
+id: 215
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 215, "ts": "2025-12-25T02:49:33.554447", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "Columns in pool: 2660"}}
+
+id: 216
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 216, "ts": "2025-12-25T02:49:33.554468", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "Total blocks (Target): 885"}}
+
+event: heartbeat
+data: {"run_id": "run_9c60e670596c", "event": "heartbeat", "ts": "2025-12-25T02:49:38", "payload": {"status": "RUNNING"}}
+
+event: heartbeat
+data: {"run_id": "run_9c60e670596c", "event": "heartbeat", "ts": "2025-12-25T02:49:43", "payload": {"status": "RUNNING"}}
+
+event: heartbeat
+data: {"run_id": "run_9c60e670596c", "event": "heartbeat", "ts": "2025-12-25T02:49:48", "payload": {"status": "RUNNING"}}
+
+id: 217
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 217, "ts": "2025-12-25T02:49:48.924088", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "RMP Status: UNKNOWN in 15.01s"}}
+
+id: 218
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 218, "ts": "2025-12-25T02:49:48.927631", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "============================================================"}}
+
+id: 219
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 219, "ts": "2025-12-25T02:49:48.927678", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "RELAXED RMP (Diagnostic)"}}
+
+id: 220
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 220, "ts": "2025-12-25T02:49:48.927702", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "============================================================"}}
+
+id: 221
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 221, "ts": "2025-12-25T02:49:48.927730", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "Columns in pool: 2660"}}
+
+id: 222
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 222, "ts": "2025-12-25T02:49:48.927751", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "Total blocks (Target): 885"}}
+
+id: 223
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 223, "ts": "2025-12-25T02:49:48.933354", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "Rare blocks (lowest coverage): ['B2-T-12-5-3-T-31-5-0:13', 'B2-T-12-5-2-T-30-5-3:13', 'B2-T-16-5-11-T-34-5-4:13', 'B2-T-9-5-4-T-27-5-7:13', 'B3-T-3-4-10-T-19-4-0-T-35-4-2:13']"}}
+
+id: 224
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 224, "ts": "2025-12-25T02:49:49.359577", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "Solving relaxed RMP..."}}
+
+event: heartbeat
+data: {"run_id": "run_9c60e670596c", "event": "heartbeat", "ts": "2025-12-25T02:49:54", "payload": {"status": "RUNNING"}}
+
+id: 225
+event: solver_log
+data: {"run_id": "run_9c60e670596c", "seq": 225, "ts": "2025-12-25T02:49:59.363111", "level": "INFO", "event": "solver_log", "phase": "REPAIR", "payload": {"msg": "Relaxed RMP Status: FEASIBLE in 10.00s"}}
+

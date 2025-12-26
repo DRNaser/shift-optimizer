@@ -1,0 +1,55 @@
+﻿{
+    "run_id":  "run_599b63e41b97",
+    "status":  "COMPLETED",
+    "config":  {
+                   "effective_hash":  "8fa1ce9ae448aea2",
+                   "overrides_applied":  {
+                                             "seed":  42
+                                         },
+                   "overrides_rejected":  {
+
+                                          },
+                   "overrides_clamped":  {
+
+                                         }
+               },
+    "input_summary":  {
+                          "tours":  24,
+                          "drivers":  0,
+                          "tours_sorted":  true
+                      },
+    "features":  {
+                     "n_tours":  24,
+                     "peakiness_index":  0.0,
+                     "pt_pressure_proxy":  0.0,
+                     "lower_bound_drivers":  0
+                 },
+    "path":  {
+                 "initial":  "FAST",
+                 "final":  "FAST",
+                 "fallback_used":  false,
+                 "fallback_count":  0
+             },
+    "timing":  {
+                   "profiling_s":  0.0,
+                   "phase1_s":  0.0,
+                   "phase2_s":  0.0,
+                   "lns_s":  0.0,
+                   "total_s":  0.022
+               },
+    "reason_codes":  [
+                         "CRITICAL_PORTFOLIO_ERROR"
+                     ],
+    "solution_signature":  "unknown_FAST_42",
+    "result_summary":  {
+                           "status":  "CRITICAL_ERROR",
+                           "drivers_total":  0,
+                           "gap_to_lb":  0.0,
+                           "early_stopped":  false,
+                           "early_stop_reason":  ""
+                       },
+    "kpi":  {
+                "error":  "cannot access local variable \u0027early_stop_reason\u0027 where it is not associated with a value",
+                "traceback":  "Traceback (most recent call last):\n  File \"C:\\Users\\n.zaher\\OneDrive - LTS Transport u. Logistik GmbH\\Desktop\\shift-optimizer\\backend_py\\src\\services\\portfolio_controller.py\", line 681, in run_portfolio\n    early_stop_reason=early_stop_reason,\n                      ^^^^^^^^^^^^^^^^^\nUnboundLocalError: cannot access local variable \u0027early_stop_reason\u0027 where it is not associated with a value\n"
+            }
+}

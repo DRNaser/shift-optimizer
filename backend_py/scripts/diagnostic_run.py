@@ -3,6 +3,7 @@
 Diagnostic Run - Capture full KPIs for analysis
 """
 import os
+import os
 import sys
 import json
 import requests
@@ -44,7 +45,8 @@ def read_json_with_retry(url, retries=10, delay=0.5):
         raise RuntimeError(f"Failed to read/parse {url} after {retries} retries: {e}")
 
 
-API_URL = "http://localhost:8000/api/v1"
+API_PORT = int(os.environ.get("API_PORT", 8000))
+API_URL = f"http://localhost:{API_PORT}/api/v1"
 INPUT_FILE = r"C:\Users\n.zaher\OneDrive - LTS Transport u. Logistik GmbH\Desktop\shift-optimizer\forecast-test.txt"
 
 DAY_MAP = {
@@ -117,6 +119,8 @@ def main():
                         help="Min gap for 3er blocks (MIN_HEADCOUNT_3ER only)")
     parser.add_argument("--time_budget", type=int, default=180,
                         help="Time budget in seconds")
+    parser.add_argument("--pass2_min_time_s", type=float, default=30.0,
+                        help="Minimum time guarantee for Pass-2 optimization")
     args = parser.parse_args()
     
     print("=" * 60)
@@ -132,12 +136,24 @@ def main():
     
     # Build config overrides with profile selection
     config_overrides = {
+        # ==========================================================================
+        # MAIN PATH TEST: BEST_BALANCED -> SetPart + LNS
+        # ==========================================================================
+        # "solver_mode": "SETPART",  # Removed: relying on BEST_BALANCED forcing logic
+        
+        # Standard config
         "cap_quota_2er": 0.30,
         "enable_fill_to_target_greedy": True,
         "enable_bad_block_mix_rerun": True,
         "enable_diag_block_caps": False,
-        "output_profile": args.output_profile,
+        "output_profile": args.output_profile, # Should be BEST_BALANCED
         "gap_3er_min_minutes": args.gap_3er_min,
+        "pass2_min_time_s": args.pass2_min_time_s,
+        
+        # LNS ENDGAME: Low-Hour Pattern Consolidation (NEW Set-Part LNS)
+        "enable_lns_low_hour_consolidation": True, 
+        "lns_time_budget_s": 30.0,
+        "lns_low_hour_threshold_h": 30.0,
     }
     
     payload = {
@@ -166,9 +182,15 @@ def main():
         
         # Poll for completion - solver runs async
         import time
-        max_wait = 300  # 5 minutes max
+        # Dynamic wait based on budget (default 300s is likely too short for Quality runs)
+        # Use budget + 60s overhead, or at least 300s
+        dynamic_wait = args.time_budget + 120
+        max_wait = max(300, dynamic_wait)
+        
         poll_interval = 5
         waited = 0
+        
+        print(f"  Polling for completion (timeout={max_wait}s)...")
         
         while waited < max_wait:
             status_resp = requests.get(f"{API_URL}/runs/{run_id}", timeout=10)

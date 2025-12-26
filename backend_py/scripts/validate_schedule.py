@@ -38,13 +38,27 @@ def reconstruct_tour(t_data: dict) -> Tour:
     )
 
 def reconstruct_block(b_data: dict) -> Block:
+    # Fallback pause_zone normalization for backward compatibility (Contract v2.0)
+    # Priority: 1) explicit pause_zone, 2) is_split flag, 3) B2S- prefix, 4) REGULAR
+    pause_zone = b_data.get("pause_zone")
+    if pause_zone is None:
+        is_split = b_data.get("is_split", False)
+        block_id = b_data.get("id", "")
+        if is_split:
+            pause_zone = "SPLIT"
+        elif block_id.startswith("B2S-"):
+            pause_zone = "SPLIT"
+        else:
+            pause_zone = "REGULAR"
+    
     return Block(
         id=b_data['id'],
         day=Weekday(b_data['day']),
         tours=[reconstruct_tour(t) for t in b_data['tours']],
         driver_id=b_data.get('driver_id'),
         is_split=b_data.get('is_split', False),
-        max_pause_minutes=b_data.get('max_pause_minutes', 0)
+        max_pause_minutes=b_data.get('max_pause_minutes', 0),
+        pause_zone=pause_zone
     )
 
 def reconstruct_assignment(a_data: dict) -> DriverAssignment:

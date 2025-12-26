@@ -1,0 +1,17 @@
+{
+    "tours": [
+        {
+            "id": "T-1",
+            "day": "Mon",
+            "start_time": "08:00",
+            "end_time": "12:00"
+        }
+    ],
+    "drivers": [],
+    "week_start": "2024-01-01",
+    "run": {
+        "time_budget_seconds": 60,
+        "seed": 42,
+        "config_overrides": {}
+    }
+}

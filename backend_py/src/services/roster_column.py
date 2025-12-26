@@ -20,8 +20,8 @@ import logging
 logger = logging.getLogger("RosterColumn")
 
 # Constants
-MIN_WEEK_HOURS = 42.0
-MAX_WEEK_HOURS = 56.0
+MIN_WEEK_HOURS = 40.0  # Soft target for FTE hours (penalized in objective, not hard)
+MAX_WEEK_HOURS = 55.0
 MIN_REST_MINUTES = 660  # 11h
 HEAVY_REST_MINUTES = 840  # 14h
 DAY_MINUTES = 1440  # 24h
@@ -262,14 +262,12 @@ def validate_roster_constraints(
                     )
     
     # =========================================================================
-    # 5. WEEK HOURS: 42-53h (or skip min check if allow_pt)
+    # 5. WEEK HOURS: enforce max hours only (min handled in objective)
     # =========================================================================
     total_hours = total_minutes / 60.0
     
-    if not allow_pt and total_hours < MIN_WEEK_HOURS:
-        violations.append(
-            f"Week hours {total_hours:.1f}h < min {MIN_WEEK_HOURS}h"
-        )
+    # Note: Minimum hours are now a soft cost, not a hard constraint
+    # This allows the solver to use slightly under-filled FTEs when optimal
     
     if total_hours > MAX_WEEK_HOURS:
         violations.append(
