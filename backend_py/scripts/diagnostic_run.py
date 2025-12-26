@@ -15,6 +15,7 @@ except AttributeError:
     pass
 
 import time
+import datetime as dt
 
 def read_json_with_retry(url, retries=10, delay=0.5):
     """Retrieve JSON from URL with retry logic for robustness."""
@@ -91,6 +92,23 @@ def parse_input(file_path):
                 tour_id_counter += 1
     return tours
 
+
+def _parse_time_hhmm(value: str) -> dt.time:
+    return dt.datetime.strptime(value, "%H:%M").time()
+
+
+def compute_total_forecast_hours(tours: list[dict]) -> float:
+    total = 0.0
+    for tour in tours:
+        start = _parse_time_hhmm(tour["start_time"])
+        end = _parse_time_hhmm(tour["end_time"])
+        start_minutes = start.hour * 60 + start.minute
+        end_minutes = end.hour * 60 + end.minute
+        if end_minutes < start_minutes:
+            end_minutes += 24 * 60
+        total += (end_minutes - start_minutes) / 60.0
+    return total
+
 def generate_drivers(num_drivers=300):
     drivers = []
     for i in range(1, num_drivers + 1):
@@ -117,18 +135,22 @@ def main():
                         help="Min gap for 3er blocks (MIN_HEADCOUNT_3ER only)")
     parser.add_argument("--time_budget", type=int, default=180,
                         help="Time budget in seconds")
+    parser.add_argument("--driver_cap", type=int, default=None,
+                        help="Hard cap on drivers (None for no cap)")
     args = parser.parse_args()
     
     print("=" * 60)
     print("DIAGNOSTIC RUN - Full KPI Analysis")
     print("=" * 60)
     
-    tours = parse_input(INPUT_FILE)
+    input_file = os.getenv("DIAGNOSTIC_INPUT_FILE", INPUT_FILE)
+    tours = parse_input(input_file)
     drivers = generate_drivers(300)
     
     print(f"Tours: {len(tours)}")
     print(f"Drivers pool: {len(drivers)}")
     print(f"Output Profile: {args.output_profile}")
+    print(f"Input File: {input_file}")
     
     # Build config overrides with profile selection
     config_overrides = {
@@ -139,6 +161,8 @@ def main():
         "output_profile": args.output_profile,
         "gap_3er_min_minutes": args.gap_3er_min,
     }
+    if args.driver_cap is not None:
+        config_overrides["driver_cap"] = args.driver_cap
     
     payload = {
         "week_start": "2024-01-01",
@@ -155,6 +179,8 @@ def main():
     for k, v in config_overrides.items():
         print(f"  {k}: {v}")
     print(f"\nTime Budget: {args.time_budget}s")
+    if args.driver_cap is not None:
+        print(f"Driver Cap: {args.driver_cap}")
     print("\nStarting solver...")
     
     try:
@@ -397,6 +423,97 @@ def main():
             with open("diag_run_result.json", "w") as f:
                 json.dump(plan, f, indent=2)
             print("\nFull result saved to: diag_run_result.json")
+
+            # =============================================================
+            # REQUIRED KPI OUTPUTS + HARD ASSERTIONS
+            # =============================================================
+            from statistics import mean, median
+
+            driver_ids = [a.get("driver_id") for a in assignments if a.get("driver_id")]
+            unique_driver_ids = sorted(set(driver_ids))
+            drivers_used = len(unique_driver_ids)
+
+            hours_by_driver = {driver_id: 0.0 for driver_id in unique_driver_ids}
+            days_by_driver = {driver_id: set() for driver_id in unique_driver_ids}
+            assigned_hours_total = 0.0
+            for assignment in assignments:
+                driver_id = assignment.get("driver_id")
+                block = assignment.get("block", {})
+                block_hours = float(block.get("total_work_hours", 0.0))
+                assigned_hours_total += block_hours
+                if driver_id in hours_by_driver:
+                    hours_by_driver[driver_id] += block_hours
+                    if assignment.get("day"):
+                        days_by_driver[driver_id].add(assignment["day"])
+
+            weekly_hours_list = list(hours_by_driver.values())
+            if weekly_hours_list:
+                avg_hours = mean(weekly_hours_list)
+                median_hours = median(weekly_hours_list)
+                min_hours = min(weekly_hours_list)
+                max_hours = max(weekly_hours_list)
+            else:
+                avg_hours = median_hours = min_hours = max_hours = 0.0
+
+            sum_missing_to_40 = sum(max(0.0, 40.0 - hours) for hours in weekly_hours_list)
+            sixth_day_count = sum(1 for days in days_by_driver.values() if len(days) >= 6)
+
+            phase2_status = stats.get("phase2_status")
+            if phase2_status is None:
+                warnings = validation.get("warnings", [])
+                if warnings:
+                    phase2_status = warnings[0].replace("Status: ", "")
+                elif validation.get("is_valid"):
+                    phase2_status = "HARD_OK"
+                else:
+                    phase2_status = "UNKNOWN"
+
+            driver_pool_size = len(drivers)
+            driver_cap = args.driver_cap
+            total_forecast_hours = compute_total_forecast_hours(tours)
+
+            print("\nREQUIRED KPIS (for comparison):")
+            print(f"phase2_status: {phase2_status}")
+            print(f"driver_cap: {driver_cap}")
+            print(f"driver_pool_size: {driver_pool_size}")
+            print(f"drivers_used: {drivers_used}")
+            print(f"assigned_hours_total: {assigned_hours_total:.2f}")
+            print(
+                "weekly_hours avg/median/min/max: "
+                f"{avg_hours:.2f}/{median_hours:.2f}/{min_hours:.2f}/{max_hours:.2f}"
+            )
+            print(f"sum_missing_to_40: {sum_missing_to_40:.2f}")
+            print(f"sixth_day_count: {sixth_day_count}")
+
+            def print_root_cause():
+                print("\nROOT-CAUSE DEBUG (cap violation or assertion):")
+                print("Effective config:")
+                print(f"  enable_phase2_cpsat: {config_overrides.get('enable_phase2_cpsat')}")
+                print(f"  enable_global_cpsat: {config_overrides.get('enable_global_cpsat')}")
+                print(f"  driver_cap: {driver_cap}")
+                print(f"  seed: {payload['run']['seed']}")
+                print(f"  workers: 1")
+                print("Phase2 path executed:")
+                print(f"  path_used: {stats.get('path_used')}")
+                print("Selected blocks entering Phase2:")
+                print(f"  selected_blocks: {stats.get('blocks_selected', len(assignments))}")
+                driver_sample = [d.get("id") for d in drivers[:5]]
+                if driver_sample:
+                    print(f"Driver pool sample (first 5): {driver_sample}")
+                    print(f"Driver pool range: {drivers[0]['id']}..{drivers[-1]['id']}")
+                print(f"assigned_hours_total: {assigned_hours_total:.2f}")
+                print(f"forecast_total_hours: {total_forecast_hours:.2f}")
+
+            if driver_cap is not None and drivers_used > driver_cap:
+                print_root_cause()
+                raise SystemExit(f"BUG: cap={driver_cap} but drivers_used={drivers_used}")
+
+            if total_forecast_hours > 0:
+                if abs(assigned_hours_total - total_forecast_hours) > 0.01 * total_forecast_hours:
+                    print_root_cause()
+                    raise SystemExit(
+                        "BUG: assigned_hours_total != forecast_total_hours (coverage/duplication)"
+                    )
             
         else:
             print(f"Failed to fetch plan: {plan_resp.status_code}")
