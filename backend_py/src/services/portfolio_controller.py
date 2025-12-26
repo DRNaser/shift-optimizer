@@ -371,6 +371,7 @@ def run_portfolio(
         block_time = perf_counter() - t_block
         
         log(f"Generated {len(blocks)} blocks in {block_time:.1f}s (profile={config.output_profile})")
+        log(f"Remaining budget after block build: {remaining():.1f}s")
         
         if METRICS_ENABLED:
             record_candidate_counts(block_stats)
@@ -391,6 +392,7 @@ def run_portfolio(
         log(f"Features: peakiness={features.peakiness_index:.2f}, "
             f"pool_pressure={features.pool_pressure}, "
             f"lower_bound={features.lower_bound_drivers}")
+        log(f"Remaining budget after profiling: {remaining():.1f}s")
         
         # ==========================================================================
         # PHASE 2: v5 FIXED SINGLE PATH (Set-Partitioning)
@@ -441,6 +443,7 @@ def run_portfolio(
         # S0.2: Log budget compliance
         if capacity_time > budget_slices.phase1 * 1.05:
             log(f"WARNING: Phase 1 overrun {capacity_time:.1f}s > {budget_slices.phase1:.1f}s")
+        log(f"Remaining budget after phase 1: {remaining():.1f}s")
         
         if phase1_stats["status"] != "OK":
             log(f"Phase 1 FAILED: {phase1_stats.get('error', 'Unknown error')}")
@@ -779,6 +782,9 @@ def _execute_path(
         "phase2_time": 0.0,
         "lns_time": 0.0,
     }
+
+    if remaining_fn:
+        log_fn(f"Budget remaining at path start: {remaining_fn():.1f}s")
     
     try:
         if path == PS.A:
@@ -844,6 +850,11 @@ def _execute_path(
             
             # S0.2: Use combined phase2 + lns budget for SP
             sp_budget = phase2_budget + lns_budget
+
+            if remaining_fn:
+                log_fn(
+                    f"SP budget={sp_budget:.1f}s, global_remaining={remaining_fn():.1f}s"
+                )
             
             # Use the global deadline passed from run_portfolio (absolute, not recomputed)
             sp_deadline = global_deadline  # Already absolute monotonic deadline
