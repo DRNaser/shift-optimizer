@@ -1,0 +1,33 @@
+{
+  "extraction_meta": {
+    "method_used": "kpi_dict"
+  },
+  "input": "C:\\Users\\n.zaher\\OneDrive - LTS Transport u. Logistik GmbH\\Desktop\\shift-optimizer\\forecast-test.txt",
+  "kpis": {
+    "coverage_ok": null,
+    "drivers_fte": 102,
+    "drivers_pt": 88,
+    "drivers_total": 190,
+    "extraction_meta": null,
+    "fte_avg": 47.29,
+    "fte_hours": NaN,
+    "fte_max": 49.5,
+    "fte_min": 40.5,
+    "fte_over55_count": 0,
+    "fte_p10": NaN,
+    "fte_p90": NaN,
+    "fte_stddev": NaN,
+    "fte_under40_count": 0,
+    "pt_hours": NaN,
+    "pt_share_hours": NaN,
+    "rest_violations": null,
+    "score": 1000022.5,
+    "total_hours": 6232.5
+  },
+  "reasons": [],
+  "runtime_s": 38.925,
+  "seed": 0,
+  "status": "PASS",
+  "time_budget": 60,
+  "validator_notes": []
+}

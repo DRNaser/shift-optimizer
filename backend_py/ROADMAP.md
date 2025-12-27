@@ -178,6 +178,18 @@ SINGLETON_COST = 100_000         # Penalty for 1-block rosters
     - Feature: **Greedy Fallback** when Generation stalls (Key to success).
 - [x] **Verified**: PT Share reduced from 81% -> 23.2%. Drivers 383 -> 191.
 
+### ✅ PT Balance Quality Gate Fixes (Erledigt - 2025-12-27)
+- [x] **Forecast Parsing**: Replaced fragile regex-based TSV parsing with robust `split()` approach.
+- [x] **Regex Escaping**: Fixed double-escaped patterns in `_to_minutes` and `_parse_time_range` helpers.
+- [x] **Object Conversion**: Fixed `_convert_tours_to_domain_objects` to correctly instantiate `Tour` objects with proper type conversions (`int` → `Weekday`/`time`).
+- [x] **KPI Extraction**: Adapted `compute_kpis` and `_iter_rosters` to handle `PortfolioResult` wrapper objects from `portfolio_controller`.
+- [x] **Deep-Scan Enhancement**: Implemented robust multi-source KPI extraction:
+    - `_deep_scan_hours_by_driver`: Scans for hours_by_driver maps
+    - `_deep_scan_rosters`: Scans for roster lists in multiple locations
+    - `_deep_scan_assignments`: Computes hours from assignment/shift lists
+    - Extraction metadata tracking (which path was used)
+    - `--debug-extract` flag for troubleshooting (writes `artifacts/extraction_debug.json`)
+
 ### Nächste Schritte
 - [ ] **Further PT Reduction**: Ziel < 10% (requires longer runtime or Swap-Builder improvement).
 - [ ] **Log-Rotation**: Konfigurieren.
@@ -193,7 +205,12 @@ cd backend_py
 # Business KPIs validieren
 python test_business_kpis.py
 
+# PT Balance Quality Gate (mit Deep-Scan Debug)
+cd ..
+python pt_balance_quality_gate.py --input forecast-test.txt --time-budget 120 --debug-extract
+
 # API starten
+cd backend_py
 python -m uvicorn src.main:app --reload
 
 # Import-Test
@@ -223,6 +240,7 @@ backend_py/
 │       ├── models.py           # Domain Models
 │       └── constraints.py      # Hard Constraints
 ├── test_business_kpis.py       # KPI Validation Script
+├── pt_balance_quality_gate.py  # ⭐ Quality Gate (Deep-Scan Enhanced)
 └── ROADMAP.md                  # ← DIESE DATEI
 ```
 
