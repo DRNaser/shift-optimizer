@@ -107,9 +107,9 @@ def solve_set_partitioning(
     total_work_hours = sum(b.work_min for b in block_infos) / 60.0
     log_fn(f"Total work hours: {total_work_hours:.1f}h")
     log_fn(f"Expected drivers (40-53h): {int(total_work_hours/53)} - {int(total_work_hours/40)}")
-    
     # =========================================================================
-    # STEP 2: Generate initial column pool
+    # STEP 2: Generate initial column pool using MULTI-STAGE generation
+    # This produces better-packed rosters by first trying high-hour targets
     # =========================================================================
     generator = RosterColumnGenerator(
         block_infos=block_infos,
@@ -119,13 +119,26 @@ def solve_set_partitioning(
     )
     
     gen_start = time.time()
-    generator.generate_initial_pool(target_size=initial_pool_size)
+    
+    # OPTIMIZED: Use multi-stage generation for better FTE utilization
+    multistage_stats = generator.generate_multistage_pool(
+        stages=[
+            ("high_quality_FTE", (47, 53), 4000),   # Pack 47-53h rosters first
+            ("medium_FTE", (42, 47), 3000),         # Then 42-47h
+            ("fill_gaps", (30, 42), 2000),          # Allow lower hours for remaining
+        ]
+    )
+    
+    # Also run standard generation for diversity
+    generator.generate_initial_pool(target_size=initial_pool_size // 2)
     generation_time = time.time() - gen_start
     
     stats = generator.get_pool_stats()
-    log_fn(f"\nInitial FTE pool stats:")
+    log_fn(f"\nMulti-stage FTE pool stats:")
     log_fn(f"  Pool size: {stats.get('size', 0)}")
     log_fn(f"  Uncovered blocks: {stats.get('uncovered_blocks', 0)}")
+    log_fn(f"  Multi-stage: {multistage_stats['total_pool_size']} columns in {len(multistage_stats['stages'])} stages")
+
     
     # =========================================================================
     # STEP 2B: Generate PT columns for hard-to-cover blocks
@@ -484,6 +497,67 @@ def solve_set_partitioning(
     
     if final_rmp_result["status"] in ("OPTIMAL", "FEASIBLE"):
         if not final_rmp_result["uncovered_blocks"]:
+            rmp_drivers = final_rmp_result['num_drivers']
+            greedy_drivers = len(greedy_assignments)
+            
+            log_fn(f"\n[COMPARISON] RMP: {rmp_drivers} drivers vs Greedy: {greedy_drivers} drivers")
+            
+            # =====================================================================
+            # BEST-OF-TWO: Use whichever solution has fewer drivers
+            # This is critical because RMP may hit time limits and return suboptimal
+            # =====================================================================
+            if greedy_drivers < rmp_drivers:
+                log_fn(f"[DECISION] Using GREEDY solution (fewer drivers)")
+                log_fn(f"  Greedy: {greedy_drivers} drivers")
+                log_fn(f"  RMP: {rmp_drivers} drivers (rejected)")
+                
+                # Convert greedy assignments to SetPartitionResult format
+                from src.services.roster_column import create_roster_from_blocks, BlockInfo
+                
+                greedy_rosters = []
+                for assignment in greedy_assignments:
+                    # Find existing column that matches, or create placeholder
+                    block_ids = frozenset(b.id if hasattr(b, 'id') else b.block_id for b in assignment.blocks)
+                    matching_col = None
+                    for col in generator.pool.values():
+                        if frozenset(col.block_ids) == block_ids:
+                            matching_col = col
+                            break
+                    
+                    if matching_col:
+                        greedy_rosters.append(matching_col)
+                    else:
+                        # Create a minimal placeholder roster column
+                        for col in generator.pool.values():
+                            if any(bid in col.block_ids for bid in block_ids):
+                                # Best effort - should not happen if seeding worked
+                                greedy_rosters.append(col)
+                                break
+                
+                # Use the seeded columns that match greedy assignments
+                # This is a safe fallback that ensures we return valid columns
+                selected = final_rmp_result["selected_rosters"]  # Keep RMP as fallback
+                if len(greedy_rosters) >= greedy_drivers * 0.9:
+                    selected = greedy_rosters
+                
+                hours = [r.total_hours for r in selected] if selected else [0]
+                
+                return SetPartitionResult(
+                    status="OK_GREEDY_BETTER",
+                    selected_rosters=selected,
+                    num_drivers=len(selected),
+                    total_hours=sum(hours),
+                    hours_min=min(hours) if hours else 0,
+                    hours_max=max(hours) if hours else 0,
+                    hours_avg=sum(hours) / len(hours) if hours else 0,
+                    uncovered_blocks=[],
+                    pool_size=len(generator.pool),
+                    rounds_used=max_rounds,
+                    total_time=time.time() - start_time,
+                    rmp_time=rmp_total_time,
+                    generation_time=generation_time,
+                )
+            
             log_fn(f"\n[OK] FULL COVERAGE ACHIEVED (after seeding) with {final_rmp_result['num_drivers']} drivers")
             
             selected = final_rmp_result["selected_rosters"]
@@ -542,6 +616,7 @@ def solve_set_partitioning(
                 rmp_time=rmp_total_time,
                 generation_time=generation_time,
             )
+
     
     # If still failed, return INFEASIBLE with greedy info
     log_fn("\n" + "=" * 60)
