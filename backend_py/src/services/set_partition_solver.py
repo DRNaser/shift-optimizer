@@ -458,9 +458,30 @@ def solve_set_partitioning(
     log_fn(f"Greedy result: {len(greedy_assignments)} drivers")
     
     # Seed the pool with greedy columns
-    seeded = generator.seed_from_greedy(greedy_assignments)
-    log_fn(f"Seeded {seeded} columns from greedy solution")
+    seeded_count = generator.seed_from_greedy(greedy_assignments)
+    log_fn(f"Seeded {seeded_count} columns from greedy solution")
     
+    # FAILURE RECOVERY: Collect the greedy columns to pass as HINTS
+    # This guarantees RMP starts with a feasible solution
+    greedy_hint_columns = []
+    pool_values = list(generator.pool.values())
+    
+    for assignment in greedy_assignments:
+        # Reconstruct block IDs for matching
+        block_ids = frozenset(b.id if hasattr(b, 'id') else b.block_id for b in assignment.blocks)
+        
+        # Find matching column in pool (it should exist now)
+        matching_col = None
+        for col in pool_values:
+            if frozenset(col.block_ids) == block_ids:
+                matching_col = col
+                break
+        
+        if matching_col:
+            greedy_hint_columns.append(matching_col)
+    
+    log_fn(f"Prepared {len(greedy_hint_columns)} hint columns for RMP warm-start")
+
     # =========================================================================
     # P1: SEEDING SANITY CHECK
     # Verify that seeded columns actually cover all blocks
@@ -482,9 +503,9 @@ def solve_set_partitioning(
     # NOTE: RMP retry disabled - goes straight to greedy fallback in caller
     # (The 120s RMP retry rarely succeeds and wastes time)
     
-    # Retry RMP with seeded pool
+    # Retry RMP with seeded pool AND hints
     log_fn("\n" + "=" * 60)
-    log_fn("RETRYING RMP WITH GREEDY-SEEDED POOL")
+    log_fn("RETRYING RMP WITH GREEDY-SEEDED POOL + HINTS")
     log_fn("=" * 60)
     
     columns = list(generator.pool.values())
@@ -495,7 +516,9 @@ def solve_set_partitioning(
         all_block_ids=all_block_ids,
         time_limit=rmp_time_limit,
         log_fn=log_fn,
+        hint_columns=greedy_hint_columns,  # CRITICAL FIX: Pass hints!
     )
+
     rmp_total_time += time.time() - rmp_retry_start
     
     if final_rmp_result["status"] in ("OPTIMAL", "FEASIBLE"):

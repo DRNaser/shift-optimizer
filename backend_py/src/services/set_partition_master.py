@@ -394,7 +394,7 @@ def solve_rmp(
         hints_added = 0
         for i, col in enumerate(columns):
             if col.roster_id in hint_ids:
-                solver.AddHint(y[i], 1)
+                model.AddHint(y[i], 1)
                 hints_added += 1
         log_fn(f"Added {hints_added} solver hints from warm-start")
     

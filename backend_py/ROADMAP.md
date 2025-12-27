@@ -237,8 +237,8 @@ SINGLETON_COST = 100_000         # Penalty for 1-block rosters
 - [x] **Early-Stop Threshold Tightened**: 5% → 2% PT share for quality optimization
 
 **Key Files Modified**:
-- `set_partition_solver.py`: RMP time limit, LNS default, early-stop threshold
-- `set_partition_master.py:solve_rmp()`: Added hint_columns parameter
+- `set_partition_solver.py`: RMP time limit, LNS default, early-stop threshold, **greedy hints**
+- `set_partition_master.py:solve_rmp()`: Added hint_columns parameter (using `model.AddHint`)
 - `roster_column_generator.py`: Singleton cap in add_column()
 
 **Test Command**:
