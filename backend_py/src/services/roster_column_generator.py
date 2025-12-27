@@ -108,11 +108,19 @@ class RosterColumnGenerator:
             return False  # Pool full
         
         # QUALITY: Hard-cap singleton columns to prevent pool pollution
+        # BUT: Allow singletons for blocks that have NO OTHER coverage (essential for feasibility)
         SINGLETON_CAP = 500
         if column.num_blocks == 1:
-            singleton_count = sum(1 for c in self.pool.values() if c.num_blocks == 1)
-            if singleton_count >= SINGLETON_CAP:
-                return False  # Singleton cap reached
+            # Check if this singleton covers a block that has no other coverage
+            block_id = list(column.block_ids)[0]
+            has_other_coverage = block_id in self.block_to_rosters and len(self.block_to_rosters[block_id]) > 0
+            
+            if has_other_coverage:
+                # Block is already covered by other columns - apply cap
+                singleton_count = sum(1 for c in self.pool.values() if c.num_blocks == 1)
+                if singleton_count >= SINGLETON_CAP:
+                    return False  # Singleton cap reached, and block has other coverage
+            # Else: Block has NO coverage - always allow this singleton for feasibility
         
         self.pool[column.signature] = column
         
@@ -121,6 +129,7 @@ class RosterColumnGenerator:
             self.block_to_rosters[block_id].add(column.signature)
         
         return True
+
     
     def get_pool_stats(self) -> dict:
         """Get statistics about the column pool."""
