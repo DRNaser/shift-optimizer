@@ -91,25 +91,34 @@ Test-Script `tests/reproduce_fallback_fte_bug.py` bestätigt:
 
 ---
 
-## 📊 Aktuelle KPIs (Stand: 2025-12-27, NACH FTE OPTIMIERUNG)
+## 📊 Aktuelle KPIs (Stand: 2025-12-27, NACH SOLVER OPTIMIZATION SUITE)
 
 ```
-Drivers: 100 FTE + 91 PT = 191 total
-FTE Hours: Min 40.5h, Avg 47.8h, Max 49.5h
-FTE Under 40h: 0 (0.0%) <- FIX VERIFIED!
+Drivers: 113 FTE + 76 PT = 189 total
+FTE Hours: Min 40.5h, Avg 45.2h, Max 49.5h
+FTE Under 40h: 0 (0.0%) ← FIX VERIFIED!
 FTE Over 55h: 0 (0.0%)
-PT Share: 23.2% of total 6232.5h (Massive reduction from ~80%)
+PT Share: 40.2% of drivers (76/189) - Reduction from 46.3% (88/190)
 Rest Violations: 0
-Method: Greedy Fallback + Forced RMP Iteration
+Method: Best-of-Two (RMP vs Greedy) + Multi-Stage Column Generation
 ```
+
+### KPI Improvement (2025-12-27 Optimization)
+| Metric | Before | After | Change |
+|--------|--------|-------|--------|
+| Total Drivers | 190 | **189** | -0.5% |
+| FTE Drivers | 102 | **113** | **+11%** ⬆️ |
+| PT Drivers | 88 | **76** | **-14%** ⬇️ |
+| PT Share | 46.3% | **40.2%** | -6.1pp |
 
 ### Ziel-KPIs
 
 ```
 FTE Hours: Min 40h, Avg 45-50h, Max 55h
 FTE Under 40h: 0 (0%)
-PT Share: So gering wie möglich (nur für nicht-kombinierbare Blöcke)
+PT Share: <10% (target, requires further optimization)
 ```
+
 
 ---
 
@@ -190,14 +199,38 @@ SINGLETON_COST = 100_000         # Penalty for 1-block rosters
     - Extraction metadata tracking (which path was used)
     - `--debug-extract` flag for troubleshooting (writes `artifacts/extraction_debug.json`)
 
+### ✅ Solver Optimization Suite (Erledigt - 2025-12-27)
+- [x] **Quick Wins**:
+    - Increased `anytime_budget`: 30s → 120s
+    - Increased `quality_time_budget`: 300s → 600s
+    - Tuned Column Generation: `max_rounds` 100→500, `pool_size` 5000→10000
+- [x] **Multi-Stage Column Generation**:
+    - Added `build_from_seed_targeted()` for hour-range specific generation
+    - Added `generate_multistage_pool()`: Stage 1 (47-53h), Stage 2 (42-47h), Stage 3 (30-42h)
+    - Integrated into `set_partition_solver.py`
+- [x] **Best-of-Two Comparison** (Key Fix):
+    - RMP often hits time limits, returning FEASIBLE (not OPTIMAL) with high PT
+    - Added comparison: if Greedy produces fewer drivers than RMP, use Greedy
+    - Returns `OK_GREEDY_BETTER` status when Greedy outperforms RMP
+- [x] **Swap Consolidation Post-Processing**:
+    - Added `swap_consolidation()` function in `set_partition_solver.py`
+    - Attempts to redistribute blocks to eliminate underutilized drivers
+- [x] **Time Budget Fix**:
+    - Fixed `pt_balance_quality_gate.py` to properly pass `time_budget` to `run_portfolio()`
+
 ### Nächste Schritte
-- [ ] **Further PT Reduction**: Ziel < 10% (requires longer runtime or Swap-Builder improvement).
-- [ ] **Log-Rotation**: Konfigurieren.
-- [ ] **Metrics/Tracing**: OpenTelemetry hinzufügen.
+- [ ] **Further PT Reduction**: Ziel <10% PT Share (currently 40.2%)
+    - Enable LNS Endgame: `enable_lns_low_hour_consolidation=True`
+    - Increase RMP time per round: 15s → 30-60s
+    - Improve column generation: focus on 45-50h rosters
+- [ ] **Hybrid Pipeline**: Parallel solver strategies (deferred)
+- [ ] **Log-Rotation**: Konfigurieren
+- [ ] **Metrics/Tracing**: OpenTelemetry hinzufügen
 
 ---
 
 ## 🧪 Test-Befehle
+
 
 ```powershell
 cd backend_py
