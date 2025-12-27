@@ -447,6 +447,172 @@ class RosterColumnGenerator:
         return new_columns
     
     # =========================================================================
+    # MOVE 4: TARGETED HOUR-RANGE GENERATION (NEW)
+    # =========================================================================
+    
+    def build_from_seed_targeted(
+        self,
+        seed_block_id: str,
+        target_hour_range: tuple[float, float] = (45, 50),
+        prioritize_uncovered: bool = True,
+    ) -> Optional[RosterColumn]:
+        """
+        Build a roster targeting a specific hour range.
+        
+        Used for multi-stage column generation:
+        - Stage 1: (45, 50) - high quality FTEs (packed rosters)
+        - Stage 2: (40, 45) - medium FTEs
+        - Stage 3: (35, 40) - allow lower hours
+        
+        Args:
+            seed_block_id: Block ID to start with
+            target_hour_range: (min_hours, max_hours) target
+            prioritize_uncovered: If True, prefer blocks not yet covered
+            
+        Returns:
+            Valid RosterColumn within target range or None
+        """
+        if seed_block_id not in self.block_by_id:
+            return None
+        
+        min_target_min = int(target_hour_range[0] * 60)
+        max_target_min = int(target_hour_range[1] * 60)
+        
+        seed_block = self.block_by_id[seed_block_id]
+        current_blocks = [seed_block]
+        current_minutes = seed_block.work_min
+        
+        # Get candidates (all blocks except seed)
+        candidates = [b for b in self.block_infos if b.block_id != seed_block_id]
+        
+        # Get coverage frequency for uncovered detection
+        coverage_freq = self.get_coverage_frequency()
+        
+        # Sort candidates: uncovered first, then by work_min to reach target fast
+        def sort_key(b: BlockInfo) -> tuple:
+            is_uncovered = coverage_freq.get(b.block_id, 0) == 0
+            conflict = self.conflict_scores.get(b.block_id, 0)
+            return (
+                0 if (prioritize_uncovered and is_uncovered) else 1,
+                -conflict,  # High conflict first (harder to cover)
+                -b.work_min,  # Longer blocks first (pack quickly)
+            )
+        
+        candidates = sorted(candidates, key=sort_key)
+        
+        # Greedily add blocks until target range reached
+        for cand in candidates:
+            # Stop if we've reached max target
+            if current_minutes >= max_target_min:
+                break
+            
+            # Skip if would exceed max hours
+            if current_minutes + cand.work_min > MAX_WEEK_MINUTES:
+                continue
+            
+            can_add, reason = can_add_block_to_roster(current_blocks, cand, current_minutes)
+            if can_add:
+                current_blocks.append(cand)
+                current_minutes += cand.work_min
+        
+        # Check if we reached minimum target
+        if current_minutes < min_target_min:
+            return None  # Failed to reach target range
+        
+        # Create and validate roster
+        roster = create_roster_from_blocks(
+            roster_id=self._get_next_roster_id(),
+            block_infos=current_blocks,
+        )
+        
+        return roster if roster.is_valid else None
+    
+    def generate_multistage_pool(
+        self,
+        stages: list[tuple[str, tuple[float, float], int]] = None,
+    ) -> dict:
+        """
+        Generate columns in multiple stages targeting different hour ranges.
+        
+        This produces better-packed rosters by first trying high-hour targets.
+        
+        Args:
+            stages: List of (stage_name, (min_h, max_h), target_count)
+                Default: [
+                    ("high_quality", (47, 53), 3000),
+                    ("medium", (42, 47), 2000),
+                    ("fill_gaps", (35, 42), 1000),
+                ]
+        
+        Returns:
+            Dict with per-stage statistics
+        """
+        if stages is None:
+            stages = [
+                ("high_quality", (47, 53), 3000),
+                ("medium", (42, 47), 2000),
+                ("fill_gaps", (35, 42), 1000),
+            ]
+        
+        self.log_fn("=" * 60)
+        self.log_fn("MULTI-STAGE COLUMN GENERATION")
+        self.log_fn("=" * 60)
+        
+        stats = {"stages": []}
+        
+        for stage_name, hour_range, target_count in stages:
+            stage_start = len(self.pool)
+            generated = 0
+            
+            self.log_fn(f"\nStage: {stage_name} ({hour_range[0]}-{hour_range[1]}h), target={target_count}")
+            
+            # Sort blocks by conflict score (hardest first)
+            sorted_blocks = sorted(
+                self.block_infos,
+                key=lambda b: -self.conflict_scores.get(b.block_id, 0)
+            )
+            
+            # Generate columns for this stage
+            for block in sorted_blocks:
+                if generated >= target_count:
+                    break
+                
+                column = self.build_from_seed_targeted(
+                    seed_block_id=block.block_id,
+                    target_hour_range=hour_range,
+                    prioritize_uncovered=True,
+                )
+                
+                if column and self.add_column(column):
+                    generated += 1
+            
+            stage_new = len(self.pool) - stage_start
+            uncovered = len(self.get_uncovered_blocks())
+            
+            self.log_fn(f"  Generated: {stage_new} columns, uncovered: {uncovered}")
+            
+            stats["stages"].append({
+                "name": stage_name,
+                "hour_range": hour_range,
+                "target": target_count,
+                "generated": stage_new,
+                "pool_size": len(self.pool),
+                "uncovered": uncovered,
+            })
+            
+            # Early exit if all blocks covered
+            if uncovered == 0:
+                self.log_fn(f"  All blocks covered! Stopping early.")
+                break
+        
+        stats["total_pool_size"] = len(self.pool)
+        stats["final_uncovered"] = len(self.get_uncovered_blocks())
+        
+        self.log_fn(f"\nMulti-stage complete: {stats['total_pool_size']} columns, {stats['final_uncovered']} uncovered")
+        
+        return stats
+    
+    # =========================================================================
     # INITIAL POOL GENERATION
     # =========================================================================
     

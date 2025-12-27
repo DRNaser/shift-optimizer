@@ -247,18 +247,29 @@ def _try_make_config(overrides_json: Optional[str]) -> Any:
     return cfg_obj
 
 
-def _call_entrypoint(fn: Any, tours_payload: Any, config: Any) -> Any:
+def _call_entrypoint(fn: Any, tours_payload: Any, config: Any, time_budget: float = 30.0, seed: int = 42) -> Any:
     sig = inspect.signature(fn)
     params = list(sig.parameters.values())
 
-    # (A) positional (tours, config)
+    # (A) Try with all expected parameters first
+    try:
+        return fn(
+            tours=tours_payload,
+            time_budget=time_budget,
+            seed=seed,
+            config=config,
+        )
+    except TypeError:
+        pass
+
+    # (B) positional (tours, config) - legacy
     try:
         if len(params) >= 2:
             return fn(tours_payload, config)
     except TypeError:
         pass
 
-    # (B) keyword variants
+    # (C) keyword variants
     kw = {}
     for name in ("tours", "tour_rows", "forecast_tours", "input_tours"):
         if name in sig.parameters:
@@ -268,12 +279,16 @@ def _call_entrypoint(fn: Any, tours_payload: Any, config: Any) -> Any:
         if name in sig.parameters:
             kw[name] = config
             break
+    if "time_budget" in sig.parameters:
+        kw["time_budget"] = time_budget
+    if "seed" in sig.parameters:
+        kw["seed"] = seed
     if kw:
         return fn(**kw)
 
-    # (C) single dict input
+    # (D) single dict input
     try:
-        run_input = {"tours": tours_payload, "config": config}
+        run_input = {"tours": tours_payload, "config": config, "time_budget": time_budget, "seed": seed}
         return fn(run_input)
     except TypeError:
         pass
@@ -282,6 +297,7 @@ def _call_entrypoint(fn: Any, tours_payload: Any, config: Any) -> Any:
         f"Could not call {fn.__module__}.{getattr(fn, '__name__', '<?>')} with known signatures. "
         f"Signature is {sig}."
     )
+
 
 
 def _convert_tours_to_domain_objects(tours: List[TourRow]) -> Any:
@@ -944,7 +960,9 @@ def main() -> int:
         return 2
 
     try:
-        result = _call_entrypoint(entry, tours_payload, config)
+        # Get time budget (default 30s, use 60s for quality runs)
+        time_budget = args.time_budget if args.time_budget else 60.0
+        result = _call_entrypoint(entry, tours_payload, config, time_budget=float(time_budget), seed=args.seed)
     except Exception as e:
         print(f"[ERROR] Pipeline execution failed: {e!r}", file=sys.stderr)
         return 2

@@ -99,7 +99,7 @@ class ConfigV4(NamedTuple):
     target_ftes: int = 145  # Hard target for FTE count (Phase 1 Goal)
     fte_overflow_cap: int = 10  # Soft limit for overflow
     fte_hours_target: float = 49.5  # Ideal hours for FTE packing
-    anytime_budget: float = 30.0  # Seconds for improvement phases
+    anytime_budget: float = 120.0  # OPTIMIZED: 30→120s for column generation quality
     
     # v5: Day cap for peak days (hard operational constraint)
     day_cap_hard: int = 220  # Maximum blocks per peak day (operational limit)
@@ -154,7 +154,7 @@ class ConfigV4(NamedTuple):
     # =========================================================================
     pass2_min_time_s: float = 15.0       # GUARANTEED minimum time for Pass-2 (Quality profile)
     quality_mode: bool = False           # If True, use QUALITY profile (longer budgets, guaranteed Pass-2)
-    quality_time_budget: float = 300.0   # Default time budget for QUALITY mode (5 min)
+    quality_time_budget: float = 600.0   # OPTIMIZED: 300→600s for quality mode (10 min)
     
     # =========================================================================
     # LNS ENDGAME: Low-Hour Pattern Consolidation (Set Partitioning)

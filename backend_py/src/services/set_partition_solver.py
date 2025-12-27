@@ -48,9 +48,9 @@ class SetPartitionResult:
 
 def solve_set_partitioning(
     blocks: list,
-    max_rounds: int = 100,
-    initial_pool_size: int = 5000,
-    columns_per_round: int = 200,
+    max_rounds: int = 500,  # OPTIMIZED: 100→500 for better convergence
+    initial_pool_size: int = 10000,  # OPTIMIZED: 5000→10000 for more diverse columns
+    columns_per_round: int = 300,  # OPTIMIZED: 200→300 for faster coverage
     rmp_time_limit: float = 15.0,
     seed: int = 42,
     log_fn=None,
@@ -937,3 +937,216 @@ def convert_rosters_to_assignments(
         ))
     
     return assignments
+
+
+# =============================================================================
+# SWAP CONSOLIDATION POST-PROCESSING
+# =============================================================================
+
+def swap_consolidation(
+    assignments: list,
+    blocks_lookup: dict = None,
+    max_iterations: int = 100,
+    min_hours_target: float = 42.0,
+    max_hours_target: float = 53.0,
+    log_fn=None,
+) -> tuple:
+    """
+    Post-processing: consolidate underutilized drivers through block swaps.
+    
+    Algorithm:
+    1. Identify low-hour drivers (<45h)
+    2. Identify high-hour drivers (>48h)
+    3. Try swapping blocks between them to:
+       a) Eliminate low-hour drivers entirely (give their blocks away)
+       b) Balance hours more evenly
+    4. Remove drivers with no blocks
+    
+    Args:
+        assignments: List of DriverAssignment objects
+        blocks_lookup: Dict mapping block_id -> Block object (for constraint checking)
+        max_iterations: Maximum swap iterations
+        min_hours_target: Soft minimum hours for FTE drivers
+        max_hours_target: Maximum hours constraint
+        log_fn: Logging function
+    
+    Returns:
+        (optimized_assignments, stats_dict)
+    """
+    from src.services.constraints import can_assign_block
+    
+    if log_fn is None:
+        log_fn = lambda msg: logger.info(msg)
+    
+    log_fn("=" * 60)
+    log_fn("SWAP CONSOLIDATION POST-PROCESSING")
+    log_fn("=" * 60)
+    
+    stats = {
+        "initial_drivers": len(assignments),
+        "initial_fte": sum(1 for a in assignments if a.driver_type == "FTE"),
+        "initial_pt": sum(1 for a in assignments if a.driver_type == "PT"),
+        "moves_attempted": 0,
+        "moves_successful": 0,
+        "drivers_eliminated": 0,
+    }
+    
+    if not assignments:
+        stats["final_drivers"] = 0
+        return assignments, stats
+    
+    # Build mutable state
+    driver_blocks = {a.driver_id: list(a.blocks) for a in assignments}
+    driver_types = {a.driver_id: a.driver_type for a in assignments}
+    
+    def compute_hours(blocks):
+        return sum(b.total_work_hours for b in blocks)
+    
+    def get_days(blocks):
+        return {b.day.value if hasattr(b.day, 'value') else str(b.day) for b in blocks}
+    
+    def can_receive_block(receiver_blocks, new_block, current_hours):
+        """Check if receiver can accept the block."""
+        new_hours = current_hours + new_block.total_work_hours
+        if new_hours > max_hours_target:
+            return False
+        
+        # Check day overlap
+        receiver_days = get_days(receiver_blocks)
+        block_day = new_block.day.value if hasattr(new_block.day, 'value') else str(new_block.day)
+        
+        # Check time overlap on same day
+        for rb in receiver_blocks:
+            rb_day = rb.day.value if hasattr(rb.day, 'value') else str(rb.day)
+            if rb_day == block_day:
+                # Check time overlap
+                if not (new_block.last_end <= rb.first_start or new_block.first_start >= rb.last_end):
+                    return False
+        
+        return True
+    
+    iterations = 0
+    progress = True
+    
+    while progress and iterations < max_iterations:
+        progress = False
+        iterations += 1
+        
+        # Get current driver hours
+        driver_hours = {did: compute_hours(blocks) for did, blocks in driver_blocks.items()}
+        
+        # Find low-hour FTE drivers (candidates for elimination)
+        low_hour_drivers = [
+            did for did, hours in driver_hours.items()
+            if hours < min_hours_target and driver_types.get(did) == "FTE" and driver_blocks[did]
+        ]
+        
+        # Find high-hour FTE drivers (can potentially give blocks away)
+        high_hour_drivers = [
+            did for did, hours in driver_hours.items()
+            if hours > 48.0 and driver_types.get(did) == "FTE" and driver_blocks[did]
+        ]
+        
+        # Sort low-hour by hours ascending (eliminate smallest first)
+        low_hour_drivers.sort(key=lambda d: driver_hours[d])
+        
+        for low_did in low_hour_drivers[:10]:  # Limit per iteration
+            low_blocks = driver_blocks.get(low_did, [])
+            if not low_blocks:
+                continue
+            
+            # Try to give all blocks to other drivers
+            blocks_to_move = list(low_blocks)
+            all_moved = True
+            
+            for block in blocks_to_move:
+                stats["moves_attempted"] += 1
+                
+                # Find best receiver (has room and can accept)
+                best_receiver = None
+                best_score = float('inf')
+                
+                # Consider all other FTE drivers as receivers
+                for other_did in driver_blocks:
+                    if other_did == low_did:
+                        continue
+                    if driver_types.get(other_did) != "FTE":
+                        continue
+                    
+                    other_blocks = driver_blocks[other_did]
+                    other_hours = driver_hours.get(other_did, 0)
+                    
+                    if can_receive_block(other_blocks, block, other_hours):
+                        # Score: prefer receivers that need hours
+                        new_hours = other_hours + block.total_work_hours
+                        distance_to_target = abs(new_hours - 49.5)  # Prefer ~49.5h
+                        
+                        if distance_to_target < best_score:
+                            best_score = distance_to_target
+                            best_receiver = other_did
+                
+                if best_receiver:
+                    # Move the block
+                    driver_blocks[low_did].remove(block)
+                    driver_blocks[best_receiver].append(block)
+                    driver_hours[best_receiver] = compute_hours(driver_blocks[best_receiver])
+                    stats["moves_successful"] += 1
+                    progress = True
+                else:
+                    all_moved = False
+            
+            # Check if driver is now empty
+            if not driver_blocks.get(low_did):
+                stats["drivers_eliminated"] += 1
+                log_fn(f"  Eliminated driver {low_did}")
+    
+    # Remove empty drivers
+    final_assignments = []
+    from src.services.forecast_solver_v4 import DriverAssignment, _analyze_driver_workload
+    
+    fte_count = 0
+    pt_count = 0
+    
+    for did in sorted(driver_blocks.keys()):
+        blocks = driver_blocks[did]
+        if not blocks:
+            continue
+        
+        dtype = driver_types[did]
+        total_hours = compute_hours(blocks)
+        days_worked = len(get_days(blocks))
+        
+        # Renumber drivers
+        if dtype == "PT":
+            pt_count += 1
+            new_id = f"PT{pt_count:03d}"
+        else:
+            fte_count += 1
+            new_id = f"FTE{fte_count:03d}"
+        
+        # Sort blocks
+        blocks.sort(key=lambda b: (
+            b.day.value if hasattr(b.day, 'value') else str(b.day),
+            b.first_start
+        ))
+        
+        final_assignments.append(DriverAssignment(
+            driver_id=new_id,
+            driver_type=dtype,
+            blocks=blocks,
+            total_hours=total_hours,
+            days_worked=days_worked,
+            analysis=_analyze_driver_workload(blocks),
+        ))
+    
+    stats["final_drivers"] = len(final_assignments)
+    stats["final_fte"] = sum(1 for a in final_assignments if a.driver_type == "FTE")
+    stats["final_pt"] = sum(1 for a in final_assignments if a.driver_type == "PT")
+    stats["iterations"] = iterations
+    
+    log_fn(f"Swap consolidation: {stats['initial_drivers']} -> {stats['final_drivers']} drivers")
+    log_fn(f"  Moves: {stats['moves_successful']}/{stats['moves_attempted']} successful")
+    log_fn(f"  Eliminated: {stats['drivers_eliminated']} drivers")
+    log_fn("=" * 60)
+    
+    return final_assignments, stats

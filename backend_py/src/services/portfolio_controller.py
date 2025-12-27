@@ -810,12 +810,12 @@ def _execute_path(
         log_fn(f"  Phase 2: Set Partitioning (budget={assignment_budget:.1f}s)...")
         t_assign = perf_counter()
         
-        # Run Set Partitioning solver
+        # Run Set Partitioning solver with OPTIMIZED parameters
         sp_result = solve_set_partitioning(
             blocks=selected_blocks,
-            max_rounds=100,
-            initial_pool_size=5000,
-            columns_per_round=200,
+            max_rounds=500,    # OPTIMIZED: 100→500 for better convergence
+            initial_pool_size=10000,  # OPTIMIZED: 5000→10000 for more diverse columns
+            columns_per_round=300,    # OPTIMIZED: 200→300 for faster coverage
             rmp_time_limit=min(15.0, assignment_budget / 3),
             seed=seed,
             log_fn=log_fn,
@@ -850,6 +850,18 @@ def _execute_path(
                     days_worked=len(roster.day_stats),
                 )
                 assignments.append(driver_assignment)
+            
+            # OPTIMIZED: Apply swap consolidation post-processing
+            from src.services.set_partition_solver import swap_consolidation
+            assignments, swap_stats = swap_consolidation(
+                assignments=assignments,
+                blocks_lookup={b.id: b for b in selected_blocks},
+                max_iterations=100,
+                min_hours_target=42.0,
+                max_hours_target=53.0,
+                log_fn=log_fn,
+            )
+            result["swap_stats"] = swap_stats
             
             result["assignments"] = assignments
             result["status"] = "OK"
