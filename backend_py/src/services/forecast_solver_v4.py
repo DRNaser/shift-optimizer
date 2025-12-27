@@ -167,14 +167,16 @@ class ConfigV4(NamedTuple):
     lns_max_attempts: int = 30                       # Maximum kill attempts
     
     # =========================================================================
-    # BLOCKGEN OVERRIDES (RELAXED for headcount reduction - v5.1)
+    # BLOCKGEN OVERRIDES (FIXED for proper zone separation - v6.2)
     # =========================================================================
-    block_gen_min_pause_minutes: int = 30               # Keep 30 min minimum
-    block_gen_max_pause_regular_minutes: int = 1440     # RELAXED: 60→1440 (24h)
-    block_gen_split_pause_min_minutes: int = 30         # RELAXED: 360→30 (flexible)
-    block_gen_split_pause_max_minutes: int = 1440       # RELAXED: 360→1440 (24h)
-    block_gen_max_daily_span_hours: float = 24.0        # RELAXED: 15.5→24 (unlimited)
-    block_gen_max_spread_split_minutes: int = 1440      # RELAXED: 840→1440 (24h)
+    # ZONE LOGIC: Regular (30-90min) | Gap (91-239min forbidden) | Split (240-480min)
+    block_gen_min_pause_minutes: int = 30               # 30 min minimum pause
+    block_gen_max_pause_regular_minutes: int = 90       # FIXED: Was 1440. Now 90min max for regular
+    block_gen_split_pause_min_minutes: int = 240        # FIXED: Was 30. Now 4h for split
+    block_gen_split_pause_max_minutes: int = 480        # FIXED: Was 1440. Now 8h max for split
+    block_gen_max_daily_span_hours: float = 14.0        # FIXED: Was 24. Now 14h for realistic shifts
+    block_gen_max_spread_split_minutes: int = 840       # FIXED: Was 1440. Now 14h max spread
+
     
     # Anti-Overlap Diversification
     hot_tour_penalty_alpha: float = 0.0                # Default 0.0 = disabled

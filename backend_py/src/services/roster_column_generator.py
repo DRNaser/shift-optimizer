@@ -258,6 +258,82 @@ class RosterColumnGenerator:
             for bid, sigs in self.block_to_rosters.items()
         }
     
+    def get_quality_coverage(self) -> dict:
+        """
+        Compute QUALITY coverage metrics.
+        
+        Returns dict with:
+        - covered_by_fte: blocks covered by at least one FTE-grade column (>=40h)
+        - covered_by_multi_block: blocks covered by at least one non-singleton column
+        - covered_by_fte_ratio: ratio of blocks with FTE coverage
+        - covered_by_multi_ratio: ratio of blocks with multi-block coverage
+        - total_blocks: total block count
+        
+        Key insight: "covered by singleton" is NOT quality coverage.
+        """
+        all_blocks = set(self.block_by_id.keys())
+        covered_by_fte = set()
+        covered_by_multi = set()
+        
+        for col in self.pool.values():
+            is_fte = col.total_hours >= 40.0
+            is_multi = col.num_blocks >= 2
+            
+            for bid in col.block_ids:
+                if is_fte:
+                    covered_by_fte.add(bid)
+                if is_multi:
+                    covered_by_multi.add(bid)
+        
+        total = len(all_blocks)
+        
+        return {
+            "covered_by_fte": len(covered_by_fte),
+            "covered_by_multi_block": len(covered_by_multi),
+            "covered_by_fte_ratio": len(covered_by_fte) / total if total > 0 else 0,
+            "covered_by_multi_ratio": len(covered_by_multi) / total if total > 0 else 0,
+            "total_blocks": total,
+            "fte_uncovered": [bid for bid in all_blocks if bid not in covered_by_fte],
+        }
+    
+    def get_pool_stats(self) -> dict:
+        """
+        Compute pool quality statistics for instrumentation.
+        
+        Returns dict with:
+        - pool_total: total columns
+        - pool_fte_band: columns with 42-53h (ideal FTE range)
+        - pool_near_fte: columns with 38-42h (near FTE, consolidation candidates)
+        - pool_pt_low: columns with <38h (PT quality)
+        - pool_singletons: columns with only 1 block
+        """
+        pool_total = len(self.pool)
+        pool_fte_band = 0
+        pool_near_fte = 0
+        pool_pt_low = 0
+        pool_singletons = 0
+        
+        for col in self.pool.values():
+            hours = col.total_hours
+            
+            if col.num_blocks == 1:
+                pool_singletons += 1
+            
+            if 42.0 <= hours <= 53.0:
+                pool_fte_band += 1
+            elif 38.0 <= hours < 42.0:
+                pool_near_fte += 1
+            elif hours < 38.0:
+                pool_pt_low += 1
+        
+        return {
+            "pool_total": pool_total,
+            "pool_fte_band": pool_fte_band,
+            "pool_near_fte": pool_near_fte,
+            "pool_pt_low": pool_pt_low,
+            "pool_singletons": pool_singletons,
+        }
+    
     def get_rare_blocks(self, min_coverage: int = 5) -> list[str]:
         """Get blocks with coverage < min_coverage, sorted by rarity (lowest first)."""
         freq = self.get_coverage_frequency()
@@ -268,6 +344,7 @@ class RosterColumnGenerator:
         ]
         rare.sort(key=lambda x: x[1])
         return [bid for bid, _ in rare]
+
     
     def targeted_repair(
         self,
@@ -589,7 +666,13 @@ class RosterColumnGenerator:
             stage_new = len(self.pool) - stage_start
             uncovered = len(self.get_uncovered_blocks())
             
+            # Compute QUALITY coverage (not just "any coverage")
+            quality_cov = self.get_quality_coverage()
+            fte_ratio = quality_cov["covered_by_fte_ratio"]
+            multi_ratio = quality_cov["covered_by_multi_ratio"]
+            
             self.log_fn(f"  Generated: {stage_new} columns, uncovered: {uncovered}")
+            self.log_fn(f"  Quality: FTE coverage={fte_ratio:.1%}, multi-block={multi_ratio:.1%}")
             
             stats["stages"].append({
                 "name": stage_name,
@@ -598,19 +681,34 @@ class RosterColumnGenerator:
                 "generated": stage_new,
                 "pool_size": len(self.pool),
                 "uncovered": uncovered,
+                "fte_coverage_ratio": fte_ratio,
+                "multi_block_ratio": multi_ratio,
             })
             
-            # Early exit if all blocks covered
-            if uncovered == 0:
-                self.log_fn(f"  All blocks covered! Stopping early.")
+            # FIXED: Early exit only when QUALITY coverage is high
+            # "Covered by singleton" is NOT quality coverage!
+            if fte_ratio >= 0.95 and multi_ratio >= 0.90:
+                self.log_fn(f"  [OK] High quality coverage! FTE={fte_ratio:.1%}, multi={multi_ratio:.1%}")
+                self.log_fn(f"  Stopping early with quality guarantee.")
                 break
+            elif uncovered == 0 and fte_ratio < 0.95:
+                self.log_fn(f"  [WARN] All blocks covered but FTE ratio only {fte_ratio:.1%}")
+                self.log_fn(f"  Continuing to generate more FTE-quality columns...")
+        
+        # Log final pool stats
+        pool_stats = self.get_pool_stats()
+        quality_cov = self.get_quality_coverage()
         
         stats["total_pool_size"] = len(self.pool)
         stats["final_uncovered"] = len(self.get_uncovered_blocks())
+        stats["final_fte_ratio"] = quality_cov["covered_by_fte_ratio"]
+        stats["pool_stats"] = pool_stats
         
         self.log_fn(f"\nMulti-stage complete: {stats['total_pool_size']} columns, {stats['final_uncovered']} uncovered")
+        self.log_fn(f"Pool quality: FTE-band={pool_stats['pool_fte_band']}, singletons={pool_stats['pool_singletons']}")
         
         return stats
+
     
     # =========================================================================
     # INITIAL POOL GENERATION

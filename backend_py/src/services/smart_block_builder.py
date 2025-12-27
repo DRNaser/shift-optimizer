@@ -123,16 +123,23 @@ class BlockGenOverrides:
     """
     S1.5: Overridable block generation parameters.
     All values default to HARD_CONSTRAINTS if not specified.
-    RELAXED: Updated to use flexible limits for headcount reduction.
+    
+    ZONE LOGIC (in _build_adjacency):
+    - Zone 1 (Regular): min_pause <= gap <= max_pause_regular  → 2er_regular
+    - Zone 2 (Split):   split_pause_min <= gap <= split_pause_max → 2er_split
+    - Gaps outside both zones are FORBIDDEN
+    
+    IMPORTANT: Zones must NOT overlap! Regular < Split.
     """
-    min_pause_minutes: int = HARD_CONSTRAINTS.MIN_PAUSE_BETWEEN_TOURS  # 30 (keep)
-    max_pause_regular_minutes: int = 1440  # 1440 (relaxed)
-    split_pause_min_minutes: int = 30  # 30 (relaxed)
-    split_pause_max_minutes: int = 1440  # 1440 (relaxed)
-    max_daily_span_hours: float = 24.0  # 24.0 (relaxed)
-    max_spread_split_minutes: int = 1440  # 1440 (relaxed)
+    min_pause_minutes: int = HARD_CONSTRAINTS.MIN_PAUSE_BETWEEN_TOURS  # 30 min
+    max_pause_regular_minutes: int = 90   # FIXED: Was 1440 (overlapped split). Now 30-90min
+    split_pause_min_minutes: int = 240    # FIXED: Was 30. Now 4h (240min) for morning+evening
+    split_pause_max_minutes: int = 480    # FIXED: Was 1440. Now 8h (480min) max split
+    max_daily_span_hours: float = 14.0    # 14h max span for split blocks
+    max_spread_split_minutes: int = 840   # 14h max spread for split blocks
     enable_split_blocks: bool = True
-    hot_tour_penalty_alpha: float = 0.0  # Anti-overlap penalty (0 = disabled)
+    hot_tour_penalty_alpha: float = 0.0   # Anti-overlap penalty (0 = disabled)
+
     
     def to_log_dict(self) -> dict:
         """Return loggable dict of override values."""
