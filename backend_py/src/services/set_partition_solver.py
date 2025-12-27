@@ -150,8 +150,8 @@ def solve_set_partitioning(
     
     stats = generator.get_pool_stats()
     log_fn(f"\nPool after PT generation:")
-    log_fn(f"  Pool size: {stats.get('size', 0)} ({pt_count} PT columns)")
-    log_fn(f"  Uncovered blocks: {stats.get('uncovered_blocks', 0)}")
+    log_fn(f"  Pool size: {stats.get('pool_total', 0)} ({pt_count} PT columns)")
+    log_fn(f"  Uncovered blocks: {len(generator.get_uncovered_blocks())}")
     
     # =========================================================================
     # STEP 2C: Generate SINGLETON columns (Feasibility Net)
@@ -162,11 +162,12 @@ def solve_set_partitioning(
     generation_time += time.time() - singleton_start
     
     stats = generator.get_pool_stats()
+    pool_size = stats.get('pool_total', 0)
     log_fn(f"\nPool after singleton fallback:")
-    log_fn(f"  Pool size: {stats.get('size', 0)} (+{singleton_count} singleton)")
-    log_fn(f"  Uncovered blocks: {stats.get('uncovered_blocks', 0)}")
+    log_fn(f"  Pool size: {pool_size} (+{singleton_count} singleton)")
+    log_fn(f"  Uncovered blocks: {len(generator.get_uncovered_blocks())}")
     
-    if stats.get('size', 0) == 0:
+    if pool_size == 0:
         log_fn("ERROR: Could not generate any valid columns!")
         return SetPartitionResult(
             status="FAILED_NO_COLUMNS",
