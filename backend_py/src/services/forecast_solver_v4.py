@@ -180,12 +180,14 @@ class ConfigV4(NamedTuple):
     hot_tour_penalty_alpha: float = 0.0                # Default 0.0 = disabled
     
     # =========================================================================
-    # FIXED FTE POOL STRATEGY (v5.2 - 150 FTE Fix Pool)
+    # DEPRECATED: FIXED FTE POOL STRATEGY (Removed in v6.0)
+    # The Set Partitioning solver now handles FTE/PT mix organically via cost.
+    # These fields are kept for backwards compatibility but are no longer used.
     # =========================================================================
-    use_fixed_fte_pool: bool = False      # Default False: Fix pool logic is opt-in (causes high PT count currently)
-    num_fte_pool: int = 150               # Fixed FTE pool size
-    fte_min_hours: float = 40.0           # FTE minimum hours (< 40h becomes PT)
-    fte_max_hours: float = 55.0           # FTE maximum hours (hard limit)
+    use_fixed_fte_pool: bool = False      # DEPRECATED: No longer used
+    num_fte_pool: int = 150               # DEPRECATED: No longer used
+    fte_min_hours: float = 40.0           # DEPRECATED: No longer used
+    fte_max_hours: float = 55.0           # DEPRECATED: No longer used
 
 
 # =============================================================================
@@ -3170,25 +3172,15 @@ def solve_forecast_v4(
         )
     
     # ======================================================================
-    # PHASE 2: DRIVER ASSIGNMENT
+    # PHASE 2: DRIVER ASSIGNMENT (v6.0 - Greedy only, deprecated modes removed)
     # ======================================================================
     if config.solver_mode == "HEURISTIC":
-        logger.info(f"PHASE 2: Anytime Heuristic Solver (Target FTEs: {config.target_ftes})")
-        from src.services.heuristic_solver import HeuristicSolver
-        
-        solver = HeuristicSolver(selected_blocks, config)
-        assignments, phase2_stats = solver.solve()
-        
-    elif config.enable_global_cpsat and len(selected_blocks) <= config.global_cpsat_block_threshold:
-        # Global CP-SAT Phase 2B is currently disabled by default (enable_global_cpsat=False)
-        # This branch requires a greedy pre-solve to warm-start, which we skip for now.
-        logger.warning("Global CP-SAT Phase 2B requested but not fully implemented - using greedy fallback")
-        logger.info(f"Skipping global CP-SAT Phase 2B (enabled={config.enable_global_cpsat}, blocks={len(selected_blocks)})")
-        assignments, phase2_stats = assign_drivers_greedy(selected_blocks, config)
-    else:
-        # Skip global CP-SAT (disabled or problem too large)
-        logger.info(f"Skipping global CP-SAT Phase 2B (enabled={config.enable_global_cpsat}, blocks={len(selected_blocks)}, threshold={config.global_cpsat_block_threshold})")
-        assignments, phase2_stats = assign_drivers_greedy(selected_blocks, config)
+        # v6.0: heuristic_solver.py was deleted - fall back to greedy
+        logger.warning("HEURISTIC solver mode is deprecated (v6.0). Using greedy assignment.")
+    
+    # v6.0: Greedy assignment is the only Phase 2 path
+    logger.info(f"PHASE 2: Driver Assignment (Greedy) - blocks={len(selected_blocks)}")
+    assignments, phase2_stats = assign_drivers_greedy(selected_blocks, config)
     
     # Determine status
     fte_count = phase2_stats["drivers_fte"]
@@ -3201,64 +3193,62 @@ def solve_forecast_v4(
         logger.info(f"Note: {under_count} FTE drivers have < {config.min_hours_per_fte}h (informational)")
 
     # ======================================================================
-    # v5.2: 150-FTE FIXED POOL - Reclassify FTE < 40h to PT
+    # v6.0: ALWAYS Reclassify FTE < 40h to PT (Critical fix)
+    # NOTE: The old `use_fixed_fte_pool` flag was deprecated and defaulted False.
+    # This reclassification is now ALWAYS applied to ensure FTE >= 40h invariant.
     # ======================================================================
-    if config.use_fixed_fte_pool:
-        logger.info(f"\n{'='*60}")
-        logger.info("v5.2: FIXED FTE POOL - Reclassifying underfull FTEs")
-        logger.info(f"{'='*60}")
-        
-        fte_min = config.fte_min_hours
-        fte_before = sum(1 for a in assignments if a.driver_type == "FTE")
-        pt_before = sum(1 for a in assignments if a.driver_type == "PT")
-        
-        # Find FTE < fte_min_hours and reclassify to PT
-        new_assignments = []
-        reclassified_count = 0
-        pt_counter = pt_before + 1
-        
-        for a in assignments:
-            if a.driver_type == "FTE" and a.total_hours < fte_min:
-                # Reclassify as PT
-                reclassified_count += 1
-                new_a = DriverAssignment(
-                    driver_id=f"PT_{pt_counter:03d}",
-                    driver_type="PT",
-                    blocks=a.blocks,
-                    total_hours=a.total_hours,
-                    days_worked=a.days_worked,
-                    analysis=a.analysis,
-                )
-                new_assignments.append(new_a)
-                pt_counter += 1
-                logger.info(f"  {a.driver_id} ({a.total_hours:.1f}h) -> PT_{pt_counter-1:03d}")
-            else:
-                new_assignments.append(a)
-        
-        assignments = new_assignments
-        
-        fte_after = sum(1 for a in assignments if a.driver_type == "FTE")
-        pt_after = sum(1 for a in assignments if a.driver_type == "PT")
-        
-        logger.info(f"Reclassified: {reclassified_count} FTE -> PT")
-        logger.info(f"Before: {fte_before} FTE + {pt_before} PT = {fte_before + pt_before}")
-        logger.info(f"After:  {fte_after} FTE + {pt_after} PT = {fte_after + pt_after}")
-        
-        # Update phase2_stats
-        phase2_stats["drivers_fte"] = fte_after
-        phase2_stats["drivers_pt"] = pt_after
-        phase2_stats["reclassified_fte_to_pt"] = reclassified_count
-        
-        # Recalculate FTE stats (only count real FTEs now)
-        fte_only = [a for a in assignments if a.driver_type == "FTE" and a.blocks]
-        if fte_only:
-            phase2_stats["fte_hours_min"] = min(a.total_hours for a in fte_only)
-            phase2_stats["fte_hours_max"] = max(a.total_hours for a in fte_only)
-            phase2_stats["fte_hours_avg"] = sum(a.total_hours for a in fte_only) / len(fte_only)
-            phase2_stats["under_hours_count"] = sum(1 for a in fte_only if a.total_hours < fte_min)
-        
-        fte_count = fte_after
+    logger.info(f"Reclassifying underfull FTEs (<40h) to PT...")
     
+    fte_min = config.fte_min_hours
+    fte_before = sum(1 for a in assignments if a.driver_type == "FTE")
+    pt_before = sum(1 for a in assignments if a.driver_type == "PT")
+    
+    # Find FTE < fte_min_hours and reclassify to PT
+    new_assignments = []
+    reclassified_count = 0
+    pt_counter = pt_before + 1
+    
+    for a in assignments:
+        if a.driver_type == "FTE" and a.total_hours < fte_min:
+            # Reclassify as PT
+            reclassified_count += 1
+            new_a = DriverAssignment(
+                driver_id=f"PT_{pt_counter:03d}",
+                driver_type="PT",
+                blocks=a.blocks,
+                total_hours=a.total_hours,
+                days_worked=a.days_worked,
+                analysis=a.analysis,
+            )
+            new_assignments.append(new_a)
+            pt_counter += 1
+            logger.info(f"  {a.driver_id} ({a.total_hours:.1f}h) -> PT_{pt_counter-1:03d}")
+        else:
+            new_assignments.append(a)
+    
+    assignments = new_assignments
+    
+    fte_after = sum(1 for a in assignments if a.driver_type == "FTE")
+    pt_after = sum(1 for a in assignments if a.driver_type == "PT")
+    
+    logger.info(f"Reclassified: {reclassified_count} FTE -> PT")
+    logger.info(f"Before: {fte_before} FTE + {pt_before} PT = {fte_before + pt_before}")
+    logger.info(f"After:  {fte_after} FTE + {pt_after} PT = {fte_after + pt_after}")
+    
+    # Update phase2_stats
+    phase2_stats["drivers_fte"] = fte_after
+    phase2_stats["drivers_pt"] = pt_after
+    phase2_stats["reclassified_fte_to_pt"] = reclassified_count
+    
+    # Recalculate FTE stats (only count real FTEs now)
+    fte_only = [a for a in assignments if a.driver_type == "FTE" and a.blocks]
+    if fte_only:
+        phase2_stats["fte_hours_min"] = min(a.total_hours for a in fte_only)
+        phase2_stats["fte_hours_max"] = max(a.total_hours for a in fte_only)
+        phase2_stats["fte_hours_avg"] = sum(a.total_hours for a in fte_only) / len(fte_only)
+        phase2_stats["under_hours_count"] = sum(1 for a in fte_only if a.total_hours < fte_min)
+    
+    fte_count = fte_after
 
     # KPIs
     kpi = {
@@ -3463,39 +3453,21 @@ def _analyze_driver_workload(blocks: list[Block]) -> dict:
 
 
 # =============================================================================
-# FTE-ONLY GLOBAL CP-SAT SOLVER
+# NOTE: solve_forecast_fte_only was removed in v6.0 (2025-12-27)
+# It depended on deleted modules: cpsat_global_assigner, model_strip_test
+# v6.0 uses Set-Partitioning via portfolio_controller.py -> set_partition_solver.py
 # =============================================================================
 
-def solve_forecast_fte_only(
-    tours: list[Tour],
-    time_limit_feasible: float = 60.0,
-    time_limit_optimize: float = 300.0,
-    seed: int = 42,
-) -> SolveResultV4:
-    """
-    Solve forecast with GLOBAL CP-SAT FTE-only assignment.
-    
-    Guarantees:
-    - PT = 0 (all drivers are FTE)
-    - All drivers have 42-53h/week
-    - Minimizes total driver count (target: 118-148 for ~6200h work)
-    """
-    from src.services.cpsat_global_assigner import (
-        solve_global_cpsat, 
-        GlobalAssignConfig, 
-        blocks_to_assign_info
-    )
-    
-    logger.info("=" * 70)
-    logger.info("FORECAST SOLVER - FTE-ONLY GLOBAL CP-SAT")
-    logger.info("=" * 70)
-    logger.info(f"Tours: {len(tours)}")
-    
-    total_hours = sum(t.duration_hours for t in tours)
-    logger.info(f"Total hours: {total_hours:.1f}h")
-    logger.info(f"Expected drivers: {int(total_hours/53)}-{int(total_hours/42)}")
-    
-    config = ConfigV4(seed=seed)
+
+# =============================================================================
+# SET-PARTITIONING SOLVER
+# =============================================================================
+
+
+
+
+
+
     
     # Phase A: Build blocks with overrides from config
     t_block = perf_counter()

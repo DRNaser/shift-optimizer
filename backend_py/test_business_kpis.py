@@ -151,7 +151,7 @@ def assess_launch_readiness(kpis, rest_check):
             "passed": kpis["pt_share_hours"] <= 0.15,
             "critical": True,
             "value": kpis["pt_share_hours_pct"],
-            "target": "≤15%",
+            "target": "<=15%",
         },
         "rest_11h_compliant": {
             "passed": rest_check["compliant"],
@@ -201,18 +201,23 @@ def main():
     print()
     
     # Run solver
-    from src.services.forecast_solver_v4 import solve_forecast_v4
+    # Run solver (Full Pipeline via Portfolio Controller)
+    from src.services.portfolio_controller import run_portfolio
     
-    config = ConfigV4(
-        seed=42,
-        num_workers=1,
-        time_limit_phase1=20.0,
-        time_limit_phase2=40.0,
+    # Config is handled internally by run_portfolio, but we can pass seed
+    print("Running solver (Full Pipeline with Set-Partitioning, seed=42)...")
+    
+    # Determine appropriate time budget for quality run
+    # Set Partitioning needs enough time
+    portfolio_result = run_portfolio(
+        tours, 
+        time_budget=60.0,
+        seed=42
     )
     
-    print("Running solver (seed=42)...")
-    result = solve_forecast_v4(tours, config)
+    result = portfolio_result.solution
     print(f"Status: {result.status}")
+    print(f"Algorithm: {portfolio_result.initial_path}")
     print()
     
     # Extract KPIs
@@ -252,7 +257,7 @@ def main():
             print(f"    End {v['end_day1']} → Start {v['start_day2']}")
             print(f"    Rest: {v['rest_hours']}h (missing {v['violation_minutes']} min)")
     else:
-        print("✅ ALL CHECKS PASSED - 11h rest compliant!")
+        print("[OK] ALL CHECKS PASSED - 11h rest compliant!")
     print()
     
     # Assess launch readiness
@@ -261,19 +266,19 @@ def main():
     print("=" * 70)
     assessment = assess_launch_readiness(kpis, rest_check)
     
-    print(f"Launch Ready: {'✅ YES' if assessment['launch_ready'] else '❌ NO'}")
+    print(f"Launch Ready: {'[YES]' if assessment['launch_ready'] else '[NO]'}")
     print()
     
     for gate_name, gate in assessment['gates'].items():
-        status = "✅" if gate['passed'] else "❌"
-        critical = "[CRITICAL]" if gate['critical'] else "[SOFT]"
+        status = "[PASS]" if gate['passed'] else "[FAIL]"
+        critical = "(CRITICAL)" if gate.get('critical') else ""
         print(f"{status} {critical} {gate_name}: {gate['value']} (target: {gate['target']})")
     
     print()
     if assessment['recommendations']:
         print("Recommendations:")
         for rec in assessment['recommendations']:
-            print(f"  {rec}")
+            print(f"  {rec.encode('ascii', 'ignore').decode('ascii')}")
     
     # Save results
     output = {

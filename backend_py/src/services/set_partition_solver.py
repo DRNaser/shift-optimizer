@@ -265,78 +265,100 @@ def solve_set_partitioning(
                         log_fn(f"  Status: {lns_result['status']} - using original solution")
                         log_fn(f"{'='*60}")
                 
-                return SetPartitionResult(
-                    status="OK",
-                    selected_rosters=selected,
-                    num_drivers=len(selected),
-                    total_hours=sum(hours),
-                    hours_min=min(hours) if hours else 0,
-                    hours_max=max(hours) if hours else 0,
-                    hours_avg=sum(hours) / len(hours) if hours else 0,
-                    uncovered_blocks=[],
-                    pool_size=len(generator.pool),
-                    rounds_used=round_num,
-                    total_time=time.time() - start_time,
-                    rmp_time=rmp_total_time,
-                    generation_time=generation_time,
-                )
+                def create_result(rosters, status_code):
+                    return SetPartitionResult(
+                        status=status_code,
+                        selected_rosters=rosters,
+                        num_drivers=len(rosters),
+                        total_hours=sum(r.total_hours for r in rosters),
+                        hours_min=min(r.total_hours for r in rosters) if rosters else 0,
+                        hours_max=max(r.total_hours for r in rosters) if rosters else 0,
+                        hours_avg=sum(r.total_hours for r in rosters) / len(rosters) if rosters else 0,
+                        uncovered_blocks=[],
+                        pool_size=len(generator.pool),
+                        rounds_used=round_num,
+                        total_time=time.time() - start_time,
+                        rmp_time=rmp_total_time,
+                        generation_time=generation_time,
+                    )
+                
+                # =================================================================
+                # CHECK QUALITY: If too many PT drivers, DO NOT STOP!
+                # =================================================================
+                num_pt = sum(1 for r in selected if r.total_hours < 40.0)
+                pt_ratio = num_pt / len(selected) if selected else 0
+                
+                # Heuristic: Stop if PT < 5% or we are stagnating
+                if num_pt <= len(selected) * 0.05 or rounds_without_progress > 10:
+                     log_fn(f"\n[OK] Stopping with {num_pt} PT drivers ({pt_ratio:.1%} share)")
+                     return create_result(selected, "OK")
+                
+                log_fn(f"\n[CONT] Full coverage but {num_pt} PT drivers ({pt_ratio:.1%} share) - Optimization continuing...")
+                log_fn(f"      Targeting blocks covered by PT drivers for better consolidation")
+                
+                # Identify blocks covered by PTs to target them for repair
+                pt_blocks = []
+                for r in selected:
+                     if r.total_hours < 40.0:
+                         pt_blocks.extend(r.block_ids)
+                
+                # Override under_blocks for the generation phase
+                # We skip solve_relaxed_rmp since we are feasible
+                under_blocks = pt_blocks
+                over_blocks = []
+                
+                # Jump to generation
+                goto_generation = True
             else:
-                log_fn(f"RMP feasible but {len(rmp_result['uncovered_blocks'])} blocks uncovered")
-                best_result = rmp_result
+                 log_fn(f"RMP feasible but {len(rmp_result['uncovered_blocks'])} blocks uncovered")
+                 best_result = rmp_result
+                 goto_generation = False
+        else:
+             goto_generation = False
         
         # =====================================================================
         # RMP INFEASIBLE or has uncovered -> use RELAXED RMP for diagnosis
         # =====================================================================
-        relaxed = solve_relaxed_rmp(
-            columns=columns,
-            all_block_ids=all_block_ids,
-            time_limit=10.0,  # Strict diagnostic limit
-            log_fn=log_fn,
-        )
+        # Initialize variables to avoid UnboundLocalError
+        under_count = 0
+        over_count = 0
+        under_blocks = []
+        over_blocks = []
         
-        # FIX: Gate progress tracking on solver status
-        relaxed_status = relaxed.get("status", "UNKNOWN")
-        log_fn(f"Relaxed RMP Status: {relaxed_status}")
-        
-        # Initialize variables for all paths
-        under_count = relaxed.get("under_count", 0)
-        over_count = relaxed.get("over_count", 0)
-        under_blocks = relaxed.get("under_blocks", [])
-        over_blocks = relaxed.get("over_blocks", [])
-        
-        if relaxed_status not in ("OPTIMAL", "FEASIBLE"):
-            # UNKNOWN/INFEASIBLE: Check if we have an incumbent solution
-            has_incumbent = best_result is not None
+        if not goto_generation:
+            relaxed = solve_relaxed_rmp(
+                columns=columns,
+                all_block_ids=all_block_ids,
+                # time_limit=10.0, # Removed strict limit
+                time_limit=effective_rmp_limit, # Use remaining budget
+                log_fn=log_fn,
+            )
             
-            if has_incumbent:
-                # Incumbent exists - can use as best-effort but log differently
-                log_fn(f"Status={relaxed_status} with incumbent available (best-effort)")
-                # Don't update best_under_count/best_over_count, but don't count as stagnation
-            else:
-                # No incumbent yet - treat as no progress
-                log_fn(f"UNKNOWN/INFEASIBLE status, no incumbent - skipping progress update")
-                rounds_without_progress += 1
-                log_fn(f"No progress for {rounds_without_progress} rounds")
+            # FIX: Gate progress tracking on solver status
+            relaxed_status = relaxed.get("status", "UNKNOWN")
+            log_fn(f"Relaxed RMP Status: {relaxed_status}")
+            
+            # Initialize variables for all paths
+            under_blocks = relaxed.get("under_blocks", [])
+            over_blocks = relaxed.get("over_blocks", [])
+            
+            # Progress tracking logic...
+            under_count = relaxed.get("under_count", 0)
+            over_count = relaxed.get("over_count", 0)
         else:
-            # Valid OPTIMAL/FEASIBLE status: safe to track progress
-            log_fn(f"Relaxed diagnosis: under={under_count}, over={over_count}")
-            log_fn(f"Best so far: under={best_under_count}, over={best_over_count}")
+            # Force generation by bypassing "Perfect relaxation" check
+            under_count = 999 
+            log_fn(f"Skipping Relaxed RMP validation to force generation for {len(pt_blocks)} blocks.")
+            relaxed_status = "OPTIMAL" # Fake status to pass checks if needed
+            rounds_without_progress = 0 # Reset progression as we are actively optimizing quality
+            relaxed = {} # Initialize empty to avoid UnboundLocalError
             
-            # Track progress only on valid status
-            improved = False
-            if under_count < best_under_count:
-                best_under_count = under_count
-                improved = True
-            if over_count < best_over_count:
-                best_over_count = over_count
-                improved = True
-            
-            if improved:
+            # Logic to maintain structure
+            if relaxed_status in ("OPTIMAL", "FEASIBLE"):
                 rounds_without_progress = 0
-                log_fn(f"Progress! New best: under={best_under_count}, over={best_over_count}")
             else:
                 rounds_without_progress += 1
-                log_fn(f"No progress for {rounds_without_progress} rounds")
+
         
         # Check stopping condition
         if rounds_without_progress >= max_stale_rounds:

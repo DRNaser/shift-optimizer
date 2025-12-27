@@ -20,6 +20,9 @@ from datetime import datetime
 from time import perf_counter, monotonic
 from typing import Optional, Callable
 
+# Structured logging
+from src.utils.structured_logging import get_logger, log_phase_start, log_phase_end, log_kpi
+
 from src.domain.models import Tour, Block, Weekday
 from src.services.instance_profiler import (
     FeatureVector,
@@ -780,10 +783,8 @@ def _execute_path(
     from src.services.forecast_solver_v4 import (
         assign_drivers_greedy,
         rebalance_to_min_fte_hours,
-        eliminate_pt_drivers,
         DriverAssignment,
     )
-    from src.services.heuristic_solver import HeuristicSolver
     
     result = {
         "status": "UNKNOWN",
@@ -793,168 +794,81 @@ def _execute_path(
     }
     
     try:
-        if path == PS.A:
-            # Path A: Greedy + Light LNS
-            t_phase2 = perf_counter()
-            
-            assignments, stats = assign_drivers_greedy(selected_blocks, config)
-            result["phase2_time"] = perf_counter() - t_phase2
-            
-            # Light repair
-            assignments, _ = rebalance_to_min_fte_hours(assignments, 40.0, 53.0)
-            
-            # Aggressive PT elimination (NEW)
-            # S0.2: Use hard phase2_budget for PT elimination
-            assignments, _ = eliminate_pt_drivers(assignments, 53.0, time_limit=min(phase2_budget * 0.3, 10.0))
-            
-            # S0.2: Use hard lns_budget (already passed from controller)
-            actual_lns_budget = lns_budget
-            if actual_lns_budget > 5.0:
-                log_fn(f"Path A: Light LNS ({actual_lns_budget:.1f}s budget)...")
-                t_lns = perf_counter()
-                assignments = _run_light_lns(assignments, selected_blocks, config, actual_lns_budget, seed, remaining_fn=remaining_fn)
-                result["lns_time"] = perf_counter() - t_lns
+        # v6.0: Only Path C (Set-Partitioning) is supported
+        if path != PS.C:
+            log_fn(f"WARNING: Path {path.value} is deprecated. Using Path C (Set-Partitioning).")
+        
+        # PATH C: SET PARTITIONING (Optimal Crew Scheduling via Column Generation)
+        # This is the mathematically optimal approach for minimizing driver count.
+        log_fn(f"Path C: Set Partitioning (Column Generation)...")
+        t_phase2 = perf_counter()
+        
+        from src.services.set_partition_solver import solve_set_partitioning
+        
+        # Use full Phase 2 budget for Set Partitioning
+        assignment_budget = phase2_budget + lns_budget
+        log_fn(f"  Phase 2: Set Partitioning (budget={assignment_budget:.1f}s)...")
+        t_assign = perf_counter()
+        
+        # Run Set Partitioning solver
+        sp_result = solve_set_partitioning(
+            blocks=selected_blocks,
+            max_rounds=100,
+            initial_pool_size=5000,
+            columns_per_round=200,
+            rmp_time_limit=min(15.0, assignment_budget / 3),
+            seed=seed,
+            log_fn=log_fn,
+            config=config,
+            global_deadline=global_deadline,
+        )
+        
+        assign_time = perf_counter() - t_assign
+        log_fn(f"  Phase 2 completed in {assign_time:.1f}s, status={sp_result.status}")
+        
+        result["phase2_time"] = perf_counter() - t_phase2
+        result["phase2_path"] = "SET_PARTITIONING"
+        
+        if sp_result.status in ["OK", "OK_SEEDED"]:
+            # Convert selected rosters to DriverAssignments
+            assignments = []
+            for i, roster in enumerate(sp_result.selected_rosters):
+                # Get blocks for this roster
+                roster_blocks = []
+                for block in selected_blocks:
+                    if block.id in roster.block_ids:
+                        roster_blocks.append(block)
+                
+                # Determine driver type based on hours
+                driver_type = "FTE" if roster.total_hours >= 40.0 else "PT"
+                
+                driver_assignment = DriverAssignment(
+                    driver_id=f"D{i+1:03d}",
+                    driver_type=driver_type,
+                    blocks=roster_blocks,
+                    total_hours=roster.total_hours,
+                    days_worked=len(roster.day_stats),
+                )
+                assignments.append(driver_assignment)
             
             result["assignments"] = assignments
             result["status"] = "OK"
+            result["drivers_used"] = len(assignments)
+            result["num_fte"] = sum(1 for a in assignments if a.driver_type == "FTE")
+            result["num_pt"] = sum(1 for a in assignments if a.driver_type == "PT")
+            log_fn(f"  Final: {result['num_fte']} FTE + {result['num_pt']} PT = {result['drivers_used']} drivers")
+            log_fn(f"  Hours: min={sp_result.hours_min:.1f}h, max={sp_result.hours_max:.1f}h, avg={sp_result.hours_avg:.1f}h")
+        else:
+            # Set Partitioning failed - greedy fallback
+            log_fn(f"  Set Partitioning failed ({sp_result.status}), falling back to greedy...")
+            assignments, _ = assign_drivers_greedy(selected_blocks, config)
             
-        elif path == PS.B:
-            # Path B: Heuristic + Extended LNS
-            log_fn(f"Path B: Heuristic solver...")
-            t_phase2 = perf_counter()
-            
-            solver = HeuristicSolver(selected_blocks, config)
-            heuristic_result, _ = solver.solve()
-            assignments = heuristic_result
-            
-            result["phase2_time"] = perf_counter() - t_phase2
-            
-            # Repair
+            # Critical: Apply repair pass to ensure FTE threshold compliance
             assignments, _ = rebalance_to_min_fte_hours(assignments, 40.0, 53.0)
-            # S0.2: Use hard phase2_budget for PT elimination
-            assignments, _ = eliminate_pt_drivers(assignments, 53.0, time_limit=min(phase2_budget * 0.3, 10.0))
-            
-            # S0.2: Use hard lns_budget (already passed from controller)
-            actual_lns_budget = lns_budget
-            if actual_lns_budget > 5.0:
-                log_fn(f"Path B: Extended LNS ({actual_lns_budget:.1f}s budget)...")
-                t_lns = perf_counter()
-                assignments = _run_extended_lns(
-                    assignments, selected_blocks, config, actual_lns_budget, seed, params, remaining_fn=remaining_fn
-                )
-                result["lns_time"] = perf_counter() - t_lns
             
             result["assignments"] = assignments
-            result["status"] = "OK"
-            
-        elif path == PS.C:
-            # Path C: Day-Choice Assignment (Direct from Phase 1 blocks)
-            log_fn(f"[DEBUG] ===== ENTERING PATH C =====")
-            log_fn(f"Path C: Day-Choice Direct Assignment...")
-            t_phase2 = perf_counter()
-            
-            log_fn(f"[DEBUG] Importing daychoice_solver...")
-            from src.services.daychoice_solver import (
-                solve_phase2_daychoice, 
-                DayChoiceConfig, 
-                compute_peak_day_bound,
-                reclassify_underfull_ftes_to_pt,  # v5.2: 150-FTE Fixed Pool
-            )
-            log_fn(f"[DEBUG] Import successful")
-            
-            # Use full Phase 2 budget for Day-Choice (no SP overhead)
-            assignment_budget = phase2_budget + lns_budget
-            log_fn(f"[DEBUG] Budget: {assignment_budget:.1f}s")
-            
-            log_fn(f"  Phase 2: Day-Choice Assignment (budget={assignment_budget:.1f}s)...")
-            t_assign = perf_counter()
-            
-            # Compute peak-day lower bound
-            log_fn(f"[DEBUG] Computing peak-day bound for {len(selected_blocks)} blocks...")
-            peak_info = compute_peak_day_bound(selected_blocks)
-            log_fn(f"[DEBUG] Peak-day bound computed")
-            peak_day_blocks = peak_info["peak_day_blocks"]
-            log_fn(f"    Peak-day lower bound: {peak_day_blocks} blocks on {peak_info['peak_day']}")
-            log_fn(f"    Blocks by day: {peak_info['blocks_by_day']}")
-            
-            # Get driver cap from config
-            # v5.2: If using fixed FTE pool, set driver_cap to num_fte_pool (150)
-            if getattr(config, 'use_fixed_fte_pool', False):
-                driver_cap = getattr(config, 'num_fte_pool', 150)
-                log_fn(f"    [v5.2] Using fixed FTE pool: {driver_cap} drivers")
-            else:
-                driver_cap = getattr(config, 'day_cap_hard', None) or getattr(config, 'driver_cap', None)
-            
-            # Early infeasibility check
-            if driver_cap and peak_day_blocks > driver_cap:
-                log_fn(f"    INFEASIBLE_BY_DAY_LOWER_BOUND: peak={peak_day_blocks} > cap={driver_cap}")
-                result["status"] = "INFEASIBLE_BY_DAY_LOWER_BOUND"
-                result["peak_day_blocks"] = peak_day_blocks
-                result["driver_cap"] = driver_cap
-            else:
-                # Configure Day-Choice solver
-                log_fn(f"[DEBUG] Creating DayChoiceConfig...")
-                daychoice_config = DayChoiceConfig(
-                    driver_cap=driver_cap,  # None = minimize headcount
-                    min_hours_target=40.0,
-                    max_hours_target=50.0,
-                    max_hours_hard=55.0,
-                    min_rest_minutes=660,  # 11h
-                    no_consecutive_3er=True,  # No 3+3 rule
-                    time_limit_s=assignment_budget,
-                    seed=seed,
-                )
-                log_fn(f"[DEBUG] Config created, calling solve_phase2_daychoice...")
-                
-                # Run Day-Choice Phase 2 directly on Phase 1 blocks
-                phase2_result = solve_phase2_daychoice(
-                    selected_blocks=selected_blocks,
-                    config=daychoice_config,
-                    log_fn=log_fn,
-                )
-                log_fn(f"[DEBUG] solve_phase2_daychoice returned")
-                
-                # v5.2: Reclassify FTE < 40h → PT (150-FTE fixed pool strategy)
-                if phase2_result.status in ["OPTIMAL", "FEASIBLE"] and phase2_result.assignments:
-                    log_fn(" ")
-                    log_fn(f"[v5.2] Applying fixed 150-FTE pool strategy...")
-                    reclassified, reclass_stats = reclassify_underfull_ftes_to_pt(
-                        assignments=phase2_result.assignments,
-                        fte_min_hours=40.0,
-                        log_fn=log_fn,
-                    )
-                    phase2_result.assignments = reclassified
-                    log_fn(f"[v5.2] Reclassified {reclass_stats['fte_to_pt_count']} underfull FTE → PT")
-                    log_fn(f"[v5.2] Final: {reclass_stats['final_fte_count']} FTE + {reclass_stats['final_pt_count']} PT")
-                
-                assign_time = perf_counter() - t_assign
-                log_fn(f"  Phase 2 completed in {assign_time:.1f}s, status={phase2_result.status}")
-                
-                result["phase2_time"] = perf_counter() - t_phase2
-                result["phase2_path"] = "DAYCHOICE_DIRECT"
-                result["peak_day_blocks"] = peak_day_blocks
-                
-                if phase2_result.status in ["OPTIMAL", "FEASIBLE"]:
-                    result["assignments"] = phase2_result.assignments
-                    result["status"] = "OK"
-                    result["drivers_used"] = phase2_result.drivers_used
-                    result["rest_violations"] = phase2_result.rest_violations
-                    result["consecutive_3er_violations"] = phase2_result.consecutive_3er_violations
-                    log_fn(f"  Final: {phase2_result.drivers_used} drivers (avg {phase2_result.avg_hours:.1f}h/driver)")
-                elif phase2_result.best_feasible:
-                    # Timeout but found some feasible solution
-                    result["assignments"] = phase2_result.best_feasible
-                    result["status"] = "PHASE2_BEST_EFFORT"
-                    result["drivers_used"] = len(phase2_result.best_feasible)
-                    log_fn(f"  Best-effort: {len(phase2_result.best_feasible)} drivers (timeout)")
-                else:
-                    # Day-Choice failed - greedy fallback
-                    log_fn(f"  Day-Choice failed, falling back to greedy...")
-                    from src.services.forecast_solver_v4 import assign_drivers_greedy
-                    assignments, _ = assign_drivers_greedy(selected_blocks, config)
-                    result["assignments"] = assignments
-                    result["status"] = "GREEDY_FALLBACK"
-                    result["drivers_used"] = len(assignments)
+            result["status"] = "GREEDY_FALLBACK"
+            result["drivers_used"] = len(assignments)
     
     except Exception as e:
         log_fn(f"Path {path.value} failed with exception: {e}")

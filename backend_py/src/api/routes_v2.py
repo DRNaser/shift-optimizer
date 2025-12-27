@@ -3,16 +3,20 @@ SHIFT OPTIMIZER - API Routes v2
 ================================
 Asynchronous run management, SSE streaming, and config endpoints.
 Implements: Config validation, SSE resume with heartbeat, deterministic ordering.
+
+v6.0: Consolidated as the only API router (legacy routes.py removed).
 """
 
 import json
 import asyncio
 import time
+from datetime import date, datetime
 from fastapi import APIRouter, HTTPException, Request, Response
 from fastapi.responses import StreamingResponse
 from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
 
 from src.services.forecast_solver_v4 import ConfigV4
+from src.domain.models import Tour, Driver, DailyAvailability, Weekday
 from src.api.schemas import (
     RunCreateRequest,
     RunCreateResponse,
@@ -28,18 +32,78 @@ from src.api.schemas import (
     AssignmentOutput,
     UnassignedTourOutput,
     BlockOutput,
-    TourOutput
+    TourOutput,
+    TourInput,
+    DriverInput,
 )
 from src.api.run_manager import run_manager, RunStatus, ConfigSnapshot, HEARTBEAT_INTERVAL_SEC
 from src.api.config_validator import validate_and_apply_overrides, TUNABLE_FIELDS, LOCKED_FIELDS
-from src.api.routes import (
-    tour_input_to_domain, 
-    driver_input_to_domain, 
-    parse_date,
-    tour_to_output
-)
+
 
 router_v2 = APIRouter()
+
+
+# =============================================================================
+# HELPER FUNCTIONS (moved from legacy routes.py for v6.0 consolidation)
+# =============================================================================
+
+def parse_time(time_str: str):
+    """Parse HH:MM string to time object."""
+    from datetime import time as time_type
+    parts = time_str.split(":")
+    return time_type(int(parts[0]), int(parts[1]))
+
+
+def parse_date(date_str: str) -> date:
+    """Parse YYYY-MM-DD string to date object."""
+    return datetime.strptime(date_str, "%Y-%m-%d").date()
+
+
+def tour_input_to_domain(tour_input: TourInput) -> Tour:
+    """Convert API tour input to domain model."""
+    return Tour(
+        id=tour_input.id,
+        day=tour_input.day,
+        start_time=parse_time(tour_input.start_time),
+        end_time=parse_time(tour_input.end_time),
+        location=tour_input.location,
+        required_qualifications=tour_input.required_qualifications
+    )
+
+
+def driver_input_to_domain(driver_input: DriverInput) -> Driver:
+    """Convert API driver input to domain model."""
+    # Build availability from available_days
+    availability = []
+    for day in Weekday:
+        availability.append(DailyAvailability(
+            day=day,
+            available=day in driver_input.available_days
+        ))
+    
+    return Driver(
+        id=driver_input.id,
+        name=driver_input.name,
+        qualifications=driver_input.qualifications,
+        max_weekly_hours=driver_input.max_weekly_hours,
+        max_daily_span_hours=driver_input.max_daily_span_hours,
+        max_tours_per_day=driver_input.max_tours_per_day,
+        min_rest_hours=driver_input.min_rest_hours,
+        weekly_availability=availability
+    )
+
+
+def tour_to_output(tour: Tour) -> TourOutput:
+    """Convert domain tour to API output."""
+    return TourOutput(
+        id=tour.id,
+        day=tour.day.value,
+        start_time=tour.start_time.strftime("%H:%M"),
+        end_time=tour.end_time.strftime("%H:%M"),
+        duration_hours=tour.duration_hours,
+        location=tour.location,
+        required_qualifications=tour.required_qualifications
+    )
 
 
 # =============================================================================

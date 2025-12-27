@@ -310,37 +310,68 @@ def solve_rmp(
         model.Add(sum(y[i] for i in col_indices) == 1)
     
     # =========================================================================
-    # OBJECTIVE: Integer-scaled costs to strongly discourage PT/singleton usage
-    # FTE: 100
-    # PT: 10000 + 200/hour
-    # Singleton (1 block): +50000
-    # Underutilization: 500/hour shortfall from MIN_WEEK_HOURS
+    # OBJECTIVE: Balance FTE hours and Minimize PT Share (<10%)
+    # 
+    # Strategy:
+    # 1. PT is FORBIDDEN unless mathematically impossible (Base cost 500k)
+    # 2. FTEs are driven to a TARGET average (47.5h) using quadratic penalty
+    #    - This prevents "maxing out" some drivers while leaving others empty
+    #    - Encourages evenly distributed workload
     # =========================================================================
-    FTE_COST = 100
-    PT_BASE_COST = 10_000
-    PT_COST_PER_HOUR = 200
-    SINGLETON_COST = 50_000
-    UNDERUTIL_COST_PER_HOUR = 500
-    min_week_minutes = int(MIN_WEEK_HOURS * 60)
+    
+    # 1. PT Costs (The "Nuclear Option")
+    PT_BASE_COST = 500_000              # Extremely high to force FTE creation
+    PT_COST_PER_HOUR = 1_000            # High per-hour cost
+    SINGLETON_COST = 100_000            # Penalty for single-block rosters
+
+    # 2. FTE Costs (The "Balance" Approach)
+    FTE_BASE_COST = 5_000               # Moderate base cost (cheaper than PT)
+    FTE_TARGET_HOURS = 47.5             # Target ideal workload
+    HOURS_DEVIATION_COST = 100          # Quadratic penalty for missing target
+    
+    # Hard constraints
+    FTE_MIN_HOURS = 40.0
+    FTE_HARD_MAX_HOURS = 55.0
+    UNDERUTIL_COST_PER_HOUR = 5_000     # Very high penalty for <40h (if fallback occurs)
+    OVERTIME_COST_PER_HOUR = 500        # Penalty for >55h (should be impossible via constraints)
 
     costs = []
     for i, col in enumerate(columns):
         total_minutes = col.total_minutes
         total_hours = total_minutes / 60.0
-        roster_type = getattr(col, "roster_type", "FTE")
+        
+        # CRITICAL: Classify based on hours
+        is_fte = total_hours >= FTE_MIN_HOURS
+        
+        if is_fte:
+            # FTE: Parabolic cost centered on target
+            # Cost = Base + (Difference^2 * Scale)
+            # 47.5h -> Base + 0
+            # 40.0h -> Base + (7.5^2 * 100) = Base + 5625
+            # 55.0h -> Base + (7.5^2 * 100) = Base + 5625
+            # This makes "extreme" FTEs more expensive than "balanced" ones
+            deviation = abs(total_hours - FTE_TARGET_HOURS)
+            balance_penalty = int(round((deviation ** 2) * HOURS_DEVIATION_COST))
+            cost = FTE_BASE_COST + balance_penalty
+            
+            # Helper: slight penalty for being very close to 40h edge
+            # (to avoid the "danger zone" of 40.0h)
+            if total_hours < 41.0:
+                cost += 1000
 
-        if roster_type == "PT":
-            cost = PT_BASE_COST + int(round(PT_COST_PER_HOUR * total_hours))
         else:
-            cost = FTE_COST
-
+            # PT: Nuclear penalty
+            cost = PT_BASE_COST + int(round(PT_COST_PER_HOUR * total_hours))
+            
+            # Additional penalty for being "almost" an FTE (e.g. 38h)
+            # We really want these to become FTEs
+            if total_hours > 30:
+                cost += 50_000
+        
+        # Strong penalty for singleton rosters
         if col.num_blocks == 1:
             cost += SINGLETON_COST
-
-        if total_minutes < min_week_minutes:
-            shortfall_minutes = min_week_minutes - total_minutes
-            cost += int(round(UNDERUTIL_COST_PER_HOUR * shortfall_minutes / 60.0))
-
+        
         costs.append(cost * y[i])
 
     model.Minimize(sum(costs))

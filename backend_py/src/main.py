@@ -3,7 +3,7 @@ SHIFT OPTIMIZER - FastAPI Application
 ======================================
 Main entry point for the backend API.
 
-This is the production API server.
+This is the production API server (v6.0 - Streamlined).
 """
 
 import os
@@ -11,9 +11,38 @@ import logging
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from src.api.routes import router
+# v6.0: Only routes_v2 is used (legacy routes.py and forecast_router.py removed)
 from src.api.routes_v2 import router_v2
-from src.api.forecast_router import router as forecast_router
+
+# Structured logging for production observability
+from src.utils.structured_logging import get_logger, StructuredFormatter
+
+
+# =============================================================================
+# LOGGING CONFIGURATION
+# =============================================================================
+
+def configure_logging():
+    """Configure logging based on environment."""
+    log_format = os.getenv("LOG_FORMAT", "console").lower()
+    log_level = os.getenv("LOG_LEVEL", "INFO").upper()
+    
+    root_logger = logging.getLogger()
+    root_logger.setLevel(getattr(logging, log_level, logging.INFO))
+    
+    # Clear existing handlers
+    root_logger.handlers.clear()
+    
+    handler = logging.StreamHandler()
+    if log_format == "json":
+        handler.setFormatter(StructuredFormatter(service_name="shift-optimizer"))
+    else:
+        handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s [%(name)s] %(message)s"))
+    
+    root_logger.addHandler(handler)
+
+configure_logging()
+logger = get_logger(__name__)
 
 
 # =============================================================================
@@ -34,10 +63,10 @@ app = FastAPI(
     Deterministic weekly shift optimizer for Last-Mile-Delivery.
     
     ## Features
+    - Set Partitioning via Column Generation (optimal crew scheduling)
     - Rule-based scheduling with hard constraints
-    - Greedy feasible-first baseline scheduler
     - Full explainability with reason codes
-    - Reproducible results with optional seeding
+    - Reproducible results with deterministic seeding
     
     ## Hard Constraints (Always Enforced)
     - Max 55h/week per driver
@@ -48,7 +77,7 @@ app = FastAPI(
     - Qualification requirements
     - Availability requirements
     """,
-    version="2.0.0",
+    version="6.0.0",
     docs_url="/docs",
     redoc_url="/redoc"
 )
@@ -71,21 +100,13 @@ app.add_middleware(
 # ROUTES
 # =============================================================================
 
-app.include_router(router, prefix="/api/v1", tags=["scheduling"])
-app.include_router(router_v2, prefix="/api/v1", tags=["v2-runs"])
-
-# Deprecated: forecast_router conflicts with v2 /runs endpoints.
-# To re-enable for local debugging, set ENABLE_FORECAST_ROUTER=true.
-if os.getenv("ENABLE_FORECAST_ROUTER", "").lower() in ("1", "true", "yes"):
-    logging.getLogger(__name__).warning(
-        "forecast_router is deprecated and may collide with /api/v1/runs. "
-        "Disable in production."
-    )
-    app.include_router(forecast_router, tags=["forecast"])
+# v6.0: Single unified API (routes_v2 only)
+app.include_router(router_v2, prefix="/api/v1", tags=["runs"])
 
 
 @app.on_event("startup")
 async def startup_event():
+    logging.info("SHIFT OPTIMIZER API v6.0 started (Set Partitioning Engine)")
     print("MATCHING_LOG: Using routes_v2 as canonical source", flush=True)
 
 
