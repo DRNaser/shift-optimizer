@@ -107,6 +107,13 @@ class RosterColumnGenerator:
         if len(self.pool) >= self.pool_cap:
             return False  # Pool full
         
+        # QUALITY: Hard-cap singleton columns to prevent pool pollution
+        SINGLETON_CAP = 500
+        if column.num_blocks == 1:
+            singleton_count = sum(1 for c in self.pool.values() if c.num_blocks == 1)
+            if singleton_count >= SINGLETON_CAP:
+                return False  # Singleton cap reached
+        
         self.pool[column.signature] = column
         
         # Update index

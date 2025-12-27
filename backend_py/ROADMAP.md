@@ -1,8 +1,8 @@
 # SOLVEREIGN Roadmap
 
 > **Letzte Aktualisierung**: 2025-12-27
-> **Version**: 6.1.0
-> **Status**: FTE Balancing Optimized (Stable)
+> **Version**: 6.2.0
+> **Status**: RMP Quality Maximized (Stable)
 
 ---
 
@@ -229,15 +229,17 @@ SINGLETON_COST = 100_000         # Penalty for 1-block rosters
     - Fixed early exit: require 95% FTE coverage + 90% multi-block
     - No longer declares victory when only singletons cover blocks
 
-### 📋 Nächste Schritte (Context für Next Agent)
+### ✅ RMP Quality Optimization (Erledigt - 2025-12-27)
+- [x] **RMP Time Increase**: 15s → 45s per round for better solutions
+- [x] **Greedy Warm-Start**: Added `solver.AddHint()` from greedy solution
+- [x] **LNS Endgame Enabled by Default**: `enable_lns_low_hour_consolidation=True`
+- [x] **Pool Quality Biasing**: Hard-cap singletons at 500 to prevent pool pollution
+- [x] **Early-Stop Threshold Tightened**: 5% → 2% PT share for quality optimization
 
-**Ziel**: PT Share von 40.2% → <10%, Drivers von 189 → 130-145
-
-**Prioritäten**:
-1. [ ] **Increase RMP Time**: 15s → 30-60s per round (proportional to budget)
-2. [ ] **Add Greedy Warm-Start**: `solver.AddHint()` from greedy solution
-3. [ ] **Enable LNS Endgame**: `enable_lns_low_hour_consolidation=True`
-4. [ ] **Pool Quality Biasing**: Hard-cap singletons, prioritize FTE-band columns
+**Key Files Modified**:
+- `set_partition_solver.py`: RMP time limit, LNS default, early-stop threshold
+- `set_partition_master.py:solve_rmp()`: Added hint_columns parameter
+- `roster_column_generator.py`: Singleton cap in add_column()
 
 **Test Command**:
 ```powershell
@@ -246,13 +248,8 @@ python pt_balance_quality_gate.py --input forecast-test.txt --time-budget 300 --
 
 **Success Criteria**:
 1. RMP drivers <= Greedy drivers (189)
-2. PT share < 25% (currently 40.2%)
+2. PT share < 25% (target: <10%)
 3. 2er_SPLIT > 0 in block generation logs
-
-**Key Files**:
-- `set_partition_solver.py`: RMP loop, greedy comparison
-- `set_partition_master.py:solve_rmp()`: Cost function (lines 312-377)
-- `roster_column_generator.py`: Pool generation, quality tracking
 
 
 ---

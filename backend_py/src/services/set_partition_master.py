@@ -220,6 +220,7 @@ def solve_rmp(
     all_block_ids: set[str],
     time_limit: float = 60.0,
     log_fn=None,
+    hint_columns: Optional[list[RosterColumn]] = None,  # QUALITY: Warm-start hints
 ) -> dict:
     """
     Solve the Restricted Master Problem (Set-Partitioning).
@@ -229,6 +230,7 @@ def solve_rmp(
         all_block_ids: Set of all block IDs that need coverage
         time_limit: Solver time limit in seconds
         log_fn: Logging function
+        hint_columns: Optional warm-start columns (e.g. from greedy solution)
     
     Returns:
         {
@@ -385,6 +387,17 @@ def solve_rmp(
     solver.parameters.random_seed = 42
     
     log_fn(f"Solving RMP...")
+    
+    # QUALITY: Add warm-start hints from greedy/previous solution
+    if hint_columns:
+        hint_ids = {col.roster_id for col in hint_columns}
+        hints_added = 0
+        for i, col in enumerate(columns):
+            if col.roster_id in hint_ids:
+                solver.AddHint(y[i], 1)
+                hints_added += 1
+        log_fn(f"Added {hints_added} solver hints from warm-start")
+    
     start_time = time.time()
     status = solver.Solve(model)
     solve_time = time.time() - start_time

@@ -51,7 +51,7 @@ def solve_set_partitioning(
     max_rounds: int = 500,  # OPTIMIZED: 100→500 for better convergence
     initial_pool_size: int = 10000,  # OPTIMIZED: 5000→10000 for more diverse columns
     columns_per_round: int = 300,  # OPTIMIZED: 200→300 for faster coverage
-    rmp_time_limit: float = 15.0,
+    rmp_time_limit: float = 45.0,  # QUALITY: 15→45s for better solutions
     seed: int = 42,
     log_fn=None,
     config=None,  # NEW: Pass config for LNS flags
@@ -86,7 +86,8 @@ def solve_set_partitioning(
     log_fn(f"Initial pool target: {initial_pool_size}")
     
     # MANDATORY: Log LNS status immediately for diagnostic visibility
-    enable_lns = config and getattr(config, 'enable_lns_low_hour_consolidation', False)
+    # QUALITY: Enable LNS by default (can be overridden via config)
+    enable_lns = True if config is None else getattr(config, 'enable_lns_low_hour_consolidation', True)
     log_fn(f"LNS enabled: {enable_lns}")
     if enable_lns:
         lns_budget = getattr(config, 'lns_time_budget_s', 30.0)
@@ -302,7 +303,8 @@ def solve_set_partitioning(
                 pt_ratio = num_pt / len(selected) if selected else 0
                 
                 # Heuristic: Stop if PT < 5% or we are stagnating
-                if num_pt <= len(selected) * 0.05 or rounds_without_progress > 10:
+                # QUALITY: Tighten threshold from 5%→2% and increase stale rounds
+                if num_pt <= len(selected) * 0.02 or rounds_without_progress > 15:
                      log_fn(f"\n[OK] Stopping with {num_pt} PT drivers ({pt_ratio:.1%} share)")
                      return create_result(selected, "OK")
                 
