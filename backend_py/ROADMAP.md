@@ -218,14 +218,42 @@ SINGLETON_COST = 100_000         # Penalty for 1-block rosters
 - [x] **Time Budget Fix**:
     - Fixed `pt_balance_quality_gate.py` to properly pass `time_budget` to `run_portfolio()`
 
-### Nächste Schritte
-- [ ] **Further PT Reduction**: Ziel <10% PT Share (currently 40.2%)
-    - Enable LNS Endgame: `enable_lns_low_hour_consolidation=True`
-    - Increase RMP time per round: 15s → 30-60s
-    - Improve column generation: focus on 45-50h rosters
-- [ ] **Hybrid Pipeline**: Parallel solver strategies (deferred)
-- [ ] **Log-Rotation**: Konfigurieren
-- [ ] **Metrics/Tracing**: OpenTelemetry hinzufügen
+### ✅ Column Generation Quality + Split Shift Fix (Erledigt - 2025-12-27)
+- [x] **Split Zone Fix**:
+    - Regular pause: 30-90min (was 30-1440min overlapping split zone)
+    - Split pause: 240-480min (4-8h for morning+evening combos)
+    - This enables 2er_SPLIT blocks (previously 2er_SPLIT=0)
+- [x] **Quality Coverage Tracking**:
+    - Added `get_quality_coverage()` for FTE/multi-block coverage metrics
+    - Added `get_pool_stats()` for pool instrumentation (FTE-band, singletons, etc.)
+    - Fixed early exit: require 95% FTE coverage + 90% multi-block
+    - No longer declares victory when only singletons cover blocks
+
+### 📋 Nächste Schritte (Context für Next Agent)
+
+**Ziel**: PT Share von 40.2% → <10%, Drivers von 189 → 130-145
+
+**Prioritäten**:
+1. [ ] **Increase RMP Time**: 15s → 30-60s per round (proportional to budget)
+2. [ ] **Add Greedy Warm-Start**: `solver.AddHint()` from greedy solution
+3. [ ] **Enable LNS Endgame**: `enable_lns_low_hour_consolidation=True`
+4. [ ] **Pool Quality Biasing**: Hard-cap singletons, prioritize FTE-band columns
+
+**Test Command**:
+```powershell
+python pt_balance_quality_gate.py --input forecast-test.txt --time-budget 300 --seed 0
+```
+
+**Success Criteria**:
+1. RMP drivers <= Greedy drivers (189)
+2. PT share < 25% (currently 40.2%)
+3. 2er_SPLIT > 0 in block generation logs
+
+**Key Files**:
+- `set_partition_solver.py`: RMP loop, greedy comparison
+- `set_partition_master.py:solve_rmp()`: Cost function (lines 312-377)
+- `roster_column_generator.py`: Pool generation, quality tracking
+
 
 ---
 
