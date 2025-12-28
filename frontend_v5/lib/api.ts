@@ -113,7 +113,8 @@ export interface ScheduleResponse {
 
 export async function createRun(
     tours: TourInput[],
-    drivers?: DriverInput[]
+    drivers?: DriverInput[],
+    timeBudget: number = 120  // Default: Fast mode (120s)
 ): Promise<RunCreateResponse> {
     const driverList = drivers && drivers.length > 0 ? drivers : generateDefaultDrivers();
 
@@ -122,13 +123,14 @@ export async function createRun(
         drivers: driverList,
         week_start: "2024-01-01",
         run: {
-            time_budget_seconds: 600, // 10 min for 1385 tours
+            time_budget_seconds: timeBudget,
             seed: 42,
             config_overrides: {
                 output_profile: "MIN_HEADCOUNT_3ER",
             },
         },
     };
+
 
     // Debug: Log payload before sending
     console.log("🚀 Submitting Payload to Backend:", JSON.stringify(payload, null, 2));

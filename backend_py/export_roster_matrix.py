@@ -66,6 +66,9 @@ def main():
     }
 
     for assignment in assignments:
+        if assignment.total_hours <= 0.01:
+            continue
+            
         row = {
             "Driver ID": assignment.driver_id,
             "Type": assignment.driver_type,

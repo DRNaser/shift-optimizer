@@ -56,6 +56,7 @@ def solve_set_partitioning(
     log_fn=None,
     config=None,  # NEW: Pass config for LNS flags
     global_deadline: float = None,  # Monotonic deadline for budget enforcement
+    context: Optional[object] = None, # Added run context
 ) -> SetPartitionResult:
     """
     Solve the crew scheduling problem using Set-Partitioning.
@@ -97,6 +98,11 @@ def solve_set_partitioning(
         log_fn(f"  LNS threshold: {lns_threshold:.1f}h")
         log_fn(f"  LNS K-values: {lns_k}")
     log_fn("=" * 70)
+
+    # Emit Phase Start
+    if context and hasattr(context, "emit_progress"):
+        context.emit_progress("phase_start", "Starting Set Partitioning", phase="phase2_assignments")
+
     
     # =========================================================================
     # STEP 1: Convert blocks to BlockInfo
@@ -215,6 +221,13 @@ def solve_set_partitioning(
         log_fn(f"\n--- Round {round_num}/{max_rounds} ---")
         log_fn(f"Pool size: {len(generator.pool)}")
         
+        # Emit RMP Round Start
+        if context and hasattr(context, "emit_progress"):
+             context.emit_progress("rmp_solve", f"Round {round_num}: Solving RMP (Pool: {len(generator.pool)})", 
+                                   phase="phase2_assignments", step=f"Round {round_num}",
+                                   metrics={"pool_size": len(generator.pool), "round": round_num})
+
+        
         # Solve STRICT RMP first
         columns = list(generator.pool.values())
         
@@ -306,7 +319,29 @@ def solve_set_partitioning(
                 # Check Pool Quality (Coverage by FTE columns)
                 # User Requirement: Early stop only if coverage_by_fte_columns >= 95%
                 pool_quality = generator.get_quality_coverage(ignore_singletons=True, min_hours=40.0)
+                # User Requirement: Early stop only if coverage_by_fte_columns >= 95%
+                pool_quality = generator.get_quality_coverage(ignore_singletons=True, min_hours=40.0)
                 log_fn(f"Pool Quality (FTE Coverage): {pool_quality:.1%} | PT Share: {pt_ratio:.1%} | Stale: {rounds_without_progress}")
+
+                 # Emit RMP Metrics & Stall Check
+                if context and hasattr(context, "emit_progress"):
+                    context.emit_progress("rmp_round", f"Round {round_num} stats", 
+                                          phase="phase2_assignments", step=f"Round {round_num}",
+                                          metrics={
+                                             "drivers_total": len(selected),
+                                             "drivers_fte": sum(1 for r in selected if r.total_hours >= 40),
+                                             "drivers_pt": num_pt,
+                                             "pool_size": len(generator.pool),
+                                             "uncovered": 0,
+                                             "pool_quality_pct": round(pool_quality * 100, 1)
+                                          })
+                    # Check for stall/improvement
+                    if hasattr(context, "check_improvement"):
+                        status_check = context.check_improvement(round_num, len(selected), 0) # 0 uncovered
+                        if status_check == "stall_abort":
+                             log_fn("Context signalled STALL ABORT")
+                             rounds_without_progress = 999 
+
                 
                 # Condition for stopping:
                 # 1. Excellent Quality: Very low PT share AND Good Pool Quality
@@ -371,6 +406,18 @@ def solve_set_partitioning(
             # Progress tracking logic...
             under_count = relaxed.get("under_count", 0)
             over_count = relaxed.get("over_count", 0)
+            
+            # Emit RMP Metrics (Infeasible/Relaxed)
+            if context and hasattr(context, "emit_progress"):
+                context.emit_progress("rmp_round", f"Round {round_num} (Relaxed)", 
+                                        phase="phase2_assignments", step=f"Round {round_num}",
+                                        metrics={
+                                            "drivers_total": 0, # Unknown
+                                            "uncovered": len(under_blocks),
+                                            "pool_size": len(generator.pool),
+                                            "round": round_num
+                                        })
+
         else:
             # Force generation by bypassing "Perfect relaxation" check
             under_count = 999 

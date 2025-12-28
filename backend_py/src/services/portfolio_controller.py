@@ -99,6 +99,49 @@ class BudgetSlice:
         }
 
 
+def _renumber_driver_ids(assignments: list, log_fn: Callable = None) -> list:
+    """
+    Renumber driver IDs after all consolidation to ensure correct FTE/PT prefix.
+    
+    This fixes the issue where drivers are initially assigned as PT but end up
+    with >= 40h after consolidation, yet keep their PT### ID prefix.
+    
+    Args:
+        assignments: List of DriverAssignment objects
+        log_fn: Optional logging function
+    
+    Returns:
+        Updated assignments with correct ID prefixes (FTE001..N, PT001..M)
+    """
+    if not assignments:
+        return assignments
+    
+    # First, update driver_type based on final hours (safety)
+    for a in assignments:
+        if hasattr(a, 'total_hours') and hasattr(a, 'driver_type'):
+            a.driver_type = "FTE" if a.total_hours >= 40.0 else "PT"
+    
+    # Separate and sort by hours descending within each type
+    ftes = sorted([a for a in assignments if a.driver_type == "FTE"], 
+                  key=lambda x: -x.total_hours)
+    pts = sorted([a for a in assignments if a.driver_type == "PT"], 
+                 key=lambda x: -x.total_hours)
+    
+    # Renumber FTEs
+    for i, a in enumerate(ftes):
+        a.driver_id = f"FTE{i+1:03d}"
+    
+    # Renumber PTs
+    for i, a in enumerate(pts):
+        a.driver_id = f"PT{i+1:03d}"
+    
+    if log_fn:
+        log_fn(f"  [Renumber] {len(ftes)} FTE + {len(pts)} PT IDs reassigned")
+    
+    # Return in sorted order (FTEs first, then PTs)
+    return ftes + pts
+
+
 # =============================================================================
 # RESULT TYPES
 # =============================================================================
@@ -288,6 +331,7 @@ def run_portfolio(
     seed: int = 42,
     config: 'ConfigV4' = None,
     log_fn: Callable[[str], None] = None,
+    context: Optional[object] = None,  # Added run context for events
 ) -> PortfolioResult:
     """
     Main entry point for portfolio-based optimization.
@@ -322,6 +366,14 @@ def run_portfolio(
             "time": round(perf_counter() - start_time, 3),
             "message": msg
         })
+
+    def emit(event_type: str, msg: str, **kwargs):
+        """Helper to emit progress events if context available."""
+        if context and hasattr(context, "emit_progress"):
+            context.emit_progress(event_type=event_type, message=msg, **kwargs)
+    
+    emit("run_started", f"Starting optimization with {len(tours)} tours", metrics={"tours_count": len(tours)})
+
     
     log("=" * 70)
     log("PORTFOLIO CONTROLLER - Starting optimization")
@@ -364,6 +416,8 @@ def run_portfolio(
         # PHASE 0: BUILD BLOCKS
         # ==========================================================================
         log("PHASE 0: Block building...")
+        emit("phase_start", "Building blocks", phase="phase0_block_build")
+
         t_block = perf_counter()
         
         # Create BlockGenOverrides from config
@@ -393,7 +447,10 @@ def run_portfolio(
         # ==========================================================================
         # PHASE 1: PROFILING
         # ==========================================================================
+        emit("phase_end", f"Blocks built: {len(blocks)}", phase="phase0_block_build", metrics={"blocks_generated": len(blocks)})
         log("PHASE 1: Instance profiling...")
+        emit("phase_start", "Profiling instance", phase="phase1_capacity")
+
         t_profile = perf_counter()
         
         features = compute_features(tours, blocks, time_budget, config.max_blocks)
@@ -447,7 +504,8 @@ def run_portfolio(
         # This replaces the brittle 'solve_capacity_twopass_balanced'
         selected_blocks, phase1_stats = solve_capacity_phase(
             blocks, tours, block_index, phase1_config,
-            block_scores=block_scores, block_props=block_props
+            block_scores=block_scores, block_props=block_props,
+            context=context,
         )
         
         log(f"PHASE 1 COMPLETE: selected_blocks={len(selected_blocks)}, tours={len(tours)}")
@@ -530,7 +588,9 @@ def run_portfolio(
             seed=seed,
             remaining_fn=remaining,  # Global deadline enforcement
             global_deadline=deadline,  # Absolute deadline (monotonic)
+            context=context,
         )
+
         
         phase2_time = result.get("phase2_time", 0.0)
         lns_time = result.get("lns_time", 0.0)
@@ -770,7 +830,9 @@ def _execute_path(
     seed: int,
     remaining_fn: Callable[[], float] = None,  # Global deadline function
     global_deadline: float = None,  # Absolute deadline (monotonic) - passed directly from run_portfolio
+    context: Optional[object] = None,
 ) -> dict:
+
     """
     Execute a specific solver path.
     
@@ -821,6 +883,7 @@ def _execute_path(
             log_fn=log_fn,
             config=config,
             global_deadline=global_deadline,
+            context=context,
         )
         
         assign_time = perf_counter() - t_assign
@@ -851,8 +914,17 @@ def _execute_path(
                 )
                 assignments.append(driver_assignment)
             
-            # OPTIMIZED: Apply swap consolidation post-processing
-            from src.services.set_partition_solver import swap_consolidation
+            # Emit progress event for swap consolidation start
+            if context and hasattr(context, 'emit_progress'):
+                context.emit_progress(
+                    event_type="repair_action",
+                    message="Starting Swap Consolidation (hour rebalancing)",
+                    phase="post_repair",
+                    step="swap_consolidation",
+                    level="INFO",
+                    metrics={"drivers_before": len(assignments)},
+                )
+            
             # OPTIMIZED: Apply swap consolidation post-processing
             from src.services.set_partition_solver import swap_consolidation
             assignments, swap_stats = swap_consolidation(
@@ -864,19 +936,64 @@ def _execute_path(
                 log_fn=log_fn,
             )
             result["swap_stats"] = swap_stats
+            
+            # Emit progress event for swap consolidation completion
+            if context and hasattr(context, 'emit_progress') and swap_stats.get("swaps_performed", 0) > 0:
+                context.emit_progress(
+                    event_type="repair_action",
+                    message=f"Swap Consolidation: {swap_stats.get('swaps_performed', 0)} swaps performed",
+                    phase="post_repair",
+                    step="swap_complete",
+                    level="INFO",
+                    metrics=swap_stats,
+                )
 
             # NEW: Apply Targeted PT Repair ("Bump" and "Absorb") - User Request
             from src.services.forecast_solver_v4 import repair_pt_consolidation
             log_fn("  Applying Targeted PT Consolidation (Bump & Absorb)...")
+            
+            # Emit progress event for PT Repair start
+            if context and hasattr(context, 'emit_progress'):
+                context.emit_progress(
+                    event_type="repair_action",
+                    message="Starting PT Consolidation (Bump & Absorb)",
+                    phase="post_repair",
+                    step="pt_consolidation",
+                    level="INFO",
+                    metrics={"drivers_before": len(assignments)},
+                )
+            
             assignments, cons_stats = repair_pt_consolidation(
                 assignments, 
                 min_fte_hours=40.0, 
-                max_fte_hours=53.0
+                max_fte_hours=53.0,
+                context=context  # Pass context for progress events
             )
             result["consolidation_stats"] = cons_stats
+            
+            # Emit progress event for consolidation results
             if cons_stats["bumped_pt_to_fte"] > 0 or cons_stats["absorbed_peak_pt"] > 0:
                 log_fn(f"  Consolidation: Bumped {cons_stats['bumped_pt_to_fte']} PTs to FTE, Absorbed {cons_stats['absorbed_peak_pt']} Peak blocks")
                 log_fn(f"  Dynamic Peak Days: {cons_stats.get('peak_days_detected')}")
+                
+                if context and hasattr(context, 'emit_progress'):
+                    context.emit_progress(
+                        event_type="repair_action",
+                        message=f"Consolidated: {cons_stats['bumped_pt_to_fte']} PT→FTE, {cons_stats['absorbed_peak_pt']} absorbed",
+                        phase="post_repair",
+                        step="consolidation_complete",
+                        level="INFO",
+                        metrics={
+                            "bumped_pt_to_fte": cons_stats["bumped_pt_to_fte"],
+                            "absorbed_peak_pt": cons_stats["absorbed_peak_pt"],
+                        },
+                        context={"peak_days": cons_stats.get("peak_days_detected")},
+                    )
+
+
+            # CRITICAL FIX: Renumber driver IDs after ALL consolidation to ensure correct FTE/PT prefix
+            # This ensures driver IDs match their final driver_type (based on hours)
+            assignments = _renumber_driver_ids(assignments, log_fn)
 
             result["assignments"] = assignments
             result["status"] = "OK"

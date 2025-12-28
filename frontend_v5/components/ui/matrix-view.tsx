@@ -137,18 +137,21 @@ export function MatrixView({ data }: MatrixViewProps) {
 function CellContent({ value }: { value: string }) {
     if (!value) return <span className="text-slate-700">—</span>;
 
-    // Parse block type for coloring
+    // Parse block type for coloring (matching shift-pill.tsx)
     const isTriple = value.includes("[triple]") || value.includes("[3er]");
+    const isSplit = value.includes("[split]") || value.includes("[2er_split]");
     const isDouble = value.includes("[double]") || value.includes("[2er]");
+    const isSingle = value.includes("[single]") || value.includes("[1er]");
 
-    const color = isTriple
-        ? "text-emerald-400"
-        : isDouble
-            ? "text-blue-400"
-            : "text-slate-400";
+    // Color scheme: 3er=Orange, 2er=Blue, 2er_split=Grey, 1er=Green
+    let color = "text-slate-400";
+    if (isTriple) color = "text-orange-400";
+    else if (isSplit) color = "text-slate-400";
+    else if (isDouble) color = "text-blue-400";
+    else if (isSingle) color = "text-emerald-400";
 
     return (
-        <span className={`font-mono text-xs ${color}`} title={value}>
+        <span className={`font-mono text-xs font-medium ${color}`} title={value}>
             {value.substring(0, 20)}
             {value.length > 20 ? "..." : ""}
         </span>

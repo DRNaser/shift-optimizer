@@ -140,4 +140,64 @@ python fleet_counter.py [--turnaround 5] [--interval 15] [--export]
 - `fleet_profile_15min.csv` (timeline)
 
 ---
+
+## 🎨 v7.2.3 UI & Export Fixes (2025-12-28)
+**Status**: **DEPLOYED** ✅
+
+**Context**: Production testing revealed several UI/Export issues.
+
+### Fixes Applied
+
+| Issue | Status | Fix |
+|-------|--------|-----|
+| **PT/FTE Classification** | ✅ | `_renumber_driver_ids()` after consolidation |
+| **Empty Shift Columns** | ✅ | Fixed dayMapping (`Mon`→`Montag`) |
+| **Missing KPI Insights** | ✅ | Export now generates 2 CSVs |
+| **Shift Color Scheme** | ✅ | 3er=Orange, 2er=Blue, Split=Grey, 1er=Green |
+
+### Driver ID Renumbering
+
+```python
+def _renumber_driver_ids(assignments, log_fn):
+    # Update driver_type based on final hours (post-consolidation)
+    for a in assignments:
+        a.driver_type = "FTE" if a.total_hours >= 40.0 else "PT"
+    # Renumber with correct prefix (FTE001..N, PT001..M)
+```
+
+**Impact**: 40h+ drivers now correctly get `FTE###` prefix instead of keeping `PT###` from initial assignment.
+
+### Export Pack Improvements
+
+- **Roster CSV**: Now includes Montag-Samstag shift data (was empty due to day format mismatch)
+- **KPI CSV**: New `_kpis.csv` file with driver counts, tour stats, block distribution
+- **Format**: UTF-8 BOM, Semicolon separator (German Excel compatible)
+
+### Shift Color Scheme (UI)
+
+| Schicht | Farbe | Tailwind |
+|---------|-------|----------|
+| 3er | 🟠 Orange | `bg-orange-500` |
+| 2er | 🔵 Blue | `bg-blue-500` |
+| 2er_split | ⚪ Grey | `bg-slate-500` |
+| 1er | 🟢 Green | `bg-emerald-500` |
+
+### Latest Run Analysis (run_01e37f8b41e9)
+
+```
+FTE: 122 (40.5-49.5h)
+PT:   26 (9-36h)
+─────────────────────
+Total: 148 Drivers
+
+PT Distribution:
+- 36h: 2 drivers (near-FTE, potential bump candidates)
+- 27h: 6 drivers
+- 22.5h: 3 drivers
+- 18h: 6 drivers
+- 13.5h: 5 drivers
+- 9h: 4 drivers
+```
+
+---
 *v7.0.0 Baseline is FROZEN. v7.1.0+ features are additive.*

@@ -1001,7 +1001,8 @@ def solve_capacity_phase(
     config: ConfigV4,
     block_scores: dict[str, float] = None,
     block_props: dict[str, dict] = None,
-    time_limit: float = None
+    time_limit: float = None,
+    context: object = None,  # Added context
 ) -> tuple[list[Block], dict]:
     """
     Phase 1: Determine which blocks to use.
@@ -1082,6 +1083,12 @@ def solve_capacity_phase(
             pass  # HOTFIX A: was 'break' (no loop anymore)
             
         safe_print(f"\n--- ITER {iteration}: CAP={current_cap} (Time left: {remaining:.1f}s) ---", flush=True)
+
+        if context and hasattr(context, "emit_progress"):
+             context.emit_progress("capacity_tighten", f"Iter {iteration}: Finding capacity at CAP={current_cap}", 
+                                   phase="phase1_capacity", step=f"Iter {iteration}",
+                                   metrics={"cap": current_cap, "remaining_s": round(remaining, 1)})
+
         
         result = _solve_capacity_single_cap(
             blocks, tours, block_index, config,
@@ -4275,7 +4282,8 @@ def pack_part_time_saturday(
 def repair_pt_consolidation(
     assignments: list[DriverAssignment],
     min_fte_hours: float = 40.0,
-    max_fte_hours: float = 53.0
+    max_fte_hours: float = 53.0,
+    context: object = None,  # Added context
 ) -> tuple[list[DriverAssignment], dict]:
     """
     Combined Consolidated Repair:
@@ -4333,7 +4341,11 @@ def repair_pt_consolidation(
         logger.info(f"Dynamic Peak Detection: Peak={peak_days}, Relief={relief_days}")
     else:
         peak_days = ["Fri"] # Fallback
+        peak_days = ["Fri"] # Fallback
         logger.warning(f"Dynamic Peak Detection Failed, defaulting to {peak_days}")
+
+    if context and hasattr(context, "emit_progress"):
+        context.emit_progress("phase_start", f"Starting PT Repair (Peak={peak_days})", phase="phase3_fine_tuning")
 
     # 1. BUMP HEAVY PTs (30-39h)
     # Sort largest first to prioritize those closest to 40h
@@ -4365,6 +4377,9 @@ def repair_pt_consolidation(
                 if a.total_hours >= min_fte_hours:
                     a.driver_type = "FTE" # UPGRADE TO FTE
                     stats["bumped_pt_to_fte"] += 1
+                    if context and hasattr(context, "emit_progress"):
+                        context.emit_progress("repair_action", f"Bumped PT {a.driver_id} to FTE", 
+                                              phase="phase3_fine_tuning", metrics={"bumped": 1})
                     break # Done for this driver
 
     # 2. ABSORB PEAK ORPHANS (PTs with ONLY Peak-day work)
@@ -4457,6 +4472,9 @@ def repair_pt_consolidation(
                      if _move_block(pt, fte, block):
                          stats["absorbed_peak_pt"] += 1
                          logger.info(f"ABSORB: Moved Peak-Block ({block.day.value}) from {pt.driver_id} to FTE {fte.driver_id}")
+                         if context and hasattr(context, "emit_progress"):
+                             context.emit_progress("repair_action", f"Absorbed Peak PT {pt.driver_id} into {fte.driver_id}", 
+                                                   phase="phase3_fine_tuning", metrics={"absorbed": 1})
                          success = True
                          break
         
@@ -4527,6 +4545,9 @@ def repair_pt_consolidation(
                             if _move_block(pt, receiver, block):
                                 stats["absorbed_peak_pt"] += 1
                                 logger.info(f"2-STEP SUCCESS: Absorbed Peak-Block into freed Receiver {receiver.driver_id}")
+                                if context and hasattr(context, "emit_progress"):
+                                    context.emit_progress("repair_action", f"Absorbed Peak PT {pt.driver_id} (2-step)", 
+                                                          phase="phase3_fine_tuning", metrics={"absorbed": 1})
                                 success = True
                                 break
                             else:

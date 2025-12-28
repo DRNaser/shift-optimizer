@@ -38,6 +38,14 @@ export function exportToCSV(
     >();
 
     const dayMapping: Record<string, string> = {
+        // Abbreviated format from backend (Weekday.value)
+        Mon: "Montag",
+        Tue: "Dienstag",
+        Wed: "Mittwoch",
+        Thu: "Donnerstag",
+        Fri: "Freitag",
+        Sat: "Samstag",
+        // Fallback: UPPERCASE format
         MONDAY: "Montag",
         TUESDAY: "Dienstag",
         WEDNESDAY: "Mittwoch",
@@ -123,6 +131,14 @@ export function assignmentsToDriverRows(
     >();
 
     const dayMapping: Record<string, keyof DriverRow> = {
+        // Abbreviated format from backend (Weekday.value)
+        Mon: "monday",
+        Tue: "tuesday",
+        Wed: "wednesday",
+        Thu: "thursday",
+        Fri: "friday",
+        Sat: "saturday",
+        // Fallback: UPPERCASE format
         MONDAY: "monday",
         TUESDAY: "tuesday",
         WEDNESDAY: "wednesday",

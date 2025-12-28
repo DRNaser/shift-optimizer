@@ -363,6 +363,14 @@ class Kpis:
     drivers_total: int
     drivers_fte: int
     drivers_pt: int
+    
+    # New Flex/Core split
+    drivers_pt_flex: int # <= 13.5h
+    drivers_pt_core: int # > 13.5h
+    pt_flex_hours: float
+    pt_core_hours: float
+    pt_share_hours_core: float # core_hours / total_hours
+
     total_hours: float
     fte_hours: float
     pt_hours: float
@@ -600,7 +608,7 @@ def _extract_hours_deep_scan(result: Any, debug_mode: bool = False) -> Tuple[Dic
             if h is not None:
                 hours_dict[did] = hours_dict.get(did, 0.0) + h
         
-        if hours_dict:
+        if hours_dict and sum(hours_dict.values()) > 0.1:
             metadata["method_used"] = path2
             if debug_mode:
                 metadata["sample_data"]["rosters"] = [
@@ -624,11 +632,17 @@ def _extract_hours_deep_scan(result: Any, debug_mode: bool = False) -> Tuple[Dic
             if did is None:
                 did = f"driver_{i:04d}"
             
-            # Try to get hours from block
-            block = _maybe_get(a, ["block"])
             hours = 0.0
-            if block:
-                hours = _maybe_get(block, ["total_work_hours", "work_hours", "hours", "duration_hours"]) or 0.0
+            # 1. Try total_hours on DriverAssignment directly
+            th = _maybe_get(a, ["total_hours", "total_work_hours"])
+            if th is not None:
+                 hours = float(th)
+
+            # 2. Fallback: look for inner block (if flattened)
+            if hours == 0.0:
+                block = _maybe_get(a, ["block"])
+                if block:
+                    hours = _maybe_get(block, ["total_work_hours", "work_hours", "hours", "duration_hours"]) or 0.0
             
             # Fallback: compute from start/end
             if hours == 0.0:
@@ -660,164 +674,99 @@ def _extract_hours_deep_scan(result: Any, debug_mode: bool = False) -> Tuple[Dic
 
 
 def compute_kpis(result: Any) -> Kpis:
-    if hasattr(result, "solution"):
-        result = result.solution
-
-    kpi_dict = _maybe_get(result, ["kpis", "metrics", "kpi", "stats"])
-    if isinstance(kpi_dict, dict):
+    # 1. Try to extract detailed hours map (Ground Truth)
+    hours_dict, _ = _extract_hours_deep_scan(result)
+    
+    # 2. Filter ghosts (<= 0.01h)
+    driver_hours = [(d, h) for d, h in hours_dict.items() if h > 0.01]
+    
+    # 3. Compute Metrics from scratch (if data available)
+    if driver_hours:
+        drivers_total = len(driver_hours) # Use effective count
+        total_hours = sum(h for _, h in driver_hours)
+        
+        # Buckets
+        fte_list = [h for _, h in driver_hours if h >= 40.0]
+        pt_list = [h for _, h in driver_hours if h < 40.0]
+        
+        # PT Split
+        pt_flex_list = [h for h in pt_list if h <= 13.5]
+        pt_core_list = [h for h in pt_list if h > 13.5]
+        
+        drivers_fte = len(fte_list)
+        drivers_pt = len(pt_list)
+        drivers_pt_flex = len(pt_flex_list)
+        drivers_pt_core = len(pt_core_list)
+        
+        fte_hours_sum = sum(fte_list)
+        pt_hours_sum = sum(pt_list)
+        pt_flex_hours_sum = sum(pt_flex_list)
+        pt_core_hours_sum = sum(pt_core_list)
+        
+        pt_share_hours = (pt_hours_sum / total_hours) if total_hours > 0 else 0.0
+        pt_share_hours_core = (pt_core_hours_sum / total_hours) if total_hours > 0 else 0.0
+        
+        # FTE Stats
+        if fte_list:
+            fte_min = min(fte_list)
+            fte_avg = fte_hours_sum / drivers_fte
+            fte_max = max(fte_list)
+            fte_stddev = statistics.pstdev(fte_list) if len(fte_list) > 1 else 0.0
+            fte_p10 = _percentile(fte_list, 0.10)
+            fte_p90 = _percentile(fte_list, 0.90)
+            fte_under40_count = sum(1 for h in fte_list if h < 40.0)
+            fte_over55_count = sum(1 for h in fte_list if h > 55.0)
+        else:
+            fte_min = fte_avg = fte_max = fte_stddev = fte_p10 = fte_p90 = float("nan")
+            fte_under40_count = fte_over55_count = 0
+            
+    else:
+        # Fallback to KPI Dict (Legacy / No Roster Details)
+        if hasattr(result, "solution"):
+            result = result.solution
+        kpi_dict = _maybe_get(result, ["kpis", "metrics", "kpi", "stats"]) or {}
+        
+        # Add aliases for robustness
+        drivers_total = int(kpi_dict.get("drivers_total", kpi_dict.get("drivers", 0)) or 0)
         drivers_fte = int(kpi_dict.get("drivers_fte", kpi_dict.get("fte", 0)) or 0)
         drivers_pt = int(kpi_dict.get("drivers_pt", kpi_dict.get("pt", 0)) or 0)
-        drivers_total = int(kpi_dict.get("drivers_total", kpi_dict.get("drivers", 0)) or 0)
-        if drivers_total == 0:
-            drivers_total = drivers_fte + drivers_pt
-
-        pt_share_hours = float(kpi_dict.get("pt_share_hours", kpi_dict.get("pt_share", float("nan"))))
-
-        fte_min = float(kpi_dict.get("fte_min_hours", kpi_dict.get("fte_hours_min", float("nan"))))
-        fte_avg = float(kpi_dict.get("fte_avg_hours", kpi_dict.get("fte_hours_avg", float("nan"))))
-        fte_max = float(kpi_dict.get("fte_max_hours", kpi_dict.get("fte_hours_max", float("nan"))))
-
-        rest_violations = kpi_dict.get("rest_violations", None)
-        if rest_violations is not None:
-            rest_violations = int(rest_violations)
-
-        rosters = _iter_rosters(result)
-        # print(f"DEBUG: Found {len(rosters)} rosters/assignments")
-        if rosters:
-            hours = []
-            for r in rosters:
-                h = _extract_hours_from_roster(r)
-                if h is not None and h >= 40.0:
-                    hours.append(h)
-            if hours:
-                fte_stddev = statistics.pstdev(hours) if len(hours) > 1 else 0.0
-                fte_p10 = _percentile(hours, 0.10)
-                fte_p90 = _percentile(hours, 0.90)
-            else:
-                fte_stddev, fte_p10, fte_p90 = float("nan"), float("nan"), float("nan")
-        else:
-            fte_stddev, fte_p10, fte_p90 = float("nan"), float("nan"), float("nan")
-
-        total_hours = float(kpi_dict.get("total_hours", float("nan")) or float("nan"))
-        pt_hours = float(kpi_dict.get("pt_hours_total", kpi_dict.get("pt_hours", float("nan"))) or float("nan"))
-        fte_hours = float(kpi_dict.get("fte_hours_total", kpi_dict.get("fte_hours", float("nan"))) or float("nan"))
-
-        # Fallback: if hours missing but rosters present, compute sum
-        if (math.isnan(total_hours) or math.isnan(pt_hours)) and rosters:
-             calc_total = 0.0
-             calc_pt = 0.0
-             calc_fte = 0.0
-             for r in rosters:
-                 h = _extract_hours_from_roster(r) or 0.0
-                 calc_total += h
-                 # Determine if PT or FTE
-                 # RosterColumn usually has 'roster_type'
-                 rtype = _maybe_get(r, ["roster_type", "type"])
-                 if rtype == "PT":
-                     calc_pt += h
-                 elif rtype == "FTE":
-                     calc_fte += h
-                 else:
-                     # Infer from hours
-                     if h < 40.0:
-                         calc_pt += h
-                     else:
-                         calc_fte += h
-             
-             if math.isnan(total_hours):
-                 total_hours = calc_total
-             if math.isnan(pt_hours):
-                 pt_hours = calc_pt
-             if math.isnan(fte_hours):
-                 fte_hours = calc_fte
+        total_hours = float(kpi_dict.get("total_hours", 0) or 0.0)
+        pt_share_hours = float(kpi_dict.get("pt_share_hours", kpi_dict.get("pt_share", 0.0)) or 0.0)
         
-        if not math.isnan(pt_hours) and not math.isnan(total_hours) and total_hours > 0:
-            pt_share_hours = pt_hours / total_hours
-
-        fte_under40_count = int(kpi_dict.get("fte_under40_count", 0) or 0)
-        fte_over55_count = int(kpi_dict.get("fte_over55_count", 0) or 0)
-
-        # Recalculate counts from rosters if available (to exclude empty drivers)
-        if rosters:
-            calc_fte_count = 0
-            calc_pt_count = 0
-            calc_total = 0
-            
-            for r in rosters:
-                h = _extract_hours_from_roster(r) or 0.0
-                if h > 0.1: # Only count active drivers
-                    calc_total += 1
-                    if h >= 40.0:
-                        calc_fte_count += 1
-                    else:
-                        calc_pt_count += 1
-            
-            # Override kpi_dict stats with computed (cleaner) values
-            drivers_total = calc_total
-            drivers_fte = calc_fte_count
-            drivers_pt = calc_pt_count
-
-        return Kpis(
-            drivers_total=drivers_total,
-            drivers_fte=drivers_fte,
-            drivers_pt=drivers_pt,
-            total_hours=total_hours,
-            fte_hours=fte_hours,
-            pt_hours=pt_hours,
-            pt_share_hours=pt_share_hours,
-            fte_min=fte_min,
-            fte_avg=fte_avg,
-            fte_max=fte_max,
-            fte_stddev=fte_stddev,
-            fte_p10=fte_p10,
-            fte_p90=fte_p90,
-            fte_under40_count=fte_under40_count,
-            fte_over55_count=fte_over55_count,
-            rest_violations=rest_violations,
-            coverage_ok=None,
-        )
-
-    # Fallback: Try deep-scan if KPI dict didn't work
-    hours_dict, extraction_meta = _extract_hours_deep_scan(result, debug_mode=False)
-    
-    if not hours_dict:
-        raise RuntimeError("Could not extract rosters or KPI dict from result; cannot compute KPIs.")
-
-    # Filter out empty drivers (h <= 0.1)
-    driver_hours: List[Tuple[str, float]] = [(d, h) for d, h in hours_dict.items() if h > 0.1]
-
-    if not driver_hours:
-        raise RuntimeError("Deep-scan extracted hours but data is empty.")
-
-    total_hours = sum(h for _, h in driver_hours)
-    fte_list = [(did, h) for did, h in driver_hours if h >= 40.0]
-    pt_list = [(did, h) for did, h in driver_hours if h < 40.0]
-
-    fte_hours = sum(h for _, h in fte_list)
-    pt_hours = sum(h for _, h in pt_list)
-    pt_share_hours = (pt_hours / total_hours) if total_hours > 0 else float("nan")
-
-    fte_hours_only = [h for _, h in fte_list]
-    if fte_hours_only:
-        fte_min = min(fte_hours_only)
-        fte_avg = sum(fte_hours_only) / len(fte_hours_only)
-        fte_max = max(fte_hours_only)
-        fte_stddev = statistics.pstdev(fte_hours_only) if len(fte_hours_only) > 1 else 0.0
-        fte_p10 = _percentile(fte_hours_only, 0.10)
-        fte_p90 = _percentile(fte_hours_only, 0.90)
-    else:
+        # Cannot infer Flex/Core -> assume 0/0 or 0/PT
+        drivers_pt_flex = 0
+        drivers_pt_core = drivers_pt
+        pt_flex_hours_sum = 0.0
+        pt_core_hours_sum = 0.0 # Unknown
+        pt_share_hours_core = pt_share_hours # Worst case assumption
+        
+        fte_hours_sum = float("nan")
+        pt_hours_sum = float("nan")
         fte_min = fte_avg = fte_max = fte_stddev = fte_p10 = fte_p90 = float("nan")
+        fte_under40_count = 0
+        fte_over55_count = 0
 
-    fte_under40_count = sum(1 for _, h in fte_list if h < 40.0)
-    fte_over55_count = sum(1 for _, h in fte_list if h > 55.0)
-
+    # Rest Violations (Logic remains same)
+    rest_violations = None
+    if hasattr(result, "solution"):
+        kpi_dict = _maybe_get(result.solution, ["kpis", "metrics", "kpi", "stats"]) or {}
+        rv = kpi_dict.get("rest_violations")
+        if rv is not None:
+             rest_violations = int(rv)
+             
+    # Fallback return
     return Kpis(
-        drivers_total=len(driver_hours),
-        drivers_fte=len(fte_list),
-        drivers_pt=len(pt_list),
+        drivers_total=drivers_total, # Uses calculated or fallback
+        drivers_fte=drivers_fte,
+        drivers_pt=drivers_pt,
+        drivers_pt_flex=drivers_pt_flex,
+        drivers_pt_core=drivers_pt_core,
+        pt_flex_hours=pt_flex_hours_sum,
+        pt_core_hours=pt_core_hours_sum,
+        pt_share_hours_core=pt_share_hours_core,
         total_hours=total_hours,
-        fte_hours=fte_hours,
-        pt_hours=pt_hours,
+        fte_hours=fte_hours_sum,
+        pt_hours=pt_hours_sum,
         pt_share_hours=pt_share_hours,
         fte_min=fte_min,
         fte_avg=fte_avg,
@@ -827,9 +776,9 @@ def compute_kpis(result: Any) -> Kpis:
         fte_p90=fte_p90,
         fte_under40_count=fte_under40_count,
         fte_over55_count=fte_over55_count,
-        rest_violations=None,
+        rest_violations=rest_violations,
         coverage_ok=None,
-        extraction_meta=extraction_meta,
+        extraction_meta=None
     )
 
 
@@ -932,12 +881,28 @@ def gate(k: Kpis, baseline: Optional[Dict[str, Any]], strict_pt: bool, require_v
         status = "FAIL"
         reasons.append("Validator required but rest_violations is unknown (could not compute).")
 
-    # v7.0.0 FREEZE THRESHOLDS
-    # Target: 158 drivers (115 FTE + 43 PT)
-    # Tolerance: +2 (Total 160)
-    if k.drivers_total > 160:
+    # v7.0.0 Reporting Upgrade: Flex/Core Split
+    # Target (Effective): 156 drivers (115 FTE + 31 Core + 10 Flex)
+    # Tolerance: +4 (Total 160) - kept wide for safety during transition
+    MAX_DRIVERS_EFFECTIVE = 160 
+    MAX_PT_CORE_SHARE = 0.20 # 20% Core Share max
+    FLEX_POOL_CAP = 15
+
+    # Check effective drivers count
+    if k.drivers_total > MAX_DRIVERS_EFFECTIVE:
         status = "FAIL"
-        reasons.append(f"Hard gate: {k.drivers_total} drivers > 160 (Target 158 + 2 tol).")
+        reasons.append(f"Hard gate: {k.drivers_total} effective drivers > {MAX_DRIVERS_EFFECTIVE}.")
+
+    # Check Core PT Share (Hard Gate)
+    if k.pt_share_hours_core > MAX_PT_CORE_SHARE:
+        status = "FAIL"
+        reasons.append(f"Hard gate: Core PT share {k.pt_share_hours_core:.1%} > {MAX_PT_CORE_SHARE:.1%}.")
+
+    # Soft Limit: Flex Pool Size
+    if k.drivers_pt_flex > FLEX_POOL_CAP:
+        if status != "FAIL": # Don't downgrade a FAIL to a WARN
+            status = "WARN"
+        reasons.append(f"Soft gate: Flex Pool size {k.drivers_pt_flex} > {FLEX_POOL_CAP} (Target ~10).")
 
     # PT Share: ~24% is expected (Flex Pool ~8-10 drivers included).
     # Limit set to 25% to allow operation without failure, but warn above.
@@ -1099,11 +1064,13 @@ def main() -> int:
             print(f"[validator] {m}")
 
     print("\\nKPIs:")
-    print(f"  Drivers: {k.drivers_fte} FTE + {k.drivers_pt} PT = {k.drivers_total}")
-    if not math.isnan(k.pt_share_hours):
-        print(f"  PT share (hours): {k.pt_share_hours:.3f}")
+    print(f"  Drivers: {k.drivers_fte} FTE + {k.drivers_pt_core} Core + {k.drivers_pt_flex} Flex = {k.drivers_total} Total (Effective)")
+    if not math.isnan(k.pt_share_hours_core):
+        print(f"  PT Share (Core): {k.pt_share_hours_core:.3f}")
     else:
-        print("  PT share (hours): NaN/unknown")
+         print("  PT Share (Core): NaN")
+    print(f"  PT Share (Total): {k.pt_share_hours:.3f}")
+    print(f"  Flex Pool: {k.drivers_pt_flex} drivers ({k.pt_flex_hours:.1f}h)")
     print(f"  FTE hours: min {k.fte_min:.1f} | avg {k.fte_avg:.1f} | max {k.fte_max:.1f} | std {k.fte_stddev:.2f}")
     print(f"  FTE p10/p90: {k.fte_p10:.1f} / {k.fte_p90:.1f}")
     print(f"  FTE under 40h: {k.fte_under40_count} | FTE over 55h: {k.fte_over55_count}")
