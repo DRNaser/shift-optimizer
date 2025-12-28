@@ -4267,8 +4267,281 @@ def pack_part_time_saturday(
     )
     
     logger.info(f"Packed {packed_count} Saturday blocks. "
-                f"PT with Sat: {stats['pt_drivers_with_sat_before']} â†’ {stats['pt_drivers_with_sat_after']}")
+                f"PT with Sat: {stats['pt_drivers_with_sat_before']} -> {stats['pt_drivers_with_sat_after']}")
     
+    return assignments, stats
+
+
+def repair_pt_consolidation(
+    assignments: list[DriverAssignment],
+    min_fte_hours: float = 40.0,
+    max_fte_hours: float = 53.0
+) -> tuple[list[DriverAssignment], dict]:
+    """
+    Combined Consolidated Repair:
+    1. Bump 'Almost-FTE' PTs (30-39h) to >= 40h (Steal small blocks)
+    2. Absorb Peak-Only PTs into FTEs (Peak-On / Relief-Off logic)
+    
+    Target: Reduce 36h-PT and single-day orphans on peak days.
+    """
+    stats = {
+        "bumped_pt_to_fte": 0,
+        "absorbed_peak_pt": 0,
+        "peak_days_detected": [],
+        "relief_days_detected": []
+    }
+    
+    from collections import defaultdict
+    from src.services.constraints import can_assign_block
+    
+    # helper
+    def get_source_candidates(assignments, ignore_id):
+        # Candidates for stealing: Small blocks (1er or small 2er) from ANY driver
+        # Preference: Other PTs -> Overfull FTEs
+        cands = []
+        for a in assignments:
+            if a.driver_id == ignore_id:
+                continue
+            
+            # If FTE, only give if > min_hours
+            if a.driver_type == "FTE" and a.total_hours <= min_fte_hours:
+                continue
+                
+            for block in a.blocks:
+                # small blocks only
+                if block.total_work_hours > 6.0:
+                    continue
+                cands.append((block, a))
+        # Sort smallest first
+        cands.sort(key=lambda x: x[0].total_work_minutes)
+        return cands
+
+    # 0. DETECT PEAK & RELIEF DAYS
+    day_counts = defaultdict(int)
+    for a in assignments:
+        for b in a.blocks:
+            day_counts[b.day.value] += 1
+    
+    # Sort days by block count
+    sorted_days = sorted(day_counts.items(), key=lambda x: -x[1])
+    if sorted_days:
+        peak_days = [d for d, c in sorted_days[:2]] # Top 2
+        relief_days = [d for d, c in sorted_days[-2:]] # Bottom 2 (not used yet but good for logging)
+        
+        stats["peak_days_detected"] = peak_days
+        stats["relief_days_detected"] = relief_days
+        logger.info(f"Dynamic Peak Detection: Peak={peak_days}, Relief={relief_days}")
+    else:
+        peak_days = ["Fri"] # Fallback
+        logger.warning(f"Dynamic Peak Detection Failed, defaulting to {peak_days}")
+
+    # 1. BUMP HEAVY PTs (30-39h)
+    # Sort largest first to prioritize those closest to 40h
+    pt_candidates = sorted(
+        [a for a in assignments if a.driver_type == "PT" and 30.0 <= a.total_hours < min_fte_hours],
+        key=lambda x: -x.total_hours
+    )
+    
+    for a in pt_candidates:
+        target_hours = 40.0 # Min FTE
+        needed = target_hours - a.total_hours
+        
+        # Find a block ~needed size
+        sources = get_source_candidates(assignments, a.driver_id)
+        
+        for block, source in sources:
+            if block not in source.blocks: continue # already taken
+            
+            # Check constraints
+            if not _can_accept_block(a, block, max_weekly_hours=max_fte_hours):
+                continue
+            ok, _ = can_assign_block(a.blocks, block)
+            if not ok:
+                continue
+            
+            # Move
+            if _move_block(source, a, block):
+                logger.info(f"BUMP: Did bump PT {a.driver_id} ({a.total_hours-block.total_work_hours:.1f}h -> {a.total_hours:.1f}h) taking block from {source.driver_type}")
+                if a.total_hours >= min_fte_hours:
+                    a.driver_type = "FTE" # UPGRADE TO FTE
+                    stats["bumped_pt_to_fte"] += 1
+                    break # Done for this driver
+
+    # 2. ABSORB PEAK ORPHANS (PTs with ONLY Peak-day work)
+    # Target: FTEs with capacity (40-45h) who are NOT working on that Peak Day (implicit via can_assign)
+    
+    # Identify Peak-Only PTs
+    peak_only_pts = []
+    for a in assignments:
+        if a.driver_type == "PT" and len(a.blocks) == 1:
+            b = a.blocks[0]
+            if b.day.value in peak_days:
+                peak_only_pts.append(a)
+                
+    # Identify Receiver FTEs (Pre-filtered by hours)
+    potential_receivers = [a for a in assignments if a.driver_type == "FTE" and a.total_hours < 50.0]
+    
+    # Helper to check next day start
+    def get_next_day_start_min(driver, current_day_val):
+        # find day index
+        days = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+        try:
+            curr_idx = days.index(current_day_val)
+            next_day_val = days[(curr_idx + 1) % 7]
+        except ValueError:
+            return 9999
+            
+        first_start = 9999
+        for b in driver.blocks:
+            if b.day.value == next_day_val:
+                start_min = b.first_start.hour * 60 + b.first_start.minute
+                if start_min < first_start:
+                    first_start = start_min
+        return first_start # 9999 if off next day
+
+    for pt in peak_only_pts:
+        if not pt.blocks: continue
+        block = pt.blocks[0]
+        block_end_min = block.last_end.hour * 60 + block.last_end.minute
+        
+        # Sort receivers for THIS specific block
+        # Priority 1: OFF on block day (Strict Requirement for absorption)
+        # Priority 2: Next Day Status (OFF > Late Start > Early Start)
+        # Priority 3: Lowest Hours
+        
+        candidates = []
+        cands_before_rest = 0
+        cands_adj_fail = 0
+        
+        for fte in potential_receivers:
+            # Check 1: Must be OFF on peak day
+            on_same_day = any(b.day.value == block.day.value for b in fte.blocks)
+            if on_same_day: continue
+            
+            cands_before_rest += 1
+            
+            # Check 2: Next Day Compatibility
+            next_start = get_next_day_start_min(fte, block.day.value)
+            
+            # Score
+            # 2 = Next Day OFF (best)
+            # 1 = Next Day ON but compatible (start >= end + 11h)
+            # 0 = Next Day ON and incompatible (will fail check anyway, but deprioritize)
+            
+            rest_needed_min = 11 * 60
+            compatible = True
+            if next_start != 9999: # Working next day
+               gap = (24 * 60 - block_end_min) + next_start
+               if gap < rest_needed_min:
+                   compatible = False
+                   cands_adj_fail += 1
+            
+            score_next_day = 2 if next_start == 9999 else (1 if compatible else 0)
+            
+            candidates.append((score_next_day, fte))
+            
+        # Log diagnosis for first few
+        if stats["absorbed_peak_pt"] < 5: 
+             logger.info(f"Diagnose {pt.driver_id} (Peak {block.day.value}): Receivers Off-Peak={cands_before_rest}, Adj-Fail={cands_adj_fail}")
+        
+        # Sort: Best next-day score, then lowest hours
+        candidates.sort(key=lambda x: (-x[0], x[1].total_hours))
+        
+        # Try assignment
+        success = False
+        for _, fte in candidates:
+             # Check constraints
+            if _can_accept_block(fte, block, max_weekly_hours=max_fte_hours):
+                ok, _ = can_assign_block(fte.blocks, block)
+                if ok:
+                     if _move_block(pt, fte, block):
+                         stats["absorbed_peak_pt"] += 1
+                         logger.info(f"ABSORB: Moved Peak-Block ({block.day.value}) from {pt.driver_id} to FTE {fte.driver_id}")
+                         success = True
+                         break
+        
+        # 2-STEP SWAP REPAIR (Mini-LNS)
+        # If direct move failed, try to free up a Receiver by moving their conflicting Next-Day block
+        if not success: 
+            # Find receivers who failed ONLY due to Adjacency-Rest (Score 0 but next_start != 9999)
+            # We need to re-scan because we only stored score 0
+            
+            # Filter for FTEs who are OFF on Peak Day but have conflict
+            blocked_receivers = [
+                f for f in potential_receivers 
+                if not any(b.day.value == block.day.value for b in f.blocks) # Peak OFF
+            ]
+            
+            for receiver in blocked_receivers:
+                # Identify the conflicting block (Next Day Early)
+                # Next Day
+                next_day_val = None
+                days = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+                try:
+                    curr_idx = days.index(block.day.value)
+                    next_day_val = days[(curr_idx + 1) % 7]
+                except ValueError:
+                    continue
+                    
+                conflicting_block = None
+                for b in receiver.blocks:
+                    if b.day.value == next_day_val:
+                        conflicting_block = b
+                        break
+                
+                if not conflicting_block: continue 
+                
+                # Check if moving this block away solves the issue for Receiver
+                # Hypothetical: Receiver without conflicting_block
+                # Can they take Peak Block?
+                # We need to be careful not to mutate state unless we commit
+                
+                # Let's try to find a home for conflicting_block FIRST
+                # Source: Receiver, Target: Anyone else (FTE/PT) compatible
+                # We prefer FTEs < 50h or PTs < 30h
+                
+                # Simple linear scan for a "Third Party"
+                moved_conflict = False
+                potential_third_parties = [
+                    a for a in assignments 
+                    if a.driver_id != receiver.driver_id and a.driver_id != pt.driver_id
+                ]
+                potential_third_parties.sort(key=lambda x: x.total_hours) # Fill empty/low first
+                
+                for third in potential_third_parties:
+                     if _can_accept_block(third, conflicting_block, max_weekly_hours=max_fte_hours):
+                        ok_3, _ = can_assign_block(third.blocks, conflicting_block)
+                        if ok_3:
+                            # EXECUTE STEP 1: Move Conflict -> Third
+                            if _move_block(receiver, third, conflicting_block):
+                                logger.info(f"2-STEP: Freed up Receiver {receiver.driver_id} by moving {conflicting_block.day.value} block to {third.driver_id}")
+                                moved_conflict = True
+                                break
+                
+                if moved_conflict:
+                    # EXECUTE STEP 2: Move Peak-Block -> Receiver (Now Free)
+                    # Use standard checks again just to be safe
+                    if _can_accept_block(receiver, block, max_weekly_hours=max_fte_hours):
+                        ok_final, _ = can_assign_block(receiver.blocks, block)
+                        if ok_final:
+                            if _move_block(pt, receiver, block):
+                                stats["absorbed_peak_pt"] += 1
+                                logger.info(f"2-STEP SUCCESS: Absorbed Peak-Block into freed Receiver {receiver.driver_id}")
+                                success = True
+                                break
+                            else:
+                                 # Rollback? We just moved a block from Receiver to Third. 
+                                 # We can leave it, it's a valid move regardless (load balancing).
+                                 # But we failed to absorb the PT.
+                                 logger.warning(f"2-STEP PARTIAL: Freed receiver {receiver.driver_id} but failed to move PT block (Constraint?)")
+                        else:
+                             # New constraint violation?
+                             logger.warning(f"2-STEP PARTIAL: Receiver {receiver.driver_id} freed but still cannot take block")
+                             
+                if success: break
+
+    return assignments, stats
+                         
     return assignments, stats
 
 

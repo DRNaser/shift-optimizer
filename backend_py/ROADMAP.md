@@ -34,6 +34,12 @@ Result: SIGNIFICANT EFFICIENCY BOOST
 - [x] **Focused LNS**: LNS now actively targets PT drivers for consolidation into FTEs.
 - [x] **Result**: Reduced driver count from 189 to 158.
 
+### ✅ Peak-Robustness Upgrade (Erledigt - 2025-12-28)
+- [x] **Dynamic Peak Detection**: Solver automatically detects peak days (e.g., Fri/Mon) per run -> No hardcoded "Friday" logic.
+- [x] **Adjacency-Aware Templates**: `roster_column_generator` builds Peak-ON / Peak+1-OFF patterns to structurally enable absorption.
+- [x] **2-Step Repair (Mini-LNS)**: Repair logic now solves "Next-Day Early Start" conflicts by moving blocking neighbors, unlocking absorption.
+- [x] **Result**: Successfully absorbed Peak-Only orphans even with tight adjacency constraints.
+
 ### ✅ Production Verification (Erledigt - 2025-12-28)
 - [x] **Robustness Check**: Tested 5 Seeds (0-4).
     - **Drivers**: Constant **158** (StdDev 0.00).
@@ -45,6 +51,7 @@ Result: SIGNIFICANT EFFICIENCY BOOST
 The solver is **SHIP-READY**.
 1.  **Merge & Deploy**: Release v7.0.0 to production.
 2.  **Monitor**: Watch for drift in production data.
+3.  **Non-Peak Orphans**: Generalize repair logic for "Saturday Orphans" (or other non-peak singletons) if further PT reduction (<10%) is needed.
 
 
 ---

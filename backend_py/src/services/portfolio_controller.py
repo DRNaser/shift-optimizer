@@ -853,6 +853,8 @@ def _execute_path(
             
             # OPTIMIZED: Apply swap consolidation post-processing
             from src.services.set_partition_solver import swap_consolidation
+            # OPTIMIZED: Apply swap consolidation post-processing
+            from src.services.set_partition_solver import swap_consolidation
             assignments, swap_stats = swap_consolidation(
                 assignments=assignments,
                 blocks_lookup={b.id: b for b in selected_blocks},
@@ -862,7 +864,20 @@ def _execute_path(
                 log_fn=log_fn,
             )
             result["swap_stats"] = swap_stats
-            
+
+            # NEW: Apply Targeted PT Repair ("Bump" and "Absorb") - User Request
+            from src.services.forecast_solver_v4 import repair_pt_consolidation
+            log_fn("  Applying Targeted PT Consolidation (Bump & Absorb)...")
+            assignments, cons_stats = repair_pt_consolidation(
+                assignments, 
+                min_fte_hours=40.0, 
+                max_fte_hours=53.0
+            )
+            result["consolidation_stats"] = cons_stats
+            if cons_stats["bumped_pt_to_fte"] > 0 or cons_stats["absorbed_peak_pt"] > 0:
+                log_fn(f"  Consolidation: Bumped {cons_stats['bumped_pt_to_fte']} PTs to FTE, Absorbed {cons_stats['absorbed_peak_pt']} Peak blocks")
+                log_fn(f"  Dynamic Peak Days: {cons_stats.get('peak_days_detected')}")
+
             result["assignments"] = assignments
             result["status"] = "OK"
             result["drivers_used"] = len(assignments)

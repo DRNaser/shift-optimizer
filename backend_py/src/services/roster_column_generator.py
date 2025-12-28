@@ -65,6 +65,138 @@ class RosterColumnGenerator:
         
         # Conflict scoring: blocks with high overlap counts
         self._compute_conflict_scores()
+
+    def detect_peak_relief_days(self) -> tuple[list[str], list[str]]:
+        """
+        Dynamically identify Peak days (high load) and Relief days (low load).
+        Returns (peak_days, relief_days).
+        """
+        day_load = defaultdict(int)
+        for b in self.block_infos:
+            day_load[b.day] += b.work_min
+            
+        # Sort days by load
+        sorted_days = sorted(day_load.items(), key=lambda x: -x[1])
+        
+        if not sorted_days:
+            return ([], [])
+            
+        # Top 2 are Peak, Bottom 2 are Relief
+        peak_days = [d for d, _ in sorted_days[:2]]
+        relief_days = [d for d, _ in sorted_days[-2:]]
+        
+        return peak_days, relief_days
+
+    def generate_peak_relief_columns(self, target_count: int = 2000) -> int:
+        """
+        Generate columns based on "Peak-ON / Relief-OFF" templates.
+        
+        Strategy:
+        1. Identify Peak & Relief days.
+        2. Template A: Peak-ON / Relief-OFF (Standard load balancing)
+        3. Template B: Peak-ON / (Peak+1)-OFF (Adjacency-Aware for Absorption)
+        
+        Args:
+            target_count: Max columns to generate via this method.
+            
+        Returns:
+            Number of valid columns added.
+        """
+        peak_days, relief_days = self.detect_peak_relief_days()
+        if not peak_days:
+            return 0
+            
+        self.log_fn(f"Template Families: Peak={peak_days}, Relief={relief_days}")
+        
+        generated = 0
+        attempts = 0
+        max_attempts = target_count * 3
+        
+        # Helper for next day logic
+        days_order = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+        def get_next_day(d):
+            try:
+                idx = days_order.index(d)
+                return days_order[(idx + 1) % 7]
+            except ValueError:
+                return None
+        
+        # Determine specific OFF days needed for Adjacency (Peak + 1)
+        # e.g. Friday Peak -> Saturday Off
+        adjacency_off_days = set()
+        for p in peak_days:
+            nxt = get_next_day(p)
+            if nxt: adjacency_off_days.add(nxt)
+            
+        # Prioritize seeds on Peak days
+        peak_seeds = [b for b in self.block_infos if b.day in peak_days]
+        # Sort by length (longest first) to fill hours quickly
+        peak_seeds.sort(key=lambda b: -b.work_min)
+        
+        import random
+        rng = random.Random(self.seed + 1) # distinct stream
+        
+        for seed in peak_seeds:
+            if generated >= target_count or attempts >= max_attempts:
+                break
+                
+            attempts += 1
+            
+            # Select Template Strategy
+            # 60% Adjacency-Aware (Peak+1 OFF) - Critical for Absorption
+            # 40% Standard Relief (Relief OFF) - Good for overall balancing
+            
+            excluded_days = set()
+            strategy = "adjacency" if rng.random() < 0.6 else "relief"
+            
+            if strategy == "adjacency":
+                # Find the day AFTER this seed's day
+                nxt = get_next_day(seed.day)
+                if nxt: excluded_days.add(nxt)
+            else:
+                # Relief OFF
+                if relief_days:
+                    if rng.random() < 0.5:
+                        excluded_days.add(rng.choice(relief_days))
+                    else:
+                        excluded_days.update(relief_days)
+            
+            # Build column
+            current_blocks = [seed]
+            current_minutes = seed.work_min
+            target_min_minutes = 42.0 * 60
+            
+            # Candidates: NOT on excluded days, NOT seed
+            # Sort: Uncovered first, then Best Fit
+            candidates = [
+                b for b in self.block_infos 
+                if b.day not in excluded_days and b.block_id != seed.block_id
+            ]
+            
+            # Shuffle slightly to avoid determinism loops
+            rng.shuffle(candidates)
+            
+            # Greedily add to reach FTE hours
+            for cand in candidates:
+                if current_minutes >= MAX_WEEK_MINUTES:
+                    break
+                
+                can_add, _ = can_add_block_to_roster(current_blocks, cand, current_minutes)
+                if can_add:
+                    current_blocks.append(cand)
+                    current_minutes += cand.work_min
+            
+            # Only keep if FTE grade
+            if current_minutes >= target_min_minutes:
+                 roster = create_roster_from_blocks(
+                    roster_id=self._get_next_roster_id(),
+                    block_infos=current_blocks,
+                 )
+                 if roster.is_valid and self.add_column(roster):
+                     generated += 1
+                     
+        self.log_fn(f"Template Families generated: {generated} columns (prioritized Adjacency-Aware)")
+        return generated
     
     def _compute_conflict_scores(self):
         """Compute conflict scores for blocks (higher = more overlaps)."""
@@ -685,6 +817,11 @@ class RosterColumnGenerator:
         self.log_fn("=" * 60)
         
         stats = {"stages": []}
+
+        # NEW: Generate Peak/Relief Templates FIRST
+        # This seeds the pool with "structurally correct" columns
+        n_templates = self.generate_peak_relief_columns(target_count=2000)
+        stats["template_columns"] = n_templates
         
         for stage_name, hour_range, target_count in stages:
             stage_start = len(self.pool)
