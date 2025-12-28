@@ -1,0 +1,176 @@
+name: Nightly Robustness Suite
+
+on:
+  schedule:
+    - cron: '0 2 * * *'  # 2 AM UTC daily
+  workflow_dispatch:
+    inputs:
+      time_budget:
+        description: 'Time budget per seed (seconds)'
+        required: false
+        default: '120'
+
+env:
+  PYTHON_VERSION: "3.11"
+  PYTHONHASHSEED: "0"
+
+# Prevent concurrent nightly runs (cancel in-progress if new one starts)
+concurrency:
+  group: nightly-robustness
+  cancel-in-progress: false  # Let running jobs finish
+
+jobs:
+  robustness-validation:
+    name: Seeds 0-4 Validation
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    
+    strategy:
+      matrix:
+        seed: [0, 1, 2, 3, 4]
+      fail-fast: false
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: 'pip'
+      
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r backend_py/requirements.txt
+      
+      - name: Prepare test fixture
+        run: |
+          cp backend_py/tests/fixtures/forecast_ci_test.csv "forecast input.csv"
+      
+      - name: Run Solver (Seed ${{ matrix.seed }})
+        run: |
+          python backend_py/export_roster_matrix.py \
+            --time-budget ${{ github.event.inputs.time_budget || '120' }} \
+            --seed ${{ matrix.seed }}
+        env:
+          PYTHONHASHSEED: 0
+
+      - name: Verify Results
+        run: |
+          if [ ! -f "backend_py/roster_matrix.csv" ]; then
+            echo "❌ FAIL: No output for seed ${{ matrix.seed }}"
+            exit 1
+          fi
+          
+          rows=$(wc -l < backend_py/roster_matrix.csv)
+          echo "Seed ${{ matrix.seed }}: $rows rows in roster_matrix.csv"
+          
+          if [ "$rows" -lt 2 ]; then
+            echo "❌ FAIL: Export too small for seed ${{ matrix.seed }}"
+            exit 1
+          fi
+      
+      - name: Compute Hash
+        id: hash
+        run: |
+          hash=$(sha256sum backend_py/roster_matrix.csv | cut -d' ' -f1)
+          echo "hash=$hash" >> $GITHUB_OUTPUT
+          echo "Seed ${{ matrix.seed }} hash: $hash"
+      
+      - name: Rename Export by Seed
+        run: |
+          mkdir -p artifacts
+          cp backend_py/roster_matrix.csv artifacts/roster_matrix_seed${{ matrix.seed }}.csv
+          
+          # Create metadata
+          echo "{" > artifacts/metadata_seed${{ matrix.seed }}.json
+          echo "  \"seed\": ${{ matrix.seed }}," >> artifacts/metadata_seed${{ matrix.seed }}.json
+          echo "  \"time_budget\": ${{ github.event.inputs.time_budget || 120 }}," >> artifacts/metadata_seed${{ matrix.seed }}.json
+          echo "  \"roster_hash\": \"${{ steps.hash.outputs.hash }}\"," >> artifacts/metadata_seed${{ matrix.seed }}.json
+          echo "  \"timestamp\": \"$(date -Iseconds)\"" >> artifacts/metadata_seed${{ matrix.seed }}.json
+          echo "}" >> artifacts/metadata_seed${{ matrix.seed }}.json
+      
+      - name: Upload Seed Results
+        uses: actions/upload-artifact@v4
+        with:
+          name: seed-${{ matrix.seed }}-results
+          path: artifacts/
+          retention-days: 30
+  
+  aggregate-results:
+    name: Aggregate & Validate
+    runs-on: ubuntu-latest
+    needs: robustness-validation
+    if: always()
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Download all seed results
+        uses: actions/download-artifact@v4
+        with:
+          path: seed-results/
+      
+      - name: Create Robustness Summary
+        run: |
+          mkdir -p artifacts
+          
+          echo "{" > artifacts/robustness_summary.json
+          echo "  \"run_date\": \"$(date -Iseconds)\"," >> artifacts/robustness_summary.json
+          echo "  \"seeds\": [0, 1, 2, 3, 4]," >> artifacts/robustness_summary.json
+          echo "  \"time_budget\": ${{ github.event.inputs.time_budget || 120 }}," >> artifacts/robustness_summary.json
+          echo "  \"results\": {" >> artifacts/robustness_summary.json
+          
+          first=true
+          for seed in 0 1 2 3 4; do
+            meta_file="seed-results/seed-${seed}-results/metadata_seed${seed}.json"
+            
+            if [ -f "$meta_file" ]; then
+              if [ "$first" = false ]; then
+                echo "," >> artifacts/robustness_summary.json
+              fi
+              first=false
+              
+              echo "    \"seed_${seed}\": $(cat "$meta_file")" >> artifacts/robustness_summary.json
+            fi
+          done
+          
+          echo "" >> artifacts/robustness_summary.json
+          echo "  }," >> artifacts/robustness_summary.json
+          echo "  \"status\": \"${{ needs.robustness-validation.result }}\"" >> artifacts/robustness_summary.json
+          echo "}" >> artifacts/robustness_summary.json
+          
+          cat artifacts/robustness_summary.json
+      
+      - name: Check Determinism
+        run: |
+          echo "Checking hash consistency across seeds..."
+          
+          hashes=""
+          for seed in 0 1 2 3 4; do
+            meta_file="seed-results/seed-${seed}-results/metadata_seed${seed}.json"
+            if [ -f "$meta_file" ]; then
+              hash=$(grep "roster_hash" "$meta_file" | cut -d'"' -f4)
+              echo "Seed $seed: $hash"
+              hashes="$hashes $hash"
+            fi
+          done
+          
+          unique_count=$(echo "$hashes" | tr ' ' '\n' | grep -v '^$' | sort -u | wc -l)
+          
+          if [ "$unique_count" -eq 1 ]; then
+            echo "✅ PASS: Perfect determinism (all seeds identical)"
+          else
+            echo "⚠️ WARNING: $unique_count different hashes detected"
+            echo "This may indicate determinism issue or expected variation"
+          fi
+      
+      - name: Upload Summary
+        uses: actions/upload-artifact@v4
+        with:
+          name: robustness-summary
+          path: artifacts/robustness_summary.json
+          retention-days: 90
