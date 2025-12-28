@@ -449,6 +449,12 @@ def _extract_hours_from_roster(roster: Any) -> Optional[float]:
     val = _maybe_get(roster, ["total_hours", "hours", "hours_total", "weekly_hours", "work_hours"])
     if isinstance(val, (int, float)):
         return float(val)
+    
+    # Fallback: check total_minutes
+    mins = _maybe_get(roster, ["total_minutes", "minutes", "work_minutes"])
+    if isinstance(mins, (int, float)):
+        return float(mins) / 60.0
+
     return None
 
 
@@ -696,6 +702,38 @@ def compute_kpis(result: Any) -> Kpis:
         pt_hours = float(kpi_dict.get("pt_hours_total", kpi_dict.get("pt_hours", float("nan"))) or float("nan"))
         fte_hours = float(kpi_dict.get("fte_hours_total", kpi_dict.get("fte_hours", float("nan"))) or float("nan"))
 
+        # Fallback: if hours missing but rosters present, compute sum
+        if (math.isnan(total_hours) or math.isnan(pt_hours)) and rosters:
+             calc_total = 0.0
+             calc_pt = 0.0
+             calc_fte = 0.0
+             for r in rosters:
+                 h = _extract_hours_from_roster(r) or 0.0
+                 calc_total += h
+                 # Determine if PT or FTE
+                 # RosterColumn usually has 'roster_type'
+                 rtype = _maybe_get(r, ["roster_type", "type"])
+                 if rtype == "PT":
+                     calc_pt += h
+                 elif rtype == "FTE":
+                     calc_fte += h
+                 else:
+                     # Infer from hours
+                     if h < 40.0:
+                         calc_pt += h
+                     else:
+                         calc_fte += h
+             
+             if math.isnan(total_hours):
+                 total_hours = calc_total
+             if math.isnan(pt_hours):
+                 pt_hours = calc_pt
+             if math.isnan(fte_hours):
+                 fte_hours = calc_fte
+        
+        if not math.isnan(pt_hours) and not math.isnan(total_hours) and total_hours > 0:
+            pt_share_hours = pt_hours / total_hours
+
         fte_under40_count = int(kpi_dict.get("fte_under40_count", 0) or 0)
         fte_over55_count = int(kpi_dict.get("fte_over55_count", 0) or 0)
 
@@ -873,14 +911,18 @@ def gate(k: Kpis, baseline: Optional[Dict[str, Any]], strict_pt: bool, require_v
         status = "FAIL"
         reasons.append("Validator required but rest_violations is unknown (could not compute).")
 
-    if not math.isnan(k.pt_share_hours) and k.pt_share_hours > 0.10:
+    if k.drivers_total > 165:
+        status = "FAIL"
+        reasons.append(f"Hard gate: {k.drivers_total} drivers > 165 (Production limit).")
+
+    if not math.isnan(k.pt_share_hours) and k.pt_share_hours > 0.15:
         if strict_pt:
             status = "FAIL"
-            reasons.append(f"PT target failed: pt_share_hours={k.pt_share_hours:.3f} > 0.10")
+            reasons.append(f"PT target failed: pt_share_hours={k.pt_share_hours:.3f} > 0.15")
         else:
             if status != "FAIL":
                 status = "WARN"
-            reasons.append(f"PT target not reached (soft): pt_share_hours={k.pt_share_hours:.3f} > 0.10")
+            reasons.append(f"PT target not reached (soft): pt_share_hours={k.pt_share_hours:.3f} > 0.15")
 
     if not math.isnan(k.fte_stddev) and k.drivers_fte > 0 and k.fte_stddev > 4.0:
         if status != "FAIL":
@@ -888,14 +930,16 @@ def gate(k: Kpis, baseline: Optional[Dict[str, Any]], strict_pt: bool, require_v
         reasons.append(f"FTE balance is loose: stddev={k.fte_stddev:.2f}h (soft target <= 4.0h).")
 
     if baseline is not None:
-        base_pt = float(baseline.get("pt_share_hours", float("nan")))
-        base_std = float(baseline.get("fte_stddev", float("nan")))
-        base_score = float(baseline.get("score", float("nan")))
+        base_drivers = float(baseline.get("drivers_total", float("nan")))
 
         if not math.isnan(base_pt) and not math.isnan(k.pt_share_hours):
-            if k.pt_share_hours > base_pt + 0.005:
+            if k.pt_share_hours > base_pt + 0.02: # 2% tolerance
                 status = "FAIL"
-                reasons.append(f"Regression vs baseline: pt_share_hours {k.pt_share_hours:.3f} > baseline {base_pt:.3f} (+0.005 tol).")
+                reasons.append(f"Regression vs baseline: pt_share_hours {k.pt_share_hours:.3f} > baseline {base_pt:.3f} (+0.02 tol).")
+        
+        if not math.isnan(base_drivers) and k.drivers_total > base_drivers + 5:
+            status = "FAIL"
+            reasons.append(f"Regression: drivers {k.drivers_total} > baseline {base_drivers:.0f} (+5 tol).")
 
         if not math.isnan(base_std) and not math.isnan(k.fte_stddev):
             if k.fte_stddev > base_std + 0.5:

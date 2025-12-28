@@ -13,7 +13,7 @@ Moves:
 import logging
 import random
 from collections import defaultdict
-from typing import Optional
+from typing import Optional, List, Set, Dict
 
 from src.services.roster_column import (
     RosterColumn, BlockInfo, create_roster_from_blocks, create_roster_from_blocks_pt,
@@ -109,7 +109,8 @@ class RosterColumnGenerator:
         
         # QUALITY: Hard-cap singleton columns to prevent pool pollution
         # BUT: Allow singletons for blocks that have NO OTHER coverage (essential for feasibility)
-        SINGLETON_CAP = 500
+        # Increased to 2000 to ensure EVERY block has a safety singleton for strict Elastic RMP
+        SINGLETON_CAP = 2000
         if column.num_blocks == 1:
             # Check if this singleton covers a block that has no other coverage
             block_id = list(column.block_ids)[0]
@@ -620,6 +621,38 @@ class RosterColumnGenerator:
         
         return roster if roster.is_valid else None
     
+    def get_pool_stats(self) -> dict:
+        """Return statistics about the current pool."""
+        total = len(self.pool)
+        singletons = sum(1 for c in self.pool.values() if c.num_blocks == 1)
+        fte_count = sum(1 for c in self.pool.values() if c.total_hours >= 40.0)
+        
+        return {
+            "pool_total": total,
+            "singletons": singletons,
+            "fte_columns": fte_count,
+            "singleton_ratio": singletons / total if total else 0
+        }
+
+    def get_quality_coverage(self, ignore_singletons: bool = False, min_hours: float = 0.0) -> float:
+        """
+        Calculate the percentage of blocks covered by at least one valid column.
+        
+        Args:
+            ignore_singletons: If True, only count blocks covered by columns with >1 blocks.
+            min_hours: If >0, only count blocks covered by columns with >= min_hours.
+        """
+        covered_blocks = set()
+        for col in self.pool.values():
+            if ignore_singletons and col.num_blocks == 1:
+                continue
+            if min_hours > 0 and col.total_hours < min_hours:
+                continue
+            
+            covered_blocks.update(col.block_ids)
+            
+        return len(covered_blocks) / len(self.block_infos) if self.block_infos else 0.0
+
     def generate_multistage_pool(
         self,
         stages: list[tuple[str, tuple[float, float], int]] = None,
@@ -683,9 +716,8 @@ class RosterColumnGenerator:
             uncovered = len(self.get_uncovered_blocks())
             
             # Compute QUALITY coverage (not just "any coverage")
-            quality_cov = self.get_quality_coverage()
-            fte_ratio = quality_cov["covered_by_fte_ratio"]
-            multi_ratio = quality_cov["covered_by_multi_ratio"]
+            fte_ratio = self.get_quality_coverage(ignore_singletons=True, min_hours=40.0)
+            multi_ratio = self.get_quality_coverage(ignore_singletons=True)
             
             self.log_fn(f"  Generated: {stage_new} columns, uncovered: {uncovered}")
             self.log_fn(f"  Quality: FTE coverage={fte_ratio:.1%}, multi-block={multi_ratio:.1%}")
@@ -712,16 +744,17 @@ class RosterColumnGenerator:
                 self.log_fn(f"  Continuing to generate more FTE-quality columns...")
         
         # Log final pool stats
+        # Log final pool stats
         pool_stats = self.get_pool_stats()
-        quality_cov = self.get_quality_coverage()
+        fte_coverage = self.get_quality_coverage(ignore_singletons=True, min_hours=40.0)
         
         stats["total_pool_size"] = len(self.pool)
         stats["final_uncovered"] = len(self.get_uncovered_blocks())
-        stats["final_fte_ratio"] = quality_cov["covered_by_fte_ratio"]
+        stats["final_fte_ratio"] = fte_coverage
         stats["pool_stats"] = pool_stats
         
         self.log_fn(f"\nMulti-stage complete: {stats['total_pool_size']} columns, {stats['final_uncovered']} uncovered")
-        self.log_fn(f"Pool quality: FTE-band={pool_stats['pool_fte_band']}, singletons={pool_stats['pool_singletons']}")
+        self.log_fn(f"Pool quality: FTE columns={pool_stats['fte_columns']}, singletons={pool_stats['singletons']}")
         
         return stats
 
@@ -766,6 +799,49 @@ class RosterColumnGenerator:
         
         return generated
     
+    def targeted_repair(
+        self,
+        target_blocks: List[str],
+        avoid_set: Set[str],
+        max_attempts: int = 100
+    ) -> List[RosterColumn]:
+        """
+        Generate columns strictly targeting specific blocks (e.g. PT blocks).
+        Uses 'build_from_seed_targeted' to force FTE creation around these blocks.
+        """
+        new_columns = []
+        attempts = 0
+        
+        # Ranges to try for repair: FTE first, then pure PT if needed
+        strategies = [
+            ((47, 53), True),   # Try high-hour FTE first
+            ((42, 47), True),   # Then medium FTE
+            ((35, 42), False),  # Then low-hour FTE
+        ]
+        
+        for block_id in target_blocks:
+            if attempts >= max_attempts:
+                break
+                
+            if block_id not in self.block_by_id:
+                continue
+                
+            # Try to build FTE column around this block
+            for (min_h, max_h), prioritize_uncovered in strategies:
+                col = self.build_from_seed_targeted(
+                    seed_block_id=block_id,
+                    target_hour_range=(min_h, max_h),
+                    prioritize_uncovered=prioritize_uncovered
+                )
+                
+                if col:
+                    if self.add_column(col):
+                        new_columns.append(col)
+                        attempts += 1
+                        break # Success for this block, move to next
+        
+        return new_columns
+
     def generate_columns(
         self,
         rounds: int = 10,

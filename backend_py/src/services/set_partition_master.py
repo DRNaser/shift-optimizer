@@ -298,36 +298,67 @@ def solve_rmp(
     # =========================================================================
     # CONSTRAINTS: Exact coverage for each block
     # =========================================================================
+    # =========================================================================
+    # ELASTIC VARIABLES: Slack for imperfect coverage
+    # =========================================================================
+    # u[b]: Under-coverage (gap) - extremely penalized
+    # Note: We do NOT allow over-coverage (o[b]) here to avoid invalid schedules (overlaps).
+    # Gaps can be filled by singletons or accepted temporarily, but overlaps are fatal.
+    under = {}
+    
+    # Costs for elastic deviations
+    W_UNDER = 1_00_000_000  # "NUCLEAR" penalty (100M) - must be > max(PT_COST=1M+)
+    
+    for block_id in all_block_ids:
+        # Create slack variable
+        under[block_id] = model.NewIntVar(0, 1, f"u_{block_id}")
+
+    # =========================================================================
+    # CONSTRAINTS: Elastic Partitioning (sum + u == 1)
+    # =========================================================================
     for block_id in all_block_ids:
         col_indices = coverage_index[block_id]
         
+        # If block has no columns, under[block_id] MUST be 1
         if not col_indices:
-            # Block has no coverage - problem is infeasible
-            # Add unsatisfiable constraint to force INFEASIBLE
-            model.Add(0 == 1)  # This makes the model infeasible
-            continue
+             model.Add(under[block_id] == 1)
+             continue
         
-        # Cover this block exactly once: Σ y[i] == 1
-        # Strict Set Partitioning to force no overlaps and lower driver count
-        model.Add(sum(y[i] for i in col_indices) == 1)
+        # ELASTIC CONSTRAINT:
+        # sum(y) + under == 1
+        # 
+        # Case 1: Perfect coverage (sum=1) -> u=0
+        # Case 2: Gap (sum=0) -> u=1
+        model.Add(sum(y[i] for i in col_indices) + under[block_id] == 1)
     
     # =========================================================================
     # OBJECTIVE: Balance FTE hours and Minimize PT Share (<10%)
     # 
     # Strategy:
-    # 1. PT is FORBIDDEN unless mathematically impossible (Base cost 500k)
-    # 2. FTEs are driven to a TARGET average (47.5h) using quadratic penalty
-    #    - This prevents "maxing out" some drivers while leaving others empty
-    #    - Encourages evenly distributed workload
+    # 1. Elastic Penalties (minimize gaps first)
+    # 2. PT is FORBIDDEN unless mathematically impossible (Base cost 500k)
+    # 3. FTEs are driven to a TARGET average (47.5h) using quadratic penalty
     # =========================================================================
     
-    # 1. PT Costs (The "Nuclear Option")
-    PT_BASE_COST = 500_000              # Extremely high to force FTE creation
-    PT_COST_PER_HOUR = 1_000            # High per-hour cost
-    SINGLETON_COST = 100_000            # Penalty for single-block rosters
+    # =========================================================================
+    # DYNAMIC SINGLETON PENALTY
+    # =========================================================================
+    # Helper: Check which blocks have "complex" (multi-block) coverage
+    has_complex_coverage = {}
+    for block_id in all_block_ids:
+        col_indices = coverage_index[block_id]
+        # Check if ANY column covering this block is a multi-block roster
+        has_complex_coverage[block_id] = any(columns[idx].num_blocks > 1 for idx in col_indices)
 
+    # 1. PT Costs (The "Nuclear Option")
+    PT_BASE_COST = 1_000_000            # Extremely high to force FTE creation
+    PT_COST_PER_HOUR = 2_000            # High per-hour cost
+    PT_TINY_PENALTY = 500_000           # EXTRA penalty for <35h (inefficient splitters)
+    SINGLETON_COST = 100_000            # Base penalty for single-block rosters
+    SINGLETON_AVOIDABLE_PENALTY = 500_000 # EXTRA penalty (total 600k) if complex coverage exists
+    
     # 2. FTE Costs (The "Balance" Approach)
-    FTE_BASE_COST = 5_000               # Moderate base cost (cheaper than PT)
+    FTE_BASE_COST = 50_000              # Significant cost (50k) to prevent headcount explosion
     FTE_TARGET_HOURS = 47.5             # Target ideal workload
     HOURS_DEVIATION_COST = 100          # Quadratic penalty for missing target
     
@@ -338,6 +369,8 @@ def solve_rmp(
     OVERTIME_COST_PER_HOUR = 500        # Penalty for >55h (should be impossible via constraints)
 
     costs = []
+    
+    # --- DRIVER COSTS ---
     for i, col in enumerate(columns):
         total_minutes = col.total_minutes
         total_hours = total_minutes / 60.0
@@ -348,36 +381,39 @@ def solve_rmp(
         if is_fte:
             # FTE: Parabolic cost centered on target
             # Cost = Base + (Difference^2 * Scale)
-            # 47.5h -> Base + 0
-            # 40.0h -> Base + (7.5^2 * 100) = Base + 5625
-            # 55.0h -> Base + (7.5^2 * 100) = Base + 5625
-            # This makes "extreme" FTEs more expensive than "balanced" ones
-            deviation = abs(total_hours - FTE_TARGET_HOURS)
-            balance_penalty = int(round((deviation ** 2) * HOURS_DEVIATION_COST))
-            cost = FTE_BASE_COST + balance_penalty
-            
-            # Helper: slight penalty for being very close to 40h edge
-            # (to avoid the "danger zone" of 40.0h)
-            if total_hours < 41.0:
-                cost += 1000
-
+            hour_diff = abs(total_hours - FTE_TARGET_HOURS)
+            cost = FTE_BASE_COST + int((hour_diff ** 2) * HOURS_DEVIATION_COST)
+            costs.append(y[i] * cost)
         else:
-            # PT: Nuclear penalty
-            cost = PT_BASE_COST + int(round(PT_COST_PER_HOUR * total_hours))
+            # PT/Singleton: Linear penalty + Base
+            # Check if singleton
+            is_singleton = len(col.block_ids) == 1
+            if is_singleton:
+                 base = PT_BASE_COST + SINGLETON_COST
+                 # DYNAMIC PENALTY: If we have better options, penalize this singleton HARD
+                 block_id = list(col.block_ids)[0]
+                 if has_complex_coverage.get(block_id, False):
+                     base += SINGLETON_AVOIDABLE_PENALTY
+            else:
+                 base = PT_BASE_COST
             
-            # Additional penalty for being "almost" an FTE (e.g. 38h)
-            # We really want these to become FTEs
-            if total_hours > 30:
-                cost += 50_000
-        
-        # Strong penalty for singleton rosters
-        if col.num_blocks == 1:
-            cost += SINGLETON_COST
-        
-        costs.append(cost * y[i])
+            # Additional penalty for very short shifts (<4h) and ineffective PT (<35h)
+            short_shift_penalty = 0
+            if total_hours < 4.0:
+                short_shift_penalty = 50_000
+            elif total_hours < 35.0 and not is_singleton:
+                short_shift_penalty = PT_TINY_PENALTY  # Target the "true splitters"
+                
+            cost = base + int(total_hours * PT_COST_PER_HOUR) + short_shift_penalty
+            costs.append(y[i] * cost)
+            
+    # --- ELASTIC PENALTIES ---
+    # Add costs for under coverage variables
+    for block_id in all_block_ids:
+        costs.append(under[block_id] * W_UNDER)
 
     model.Minimize(sum(costs))
-    
+
     # =========================================================================
     # SOLVE
     # =========================================================================
@@ -421,6 +457,9 @@ def solve_rmp(
     selected = [columns[i] for i in range(C) if solver.Value(y[i]) == 1]
     num_drivers = len(selected)
     
+    # Calculate U Sum
+    u_sum = sum(solver.Value(under[block_id]) for block_id in all_block_ids)
+    
     log_fn(f"Selected {num_drivers} rosters (drivers)")
     
     # Verify coverage
@@ -431,29 +470,55 @@ def solve_rmp(
     uncovered = [bid for bid in all_block_ids if bid not in covered_blocks]
     
     if uncovered:
-        log_fn(f"WARNING: {len(uncovered)} blocks still uncovered after solve!")
+        log_fn(f"WARNING: {len(uncovered)} blocks still uncovered after solve! (u_sum={u_sum})")
     else:
-        log_fn(f"[OK] All {len(all_block_ids)} blocks covered exactly once")
+        log_fn(f"[OK] All {len(all_block_ids)} blocks covered exactly once (u_sum={u_sum})")
     
-    # Hours stats
-    if selected:
-        hours = [r.total_hours for r in selected]
-        log_fn(f"Hours range: {min(hours):.1f}h - {max(hours):.1f}h (avg: {sum(hours)/len(hours):.1f}h)")
+    # Detailed Statistics
+    hours = [r.total_hours for r in selected] if selected else [0]
+    fte_rosters = [r for r in selected if r.total_hours >= FTE_MIN_HOURS]
+    fte_hours = [r.total_hours for r in fte_rosters]
     
-    # Count FTE vs PT
-    num_fte = sum(1 for r in selected if not hasattr(r, 'roster_type') or r.roster_type == "FTE")
-    num_pt = sum(1 for r in selected if hasattr(r, 'roster_type') and r.roster_type == "PT")
+    # 1. Selected Singletons
+    selected_singletons = [r for r in selected if r.num_blocks == 1]
+    selected_singletons_count = len(selected_singletons)
     
-    if num_pt > 0:
-        log_fn(f"Driver mix: {num_fte} FTE + {num_pt} PT")
+    # 2. FTE Stats
+    fte_stats = "N/A"
+    if fte_hours:
+        import statistics
+        avg_h = statistics.mean(fte_hours)
+        min_h = min(fte_hours)
+        max_h = max(fte_hours)
+        try:
+            std_h = statistics.stdev(fte_hours) if len(fte_hours) > 1 else 0
+        except:
+            std_h = 0
+        fte_stats = f"min={min_h:.1f}, avg={avg_h:.1f}, max={max_h:.1f}, std={std_h:.1f}"
     
+    # 3. PT Share (Hours)
+    pt_rosters = [r for r in selected if r.total_hours < FTE_MIN_HOURS]
+    pt_hours_sum = sum(r.total_hours for r in pt_rosters)
+    total_hours_sum = sum(hours)
+    pt_share_hours = (pt_hours_sum / total_hours_sum * 100) if total_hours_sum > 0 else 0
+    
+    log_fn(f"METRICS:")
+    log_fn(f"  Drivers: {len(fte_rosters)} FTE + {len(pt_rosters)} PT = {num_drivers} Total")
+    log_fn(f"  Selected Singletons: {selected_singletons_count}")
+    log_fn(f"  FTE Hours: {fte_stats}")
+    log_fn(f"  PT Share (Hours): {pt_share_hours:.1f}%")
+    log_fn(f"  u_sum: {u_sum}")
+
     return {
         "status": status_name,
         "selected_rosters": selected,
         "uncovered_blocks": uncovered,
         "num_drivers": num_drivers,
-        "num_fte": num_fte,
-        "num_pt": num_pt,
+        "num_fte": len(fte_rosters),
+        "num_pt": len(pt_rosters),
+        "pt_share_hours": pt_share_hours,
+        "selected_singletons_count": selected_singletons_count,
+        "u_sum": u_sum,
         "solve_time": solve_time,
         "coverage_freq": coverage_freq,
     }

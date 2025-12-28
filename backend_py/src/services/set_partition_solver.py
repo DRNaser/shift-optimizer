@@ -303,10 +303,20 @@ def solve_set_partitioning(
                 num_pt = sum(1 for r in selected if r.total_hours < 40.0)
                 pt_ratio = num_pt / len(selected) if selected else 0
                 
-                # Heuristic: Stop if PT < 5% or we are stagnating
-                # QUALITY: Tighten threshold from 5%→2% and increase stale rounds
-                if num_pt <= len(selected) * 0.02 or rounds_without_progress > 15:
-                     log_fn(f"\n[OK] Stopping with {num_pt} PT drivers ({pt_ratio:.1%} share)")
+                # Check Pool Quality (Coverage by FTE columns)
+                # User Requirement: Early stop only if coverage_by_fte_columns >= 95%
+                pool_quality = generator.get_quality_coverage(ignore_singletons=True, min_hours=40.0)
+                log_fn(f"Pool Quality (FTE Coverage): {pool_quality:.1%} | PT Share: {pt_ratio:.1%} | Stale: {rounds_without_progress}")
+                
+                # Condition for stopping:
+                # 1. Excellent Quality: Very low PT share AND Good Pool Quality
+                # 2. Stagnation: No progress for many rounds AND Good Pool Quality (don't give up if pool is bad)
+                quality_ok = pool_quality >= 0.95
+                pt_ok = num_pt <= len(selected) * 0.02
+                stalling = rounds_without_progress > 20  # Increased from 15
+                
+                if (pt_ok and quality_ok) or (stalling and quality_ok):
+                     log_fn(f"\n[OK] Stopping with {num_pt} PT drivers ({pt_ratio:.1%} share) and {pool_quality:.1%} FTE coverage")
                      return create_result(selected, "OK")
                 
                 log_fn(f"\n[CONT] Full coverage but {num_pt} PT drivers ({pt_ratio:.1%} share) - Optimization continuing...")
@@ -1136,10 +1146,13 @@ def swap_consolidation(
         # Get current driver hours
         driver_hours = {did: compute_hours(blocks) for did, blocks in driver_blocks.items()}
         
-        # Find low-hour FTE drivers (candidates for elimination)
+        # Find candidates for elimination: Low-hour FTEs AND all PT drivers
         low_hour_drivers = [
             did for did, hours in driver_hours.items()
-            if hours < min_hours_target and driver_types.get(did) == "FTE" and driver_blocks[did]
+            if driver_blocks[did] and (
+                (driver_types.get(did) == "FTE" and hours < min_hours_target) or
+                (driver_types.get(did) == "PT")
+            )
         ]
         
         # Find high-hour FTE drivers (can potentially give blocks away)
