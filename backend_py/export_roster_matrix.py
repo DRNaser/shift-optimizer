@@ -13,6 +13,12 @@ def format_time(t):
     return f"{t.hour:02d}:{t.minute:02d}"
 
 def main():
+    import argparse
+    parser = argparse.ArgumentParser(description="Export Roster Matrix")
+    parser.add_argument("--time-budget", type=float, default=60.0, help="Solver time budget in seconds")
+    parser.add_argument("--seed", type=int, default=42, help="Random seed")
+    args = parser.parse_args()
+
     print("=" * 70)
     print("ROSTER MATRIX EXPORTER")
     print("=" * 70)
@@ -28,9 +34,8 @@ def main():
     print(f"Loaded {len(tours)} tours")
 
     # Solve
-    print("\nRunning solver (Set-Partitioning V7.0.0, Quality Mode)...")
-    # Using 60s budget to match test_business_kpis.py, should be enough for 158 drivers result
-    result = run_portfolio(tours, time_budget=60.0, seed=42)
+    print(f"\nRunning solver (Set-Partitioning V7.0.0, Quality Mode, Budget={args.time_budget}s)...")
+    result = run_portfolio(tours, time_budget=args.time_budget, seed=args.seed)
     
     solution = result.solution
     valid_statuses = ["OPTIMAL", "FEASIBLE", "COMPLETED", "OK", "OK_SEEDED"]
