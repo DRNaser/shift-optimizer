@@ -1,10 +1,10 @@
 # SOLVEREIGN Roadmap
 
-> **Letzte Aktualisierung**: 2025-12-28
+> **Letzte Aktualisierung**: 2025-12-29
 > **Version**: 7.0.0 (Frozen Baseline)
-> **Add-ons**: v7.1.0-ui (Feature Overlay)
+> **Add-ons**: v7.1.0-ui (Feature Overlay), v7.2.4 (Fleet Counter), v7.3.0 (Holiday Support)
 > **Status**: **OPERATIONAL** ✅
-> **Tag**: [`v7.0.0-freeze`](https://github.com/DRNaser/shift-optimizer/tree/v7.0.0-freeze) (Baseline), `v7.1.0-ui` (Overlay Branch/Tag)
+> **Tag**: [`v7.0.0-freeze`](https://github.com/DRNaser/shift-optimizer/tree/v7.0.0-freeze) (Baseline), `v7.3.0-dev` (Current)
 
 ---
 
@@ -126,18 +126,40 @@ backend_py/
 **Algorithm**: Sweep-Line (O(n log n))
 - Events at tour start (+1) and end (-1)
 - Ends before starts at same time (handover = no extra vehicle)
-- Optional turnaround delay
+- Optional turnaround delay (default: 5 min)
+
+### Pipeline Integration (2025-12-29)
+Fleet counter is now fully integrated into the optimization pipeline:
+
+**Backend Integration**:
+- Fleet metrics computed in `portfolio_controller.py` and included in KPI output
+- Metrics: `fleet_peak_count`, `fleet_peak_day`, `fleet_peak_time`, `fleet_day_peaks`
+
+**Export Integration** (`export_roster_matrix.py`):
+- Pre-solve fleet analysis displayed in console
+- New CSV: `fleet_summary.csv` (per-day peaks)
+- Fleet metrics added to `roster_matrix_kpis.csv`
+
+**Frontend Integration**:
+- Fleet Peak KPI card added to dashboard
+- Shows peak vehicles, day, and time
+- Included in UI export CSV
 
 **Usage**:
 ```bash
+# Standalone analysis
 python fleet_counter.py [--turnaround 5] [--interval 15] [--export]
+
+# Integrated with solver (automatic)
+python export_roster_matrix.py --time-budget 120
 ```
 
-**Current Peak**: 113 vehicles @ Fri 18:30 (1385 tours)
+**Current Peak**: 116 vehicles @ Sat 10:00 (1385 tours)
 
 **Exports**:
-- `fleet_peak_summary.csv` (per-day peaks)
-- `fleet_profile_15min.csv` (timeline)
+- `fleet_summary.csv` (per-day peaks)
+- `roster_matrix_kpis.csv` (includes fleet metrics)
+- `fleet_profile_15min.csv` (timeline, standalone only)
 
 ---
 
@@ -198,6 +220,55 @@ PT Distribution:
 - 13.5h: 5 drivers
 - 9h: 4 drivers
 ```
+
+---
+---
+
+## 🎄 v7.3.0 Holiday Week Support (2025-12-29)
+**Status**: **TUNING / PARTIAL** ⚠️
+
+**Objective**: Optimize driver allocation during holiday weeks (Compressed Weeks, e.g., KW51) where active days ≤ 4.
+
+### Features
+1.  **Compressed Week Detection**:
+    -   Automatically identifies weeks with $k \le 4$ active days via `active_days` feature.
+    -   Switches `roster_column_generator` to **Beam Search Mode** for dense column generation.
+
+2.  **Objective Tuning (Aggressive)**:
+    -   Strongly penalizes single-tour rosters (`CW_SINGLETON_PENALTY=400k`) to force 2-4 tour density.
+    -   Dominance Hierarchy: `M_DRIVER` > `CW_SINGLETON` > `W_UNDER`.
+
+3.  **Safety Net: Incumbent Injection**:
+    -   Converts Greedy heuristic solution into `RosterColumn` hints.
+    -   Injects them into RMP pool to guarantee that RMP never performs worse than Greedy (Headcount $\le$ Greedy).
+
+4.  **Diagnostics Suite (Checks A/B)**:
+    -   **Check A (Tiling)**: Analyzes pool tileability (Support Count per Tour). 
+        -   *Finding*: 86% of blocks have low support (1-2 columns), identifying needed "Bridging" improvements.
+    -   **Check B (Density)**: Verifies dense column coverage (>80% unions).
+
+### Current Benchmark (KW51)
+*   **Drivers**: 236 (Greedy Incumbent)
+*   **Gap to Peak**: +67 drivers (Target: <35)
+*   **Status**: Safe but not fully optimized. Requires "Bridging" generator for next improvement.
+
+### Verified: Step 8 Bridging (2025-12-29)
+**Status**: **COMPLETED** ✅
+
+**Problem**: KW51 (Compressed Week) showed 86% low-support tours, leading to fragmentation (high PT/Singleton count).
+**Fix**: Implemented "Bridging Generator" loop to target tours with support <= 2.
+-   **Robustness**: Uses `can_add_block_to_roster` to validate candidates against Rest/Overlap constraints during generation.
+-   **Diversity**: Deterministic Anchor & Pack strategy with diverse candidate selection.
+
+**Results (Gate Checks)**:
+1.  **KW51 Final**:
+    -   Drivers: **230** (176 FTE + 54 PT) -> Beat Greedy (231)
+    -   Pool Quality: **0.0%** tours with low support (Bridging effective)
+    -   Avg Hours: 24.9h (on 4 active days)
+2.  **Regression (6-Day Week)**:
+    -   Drivers: 113 (vs 110 Peak) -> Minimal overhead
+    -   Runtime: 45s (Fast)
+    -   Violations: 0
 
 ---
 *v7.0.0 Baseline is FROZEN. v7.1.0+ features are additive.*
