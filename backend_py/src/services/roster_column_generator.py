@@ -1242,6 +1242,76 @@ class RosterColumnGenerator:
     # <<< STEP8: INCUMBENT_NEIGHBORHOOD
 
     # >>> STEP8: ANCHOR_PACK
+    def generate_merge_repair_columns(self, selected_rosters: list[RosterColumn], budget: int = 500) -> list[RosterColumn]:
+        """
+        Merge Repair (Type C): Combines two 'short' rosters into one longer roster to reduce headcount.
+        Targets rosters with <= 3 tours (especially 1-2 tours).
+        Determinstic pairwise merge attempt.
+        """
+        # 1. Filter Short Rosters
+        def get_tours(r):
+            return sum(t for _, t, _, _ in r.day_stats)
+            
+        short_rosters = [r for r in selected_rosters if get_tours(r) <= 3]
+        short_rosters.sort(key=lambda r: (get_tours(r), r.roster_id)) # Sort by size (asc), then ID
+        
+        if not short_rosters or len(short_rosters) < 2:
+            return []
+            
+        self.log_fn(f"[MERGE REPAIR] Found {len(short_rosters)} short rosters (<=3 tours). Scanning pairs (Budget={budget})...")
+        
+        built_columns = []
+        attempts = 0
+        success = 0
+        
+        # 2. Pairwise Merge Loop
+        for i in range(len(short_rosters)):
+            if attempts >= budget:
+                break
+                
+            r1 = short_rosters[i]
+            r1_tours = set(r1.covered_tour_ids)
+            r1_blocks = [self.block_by_id[bid] for bid in r1.block_ids if bid in self.block_by_id]
+            
+            # Use 'stride' or limited lookahead to catch diverse pairs if loop is large
+            # But simple N^2 on short list is probably fine if list is small (~200).
+            # If list is large (>500), we hit budget fast.
+            
+            for j in range(i + 1, len(short_rosters)):
+                if attempts >= budget:
+                    break
+                    
+                r2 = short_rosters[j]
+                
+                # Check for shared blocks or tours (Disjoint check)
+                if not r1_tours.isdisjoint(r2.covered_tour_ids):
+                    continue
+                
+                # Optimization: Block ID overlap check (should match tours, but safe to check)
+                if not r1.block_ids.isdisjoint(r2.block_ids):
+                    continue
+
+                attempts += 1
+                
+                # Check Merge Validity
+                r2_blocks = [self.block_by_id[bid] for bid in r2.block_ids if bid in self.block_by_id]
+                combined_blocks = sorted(r1_blocks + r2_blocks, key=lambda b: (b.day, b.start_min))
+                
+                # Try to build roster
+                col = create_roster_from_blocks_pt(
+                    roster_id=self._get_next_roster_id(), 
+                    block_infos=combined_blocks
+                )
+                
+                if col and col.is_valid:
+                    built_columns.append(col)
+                    success += 1
+        
+        if success > 0:
+            self.log_fn(f"[MERGE REPAIR] Attempts: {attempts}, Merged: {success} new columns")
+            
+        return built_columns
+
     def generate_anchor_pack_variants(self, anchor_tour_ids, max_variants_per_anchor=5):
         """
         Generate diverse variants around anchor tours (low support).
