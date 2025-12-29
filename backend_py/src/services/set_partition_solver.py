@@ -232,6 +232,7 @@ def solve_set_partitioning(
     
     rmp_total_time = 0
     best_result = None
+    last_selected_ids = set()
     
     # Progress tracking for adaptive stopping
     best_under_count = len(all_block_ids)  # Start with worst case
@@ -242,6 +243,9 @@ def solve_set_partitioning(
     # Adaptive coverage quota
     min_coverage_quota = 5  # Each block should be in at least 5 columns
     
+
+    # [STEP 9.1] Adaptive Mode Detect
+    is_compressed_mode = features is not None and len(getattr(features, "active_days", [])) <= 4
 
     for round_num in range(1, max_rounds + 1):
         # GLOBAL DEADLINE CHECK
@@ -262,14 +266,51 @@ def solve_set_partitioning(
 
         
         # Solve STRICT RMP first
+        # [STEP 9.1] Deterministic Pool Pruning (Compressed Week)
+        if is_compressed_mode and len(generator.pool) > 6000:
+             log_fn(f"[PRUNING] Pool size {len(generator.pool)} > 6000. Shrinking to maintain solver speed.")
+             
+             # Keep recently selected
+             keep_ids = last_selected_ids if 'last_selected_ids' in locals() else set()
+             
+             all_cols = list(generator.pool.values())
+             
+             def pruning_score(c):
+                 # Priority: 1. Selected, 2. Greedy Incumbent, 3. Density (Tours), 4. Efficiency
+                 is_sel = c.roster_id in keep_ids
+                 is_greedy = str(c.roster_id).startswith("INC_GREEDY")
+                 density = len(c.covered_tour_ids)
+                 return (is_sel, is_greedy, density, -c.total_hours)
+             
+             # Sort descending (Best first)
+             all_cols.sort(key=pruning_score, reverse=True)
+             
+             # Cutoff
+             survivors = all_cols[:6000]
+             generator.pool = {tuple(sorted(c.block_ids)): c for c in survivors}
+             log_fn(f"[PRUNING] Pool pruned to {len(generator.pool)} columns (Kept: {len(keep_ids)} selected).")
+
+        # Solve STRICT RMP first
         columns = list(generator.pool.values())
         
-        # Cap RMP time limit to remaining budget (don't starve RMP)
-        effective_rmp_limit = rmp_time_limit
+        # [STEP 9.1] Adaptive RMP Time Limit
+        if is_compressed_mode:
+             if round_num <= 2: 
+                 base_limit = 20.0
+             elif round_num <= 4:
+                 base_limit = 40.0
+             else:
+                 base_limit = 60.0 # Deep search for low headcount
+             
+             effective_rmp_limit = base_limit
+             log_fn(f"[ADAPTIVE TIME] Round {round_num}: Limit set to {effective_rmp_limit:.1f}s")
+        else:
+             effective_rmp_limit = rmp_time_limit
+
         if global_deadline:
             remaining = global_deadline - monotonic()
-            # Use min of configured limit and remaining time (but at least 1s)
-            effective_rmp_limit = min(rmp_time_limit, max(1.0, remaining))
+            # Use min of configured/adaptive limit and remaining time (but at least 1s)
+            effective_rmp_limit = min(effective_rmp_limit, max(1.0, remaining))
         
         rmp_start = time.time()
         rmp_result = solve_rmp(
@@ -286,6 +327,43 @@ def solve_set_partitioning(
                 log_fn(f"\n[OK] FULL COVERAGE ACHIEVED with {rmp_result['num_drivers']} drivers")
                 
                 selected = rmp_result["selected_rosters"]
+                last_selected_ids = {r.roster_id for r in selected}
+
+                # [DIAGNOSTICS] Step 9 RMP Log
+                num_selected = len(selected)
+                sel_lens = [len(r.covered_tour_ids) for r in selected]
+                
+                # Histogram
+                h1 = sum(1 for x in sel_lens if x == 1)
+                h23 = sum(1 for x in sel_lens if 2 <= x <= 3)
+                h46 = sum(1 for x in sel_lens if 4 <= x <= 6)
+                h7 = sum(1 for x in sel_lens if x >= 7)
+                
+                # Averages
+                avg_tours = sum(sel_lens) / max(1, num_selected)
+                avg_hours = sum(r.total_hours for r in selected) / max(1, num_selected)
+                
+                log_fn(f"  Drivers: {num_selected} | Avg Hours: {avg_hours:.1f} | Avg Tours: {avg_tours:.1f}")
+                log_fn(f"  Histogram (Tours): 1={h1} | 2-3={h23} | 4-6={h46} | 7+={h7}")
+                
+                # [MERGE REPAIR] Step 9 Headcount Reduction
+                # Only if compressed week + still high drivers (Target ~190)
+                _is_compressed_check = features is not None and len(getattr(features, "active_days", [])) <= 4
+                
+                if _is_compressed_check and num_selected > 190: 
+                    if hasattr(generator, 'generate_merge_repair_columns'):
+                         log_fn(f"[POOL REPAIR TYPE C] Merge Repair Triggered (D={num_selected} > 190)")
+                         new_merge_cols = generator.generate_merge_repair_columns(selected, budget=500)
+                         if new_merge_cols:
+                             m_added = 0
+                             for c in new_merge_cols:
+                                 # Key by sorted block IDs
+                                 key = tuple(sorted(c.block_ids))
+                                 if key not in generator.pool:
+                                     generator.pool[key] = c
+                                     m_added += 1
+                                     
+                             log_fn(f"[MERGE REPAIR] Generated {len(new_merge_cols)} cols -> Added {m_added} new to pool")
                 hours = [r.total_hours for r in selected]
                 
                 # =========================================================================
