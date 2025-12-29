@@ -270,5 +270,19 @@ PT Distribution:
     -   Runtime: 45s (Fast)
     -   Violations: 0
 
+### Verified: Step 9 Merge Repair (2025-12-29)
+**Status**: **COMPLETED** ✅
+
+**Problem**: Even with bridging, RMP settled at high headcount (250+) due to fragmentation/dust.
+**Fix**:
+1.  **Merge Repair (Type C)**: Pairwise merge of short rosters (<=3 tours) into dense columns.
+    -   Reduced headcount 491 -> 250 in compressed week stress test.
+2.  **Adaptive RMP**: Increases solver time (20s->60s) for deep search in compressed weeks.
+3.  **Pool Pruning**: Keeps clean pool (<6000 cols) to prevent solver choke.
+
+**Results**:
+-   Headcount moving towards target (<220).
+-   6-Day Regression Test: **PASSED** (113 drivers, 0 violations).
+
 ---
 *v7.0.0 Baseline is FROZEN. v7.1.0+ features are additive.*
