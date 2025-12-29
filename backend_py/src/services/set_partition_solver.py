@@ -27,6 +27,30 @@ from src.services.set_partition_master import solve_rmp, solve_relaxed_rmp, anal
 
 logger = logging.getLogger("SetPartitionSolver")
 
+# >>> STEP8: SUPPORT_HELPERS (TOP-LEVEL)
+def _compute_tour_support(columns, target_ids, coverage_attr):
+    support = {tid: 0 for tid in target_ids}
+    for col in columns:
+        items = getattr(col, coverage_attr, col.block_ids)
+        for tid in items:
+            if tid in support:
+                support[tid] += 1
+    return support
+
+
+def _simple_percentile(values, p):
+    if not values:
+        return 0
+    vals = sorted(values)
+    idx = int(len(vals) * p / 100.0)
+    if idx < 0:
+        idx = 0
+    if idx >= len(vals):
+        idx = len(vals) - 1
+    return vals[idx]
+# <<< STEP8: SUPPORT_HELPERS
+
+
 
 @dataclass
 class SetPartitionResult:
@@ -57,6 +81,7 @@ def solve_set_partitioning(
     config=None,  # NEW: Pass config for LNS flags
     global_deadline: float = None,  # Monotonic deadline for budget enforcement
     context: Optional[object] = None, # Added run context
+    features: Optional[dict] = None,  # Step 8: Instance features
 ) -> SetPartitionResult:
     """
     Solve the crew scheduling problem using Set-Partitioning.
@@ -110,6 +135,13 @@ def solve_set_partitioning(
     log_fn("\nConverting blocks to BlockInfo...")
     block_infos = create_block_infos_from_blocks(blocks)
     all_block_ids = set(b.block_id for b in block_infos)
+    
+    # >>> STEP8: EXTRACT TOUR IDS
+    all_tour_ids = set()
+    for b in block_infos:
+        all_tour_ids.update(b.tour_ids)
+    log_fn(f"Unique tours: {len(all_tour_ids)}")
+    # <<< STEP8: EXTRACT TOUR IDS
     
     total_work_hours = sum(b.work_min for b in block_infos) / 60.0
     log_fn(f"Total work hours: {total_work_hours:.1f}h")
@@ -210,6 +242,7 @@ def solve_set_partitioning(
     # Adaptive coverage quota
     min_coverage_quota = 5  # Each block should be in at least 5 columns
     
+
     for round_num in range(1, max_rounds + 1):
         # GLOBAL DEADLINE CHECK
         if global_deadline:
@@ -406,6 +439,66 @@ def solve_set_partitioning(
             # Progress tracking logic...
             under_count = relaxed.get("under_count", 0)
             over_count = relaxed.get("over_count", 0)
+        # >>> STEP8: BRIDGING_LOOP
+        # Check if compressed week
+        _is_compressed = features is not None and len(getattr(features, "active_days", [])) <= 4
+        if _is_compressed and round_num <= 6:
+            # SWITCH TO TOUR-BASED COVERAGE
+            log_fn(f"[POOL REPAIR R{round_num}] Coverage Mode: TOUR (Target: {len(all_tour_ids)})")
+            
+            tour_support = _compute_tour_support(columns, all_tour_ids, "covered_tour_ids")
+            support_vals = list(tour_support.values())
+            
+            low_support_tours = [tid for tid, cnt in tour_support.items() if cnt <= 2]
+            
+            pct_low = (len(low_support_tours) / max(1, len(all_tour_ids))) * 100.0
+            support_min = min(support_vals) if support_vals else 0
+            support_p10 = _simple_percentile(support_vals, 10)
+            support_p50 = _simple_percentile(support_vals, 50)
+            
+            # ALSO LOG BLOCK STATS (for comparison)
+            block_support = _compute_tour_support(columns, all_block_ids, "block_ids")
+            bs_vals = list(block_support.values())
+            bs_low = len([b for b, c in block_support.items() if c <= 2])
+            bs_pct = (bs_low / max(1, len(all_block_ids))) * 100.0
+            bs_min = min(bs_vals) if bs_vals else 0
+            bs_p10 = _simple_percentile(bs_vals, 10)
+            bs_p50 = _simple_percentile(bs_vals, 50)
+            
+            log_fn(f"  % tours support<=2: {len(low_support_tours)}/{len(all_tour_ids)} ({pct_low:.1f}%)")
+            log_fn(f"  tour support min/p10/p50: {support_min}/{support_p10}/{support_p50}")
+            
+            log_fn(f"  % blocks support<=2: {bs_low}/{len(all_block_ids)} ({bs_pct:.1f}%)")
+            log_fn(f"  block support min/p10/p50: {bs_min}/{bs_p10}/{bs_p50}")
+            
+            # Bridging Logic (robust)
+            added = 0
+            built = 0
+            
+            if low_support_tours and hasattr(generator, 'generate_anchor_pack_variants'):
+                # Sort for determinism
+                anchors = sorted(low_support_tours, key=lambda t: (tour_support[t], t))[:150]
+                
+                res = generator.generate_anchor_pack_variants(anchors, max_variants_per_anchor=5)
+
+                # Case A: generator returns int
+                if isinstance(res, int):
+                    added = res
+                    built = res # approximate
+                # Case B: list
+                else:
+                    cols = list(res) if res else []
+                    built = len(cols)
+                    for col in cols:
+                        if col.roster_id not in generator.pool:
+                            generator.pool[col.roster_id] = col
+                            added += 1
+                
+                dedup_dropped = max(0, built - added)
+                log_fn(f"  Bridging: anchors={len(anchors)}, built={built}, added={added}, dedup_dropped={dedup_dropped}")
+                log_fn(f"  First 3 anchors: {anchors[:3] if anchors else 'None'}")
+        # <<< STEP8: BRIDGING_LOOP
+
             
             # Emit RMP Metrics (Infeasible/Relaxed)
             if context and hasattr(context, "emit_progress"):
@@ -516,6 +609,18 @@ def solve_set_partitioning(
     
     # Seed the pool with greedy columns
     seeded_count = generator.seed_from_greedy(greedy_assignments)
+
+    # >>> STEP8: INCUMBENT_NEIGHBORHOOD_CALL
+    incumbent_cols = [c for c in generator.pool.values() if c.roster_id.startswith("INC_GREEDY_")]
+    if incumbent_cols:
+        log_fn(f"[INCUMBENT NEIGHBORHOOD] {len(incumbent_cols)} INC_GREEDY_ columns detected")
+        added = generator.generate_incumbent_neighborhood(
+            active_days=getattr(features, "active_days", ["Mon", "Tue", "Wed", "Fri"]) if features else ["Mon", "Tue", "Wed", "Fri"],
+            max_variants=500,
+        )
+        log_fn(f"  Added {added} incumbent variants")
+    # <<< STEP8: INCUMBENT_NEIGHBORHOOD_CALL
+
     log_fn(f"Seeded {seeded_count} columns from greedy solution")
     
     # FAILURE RECOVERY: Collect the greedy columns to pass as HINTS

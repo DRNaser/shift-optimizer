@@ -1158,17 +1158,21 @@ class RosterColumnGenerator:
             if not block_infos:
                 continue
             
+            # CRITICAL: Mark with INC_GREEDY_ prefix
+            incumbent_count = len([c for c in self.pool.values() if c.roster_id.startswith('INC_GREEDY_')])
+            incumbent_id = f"INC_GREEDY_{incumbent_count:04d}"
+            
             # Create column based on driver type
             total_hours = sum(b.work_min for b in block_infos) / 60.0
             
             if assignment.driver_type == "PT" or total_hours < MIN_WEEK_HOURS:
                 column = create_roster_from_blocks_pt(
-                    roster_id=self._get_next_roster_id(),
+                    roster_id=incumbent_id,
                     block_infos=block_infos,
                 )
             else:
                 column = create_roster_from_blocks(
-                    roster_id=self._get_next_roster_id(),
+                    roster_id=incumbent_id,
                     block_infos=block_infos,
                 )
             
@@ -1177,6 +1181,182 @@ class RosterColumnGenerator:
         
         self.log_fn(f"Seeded {added} columns from greedy solution")
         return added
+
+
+    # >>> STEP8: INCUMBENT_NEIGHBORHOOD
+    def generate_incumbent_neighborhood(self, active_days, max_variants=500):
+        """Generate column families around greedy incumbent (INC_GREEDY_ only)."""
+        incumbent_rosters = [col for col in self.pool.values() 
+                             if col.roster_id.startswith('INC_GREEDY_')]
+        if not incumbent_rosters:
+            self.log_fn("[INC NBHD] No INC_GREEDY_ columns")
+            return 0
+        self.log_fn(f"[INC NBHD] Generating variants around {len(incumbent_rosters)} incumbents...")
+        added = 0
+        day_map = {"Mon": 0, "Tue": 1, "Wed": 2, "Thu": 3, "Fri": 4, "Sat": 5}
+        active_day_indices = [day_map[d] for d in active_days if d in day_map]
+        existing_sigs = {col.covered_tour_ids for col in self.pool.values()}
+        sorted_rosters = sorted(incumbent_rosters, key=lambda r: r.roster_id)
+        for i, r1 in enumerate(sorted_rosters):
+            if added >= max_variants:
+                break
+            for j in range(i + 1, min(i + 11, len(sorted_rosters))):
+                r2 = sorted_rosters[j]
+                for day_idx in active_day_indices:
+                    r1_day = [bid for bid in r1.block_ids if bid in self.block_by_id and self.block_by_id[bid].day == day_idx]
+                    r2_day = [bid for bid in r2.block_ids if bid in self.block_by_id and self.block_by_id[bid].day == day_idx]
+                    if not r1_day and not r2_day:
+                        continue
+                    new_r1 = [bid for bid in r1.block_ids if bid not in r1_day] + r2_day
+                    new_r2 = [bid for bid in r2.block_ids if bid not in r2_day] + r1_day
+                    for new_bids in [new_r1, new_r2]:
+                        if added >= max_variants:
+                            break
+                        block_infos = [self.block_by_id[bid] for bid in new_bids if bid in self.block_by_id]
+                        if not block_infos:
+                            continue
+                        total_min = sum(b.work_min for b in block_infos)
+                        if total_min > 55 * 60:
+                            continue
+                        tour_ids = set()
+                        valid = True
+                        for b in block_infos:
+                            for tid in b.tour_ids:
+                                if tid in tour_ids:
+                                    valid = False
+                                    break
+                                tour_ids.add(tid)
+                            if not valid:
+                                break
+                        if not valid or not tour_ids:
+                            continue
+                        sig = frozenset(tour_ids)
+                        if sig in existing_sigs:
+                            continue
+                        col = create_roster_from_blocks_pt(roster_id=self._get_next_roster_id(), block_infos=block_infos)
+                        if col and col.is_valid and self.add_column(col):
+                            added += 1
+                            existing_sigs.add(sig)
+        self.log_fn(f"[INC NBHD] Total: {added}")
+        return added
+    # <<< STEP8: INCUMBENT_NEIGHBORHOOD
+
+    # >>> STEP8: ANCHOR_PACK
+    def generate_anchor_pack_variants(self, anchor_tour_ids, max_variants_per_anchor=5):
+        """
+        Generate diverse variants around anchor tours (low support).
+        Returns list of RosterColumns (to be added by solver).
+        """
+        self.log_fn(f"[ANCHOR&PACK] {len(anchor_tour_ids)} anchors, {max_variants_per_anchor} vars/anchor...")
+        built_columns = []
+        
+        # Debug counters
+        stats = {
+            "attempts": 0,
+            "no_anchor_blocks": 0,
+            "no_candidates_for_day": 0,
+            "validation_fail_hard": 0,
+            "validation_fail_hours": 0,
+            "built_ok": 0
+        }
+
+        # Prepare day cache for fast lookup
+        day_blocks_map = defaultdict(list)
+        for b in self.block_infos:
+            day_blocks_map[b.day].append(b)
+        # Pre-sort to avoid repeated sorting
+        for d in day_blocks_map:
+            # Sort by tours (dense) then work_min (long)
+            day_blocks_map[d].sort(key=lambda b: (-b.tours, -b.work_min, b.block_id))
+
+        active_days = sorted(list(day_blocks_map.keys()))
+        if not active_days:
+            return []
+
+        # Limit debug logging
+        debug_anchors = list(anchor_tour_ids)[:3]
+
+        for i, anchor_tid in enumerate(anchor_tour_ids):
+            # multiple anchors? no, one anchor tid generally maps to one or a few blocks
+            # Look up blocks - ensure robust tour_id checking
+            anchor_blocks = [b for b in self.block_infos if anchor_tid in getattr(b, 'tour_ids', ())]
+            
+            if not anchor_blocks:
+                stats["no_anchor_blocks"] += 1
+                if anchor_tid in debug_anchors:
+                    self.log_fn(f"[DEBUG] Anchor {anchor_tid}: No blocks found! (Total blocks checked: {len(self.block_infos)})")
+                continue
+            
+            if anchor_tid in debug_anchors:
+                self.log_fn(f"[DEBUG] Anchor {anchor_tid}: Found {len(anchor_blocks)} start blocks. First: {anchor_blocks[0].block_id} (Day {anchor_blocks[0].day}, Tours: {len(anchor_blocks[0].tour_ids)})")
+
+            # Use top anchor blocks
+            anchor_blocks.sort(key=lambda b: (-b.tours, -b.work_min, b.block_id))
+            
+            variants_generated = 0
+            for anchor_block in anchor_blocks[:2]: # Try top 2 anchor blocks
+                if variants_generated >= max_variants_per_anchor:
+                    break
+
+                for v in range(max_variants_per_anchor):
+                    if variants_generated >= max_variants_per_anchor:
+                        break
+                    
+                    stats["attempts"] += 1
+                    current = [anchor_block]
+                    current_tours = set(anchor_block.tour_ids)
+                    current_min = anchor_block.work_min
+                    
+                    # Diversity logic: Force sub-optimal on one day
+                    forced_day_idx = v % len(active_days)
+                    forced_day = active_days[forced_day_idx]
+                    forced_rank = 1 + (v // len(active_days))
+                    
+                    for day in active_days:
+                        if day == anchor_block.day:
+                            continue
+                            
+                        # Candidates for this day
+                        # Must strictly not overlap current tours (greedy check)
+                        cands = [b for b in day_blocks_map[day] if not any(tid in current_tours for tid in getattr(b, 'tour_ids', ()))]
+                        
+                        if not cands:
+                            stats["no_candidates_for_day"] += 1
+                            continue
+                        
+                        # Pick based on diversity rule
+                        pick_idx = forced_rank if day == forced_day else 0
+                        
+                        if pick_idx >= len(cands):
+                           pick_idx = 0
+                           
+                        # SEARCH for first valid candidate starting at pick_idx
+                        cand_found = None
+                        search_order = cands[pick_idx:] + cands[:pick_idx]
+                        
+                        for cand in search_order[:50]: # Limit search
+                            can_add, reason = can_add_block_to_roster(current, cand, current_min)
+                            if can_add:
+                                cand_found = cand
+                                break
+                        
+                        if cand_found:
+                            current.append(cand_found)
+                            current_tours.update(cand_found.tour_ids)
+                            current_min += cand_found.work_min
+                    
+                    # Create column
+                    col = create_roster_from_blocks_pt(roster_id=self._get_next_roster_id(), block_infos=current)
+                    if col and col.is_valid:
+                        built_columns.append(col)
+                        variants_generated += 1
+                        stats["built_ok"] += 1
+                    else:
+                        stats["validation_fail_hard"] += 1
+
+        self.log_fn(f"[ANCHOR&PACK] Built {len(built_columns)} vars. Stats: {stats}")
+        return built_columns
+    # <<< STEP8: ANCHOR_PACK
 
     def generate_singleton_columns(self, penalty_factor: float = 100.0) -> int:
         """
@@ -1277,6 +1457,19 @@ def create_block_infos_from_blocks(blocks: list) -> list[BlockInfo]:
         else:
             tours = 1
         
+        # Get tour IDs
+        tour_ids = []
+        if hasattr(b, 'tours') and b.tours:
+            for t in b.tours:
+                if hasattr(t, 'id'):
+                    tour_ids.append(t.id)
+                elif hasattr(t, 'tour_id'):
+                    tour_ids.append(t.tour_id)
+                elif isinstance(t, str):
+                    tour_ids.append(t)
+        elif hasattr(b, 'tour_ids') and b.tour_ids:
+             tour_ids = list(b.tour_ids)
+
         block_infos.append(BlockInfo(
             block_id=block_id,
             day=day,
@@ -1284,6 +1477,7 @@ def create_block_infos_from_blocks(blocks: list) -> list[BlockInfo]:
             end_min=end_min,
             work_min=work_min,
             tours=tours,
+            tour_ids=tuple(tour_ids),
         ))
     
     return block_infos
