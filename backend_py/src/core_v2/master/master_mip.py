@@ -53,13 +53,21 @@ class MasterMIP:
         Stage 5: Max Count(>=40h) (Optional, Fix all above)
         """
         self.highs = highspy.Highs()
-        self.highs.setOptionValue("log_to_console", False)
+        
+        # MIP Options for faster solve
+        self.highs.setOptionValue("log_to_console", True)  # DEBUG
+        self.highs.setOptionValue("presolve", "on")
+        self.highs.setOptionValue("mip_heuristic_effort", 0.15)  # More heuristics
+        self.highs.setOptionValue("mip_rel_gap", 0.01)  # 1% gap tolerance
+        
         # Global time limit shared across stages? Or per stage?
         # Let's allocate budget per stage.
         stage_time_limit = time_limit / 4.0
         
         num_cols = len(self.columns)
         num_rows = len(self.all_tour_ids)
+        
+        logger.info(f"[MIP] Building model: {num_cols} cols, {num_rows} rows, stage_limit={stage_time_limit:.0f}s")
         
         # 1. Base Model Construction (Rows + Vars)
         # Rows (Exact Cover)
@@ -81,6 +89,8 @@ class MasterMIP:
                     curr_nz += 1
             start_indices.append(curr_nz)
         
+        logger.info(f"[MIP] Matrix NNZ={curr_nz}")
+        
         # Initial Costs (Stage 1: Driver Count = 1.0 each)
         costs_s1 = [1.0] * num_cols
         col_lb = [0.0] * num_cols
@@ -94,20 +104,37 @@ class MasterMIP:
         types = [highspy.HighsVarType.kInteger] * num_cols
         self.highs.changeColsIntegrality(num_cols, indices, types)
         
+        logger.info(f"[MIP] Model build complete, starting Stage 1...")
+        
         # --- STAGE 1: Min Drivers ---
-        logger.info("[MIP] Stage 1: Min Drivers...")
+        logger.info(f"[MIP] Stage 1: Min Drivers (limit={stage_time_limit:.0f}s)...")
         self.highs.setOptionValue("time_limit", stage_time_limit)
+        t0 = time.time()
         self.highs.run()
         
-        def check_status(stage):
+        def check_status(stage, require_optimal=True):
+            """Check MIP status - accept feasible solution on time limit if require_optimal=False."""
             s = self.highs.getModelStatus()
             status_str = self.highs.modelStatusToString(s)
-            if status_str not in ["Optimal", "Optimal (tolerance)"]:
-                logger.warning(f"[MIP] Stage {stage} failed or incomplete: {status_str}")
-                return False
-            return True
+            logger.info(f"[MIP] Stage {stage} status: {status_str}, time={time.time()-t0:.1f}s")
+            
+            # Always accept optimal
+            if status_str in ["Optimal", "Optimal (tolerance)"]:
+                return True
+                
+            # Accept time limit if we have a feasible solution and don't require optimal
+            if status_str == "Time limit reached" and not require_optimal:
+                info = self.highs.getInfo()
+                if info.primal_solution_status == 2:  # kSolutionStatusFeasible
+                    obj = info.objective_function_value
+                    logger.info(f"[MIP] Stage {stage} time limit but feasible: obj={obj}")
+                    return True
+                    
+            logger.warning(f"[MIP] Stage {stage} failed or incomplete: {status_str}")
+            return False
 
-        if not check_status(1):
+        # For Stage 1, accept feasible solution on timeout since we have limited time budget
+        if not check_status(1, require_optimal=False):
              return {"status": "FAILED_STAGE_1", "objective": None, "selected_columns": []}
              
         # Extract D*

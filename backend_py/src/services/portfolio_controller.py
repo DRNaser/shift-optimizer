@@ -804,7 +804,6 @@ def run_portfolio(
                         log("Core v2: Falling back to v1 pipeline.")
                         use_v2 = False
                 else:
-                    # Generic import assuming installed
                     # Lazy imports to prevent top-level dependency
                     from src.core_v2.optimizer_v2 import OptimizerCoreV2
                     from src.core_v2.adapter import Adapter
@@ -812,33 +811,71 @@ def run_portfolio(
                     log("Core v2: Starting Shadow/Live execution...")
                     t_v2_start = perf_counter()
                     
+                    # Generate unique run_id for artifacts
+                    import uuid as uuid_mod
+                    v2_run_id = f"v2_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid_mod.uuid4().hex[:8]}"
+                    
                     # 1. Adapt Input
                     adapter = Adapter(tours)
                     tours_v2 = adapter.convert_to_v2()
                     
-                    # 2. Configure
+                    # 2. Configure with artifacts directory
+                    v2_artifacts_dir = os.path.join(os.getcwd(), "artifacts", "v2_shadow", v2_run_id)
+                    os.makedirs(v2_artifacts_dir, exist_ok=True)
+                    
                     opt_v2 = OptimizerCoreV2()
                     v2_conf = {
                         "time_limit": time_budget,
                         "use_duals": True,
                         "active_days": kpi.get("active_days_count", 5),
+                        "artifacts_dir": v2_artifacts_dir,
                     }
                     
-                    # 3. Solve
-                    res_v2 = opt_v2.solve(tours_v2, v2_conf)
+                    # 3. Solve (returns CoreV2Result, never dict)
+                    res_v2 = opt_v2.solve(tours_v2, v2_conf, run_id=v2_run_id)
                     
                     v2_runtime = perf_counter() - t_v2_start
                     v2_drivers = res_v2.num_drivers
                     
                     log(f"Core v2 Result: {v2_drivers} drivers in {v2_runtime:.1f}s (Status: {res_v2.status})")
+                    if res_v2.error_code:
+                        log(f"  Error: {res_v2.error_code} - {res_v2.error_message}")
+                    log(f"  Proof: coverage={res_v2.proof.coverage_pct:.1f}%, artificial_lp={res_v2.proof.artificial_used_lp}, artificial_final={res_v2.proof.artificial_used_final}")
                     log(f"Comparison: v1={len(assignments)} vs v2={v2_drivers}")
                     
-                    # 4. Use Result if Live Mode
-                    if use_v2 and res_v2.status in ["OPTIMAL", "FEASIBLE"]:
+                    # 4. Save Shadow Artifacts (run_manifest.json)
+                    if shadow_v2:
+                        manifest_data = {
+                            "run_id": v2_run_id,
+                            "timestamp": datetime.now().isoformat(),
+                            "status": res_v2.status,
+                            "error_code": res_v2.error_code,
+                            "error_message": res_v2.error_message,
+                            "kpis": res_v2.kpis,
+                            "proof": {
+                                "coverage_pct": res_v2.proof.coverage_pct,
+                                "artificial_used_lp": res_v2.proof.artificial_used_lp,
+                                "artificial_used_final": res_v2.proof.artificial_used_final,
+                                "mip_gap": res_v2.proof.mip_gap,
+                            },
+                            "comparison": {
+                                "v1_drivers": len(assignments),
+                                "v2_drivers": v2_drivers,
+                                "delta": v2_drivers - len(assignments),
+                            },
+                            "runtime_s": v2_runtime,
+                        }
+                        manifest_path = os.path.join(v2_artifacts_dir, "run_manifest.json")
+                        with open(manifest_path, 'w', encoding='utf-8') as f:
+                            json.dump(manifest_data, f, indent=2, default=str)
+                        log(f"Core v2: Shadow artifacts saved to {v2_artifacts_dir}")
+                    
+                    # 5. Use Result if Live Mode and SUCCESS
+                    if use_v2 and res_v2.status == "SUCCESS":
                         log("Core v2: Promoting v2 solution to primary result.")
                         
-                        # Convert back to v1 models
-                        assignments_v2 = adapter.convert_to_v1(res_v2.best_columns)
+                        # res_v2.solution is already list[DriverAssignment]
+                        assignments_v2 = res_v2.solution
                         assignments_v2 = _renumber_driver_ids(assignments_v2, log_fn=log)
                         
                         # Update KPI
@@ -852,7 +889,8 @@ def run_portfolio(
                             "drivers_pt": len(pt_drivers_v2),
                             "path_used": "CORE_V2",
                             "fallback_used": False,
-                            "lower_bound": lower_bound, # Keep original LB
+                            "lower_bound": lower_bound,  # Keep original LB
+                            "v2_proof": res_v2.to_dict().get("proof", {}),
                         })
                         
                         # Re-wrap solution
@@ -861,7 +899,7 @@ def run_portfolio(
                             assignments=assignments_v2,
                             kpi=kpi,
                             solve_times={**solve_times, "core_v2": v2_runtime},
-                            block_stats={}, # v2 doesn't use block building stats
+                            block_stats={},  # v2 doesn't use block building stats
                             missing_tours=[],
                         )
                         
@@ -869,7 +907,7 @@ def run_portfolio(
                             solution=solution,
                             features=features,
                             initial_path=initial_path,
-                            final_path=initial_path, # Marker
+                            final_path=initial_path,  # Marker
                             parameters_used=params,
                             reason_codes=reason_codes + ["CORE_V2_ACTIVE"],
                             total_runtime_s=v2_runtime + profiling_time,
@@ -877,9 +915,12 @@ def run_portfolio(
                         )
                     
             except Exception as e:
+                import traceback
                 log(f"Core v2 Execution Failed: {e}")
+                log(traceback.format_exc())
                 if use_v2: 
                     log("Core v2: Falling back to v1 due to exception.")
+
 
         # ==========================================================================
         # MANDATORY UTILIZATION REPORT

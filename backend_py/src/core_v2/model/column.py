@@ -108,6 +108,59 @@ class ColumnV2:
         )
 
 
+    def cost_stage1(self, week_category: 'WeekCategory') -> float:
+        """
+        Stage 1 Cost (CG / LP Relaxation).
+        
+        STRICT RULE: Always 1.0 for real columns.
+        Objective is 'Minimize Drivers'.
+        No utilization penalties here (Stage 2 only).
+        """
+        # Artificial columns are handled in MasterLP directly, but if one sneaks in:
+        if self.origin and self.origin.startswith("artificial"):
+            return 1_000_000.0
+        return 1.0
+
+    def cost_utilization(self, week_category: 'WeekCategory') -> float:
+        """
+        Stage 2 Cost (MIP / Penalties).
+        
+        Includes:
+        - Base cost (1.0)
+        - Singleton penalty
+        - Under-hours penalties (<30h, <20h)
+        - Linear underutilization penalty
+        """
+        cost = 1.0
+        
+        # Singleton Penalty
+        if self.is_singleton:
+            cost += 0.2
+            
+        # Hours Penalties
+        from ..model.weektype import WeekCategory
+        
+        if week_category == WeekCategory.COMPRESSED:
+            if self.hours < 30.0:
+                cost += 0.5
+            if self.hours < 20.0:
+                cost += 1.0
+                
+            # Linear underutilization (Target 33h)
+            underutil = max(0.0, 33.0 - self.hours)
+            cost += underutil * 0.1
+            
+        else:  # NORMAL
+            if self.hours < 35.0:
+                cost += 0.5
+                
+            # Linear underutilization (Target 38h)
+            underutil = max(0.0, 38.0 - self.hours)
+            cost += underutil * 0.1
+            
+        return cost
+
+
 def dominates_column(col_a: ColumnV2, col_b: ColumnV2) -> bool:
     """
     Check if col_a dominates col_b.

@@ -3,17 +3,18 @@ Core v2 - SPPRC Pricing Engine
 
 Generates columns with negative reduced cost using Label Setting algorithm.
 Graph: DAG (Day 0 -> Day 1 -> ... -> Day N).
-Nodes: Duties.
+Nodes: Duties (generated lazily per iteration).
 """
 
 import logging
-import math
+import time
 from typing import Optional, Any
 
 from ..model.duty import DutyV2
 from ..model.column import ColumnV2
 from ..model.weektype import WeekCategory
 from ..validator.rules import ValidatorV2
+from ..duty_factory import DutyFactoryTopK, DutyFactoryCaps
 from .label import Label
 
 logger = logging.getLogger("SPPRC")
@@ -23,25 +24,34 @@ class SPPRCPricer:
     """
     Shortest Path Resource Constrained algorithm.
     Finds valid schedules (paths) with negative reduced cost.
+    
+    Uses DutyFactoryTopK for lazy, dual-guided duty generation.
     """
     
     def __init__(
         self, 
-        duties_by_day: dict[int, list[DutyV2]],
-        week_category: WeekCategory = WeekCategory.NORMAL
+        duty_factory: DutyFactoryTopK,
+        week_category: WeekCategory = WeekCategory.NORMAL,
+        duty_caps: Optional[DutyFactoryCaps] = None
     ):
-        self.duties_by_day = duties_by_day
-        self.sorted_days = sorted(duties_by_day.keys())
+        self.duty_factory = duty_factory
+        self.sorted_days = duty_factory.sorted_days
         self.week_category = week_category
+        self.duty_caps = duty_caps or DutyFactoryCaps()
         
         # Hyperparams
-        self.max_labels_per_node = 50   # Keep top K labels per duty per step
+        self.max_labels_per_node = 20   # Keep top K labels per duty per step (reduced for speed)
         self.pruning_active = True
+        self.pricing_time_limit = 3.0   # Seconds per pricing call
+        self.debug = True  # Debug mode
+        
+        # Telemetry
+        self.last_duty_counts: dict[int, int] = {}
 
     def price(
         self, 
         duals: dict[str, float],
-        max_new_cols: int = 500
+        max_new_cols: int = 1500
     ) -> list[ColumnV2]:
         """
         Generate negative reduced cost columns.
@@ -50,32 +60,54 @@ class SPPRCPricer:
             duals: Map tour_id -> float (shadow price)
             max_new_cols: Limit specific number of columns to return
         """
+        start_time = time.time()
+        
+        if self.debug:
+            logger.info(f"PRICE_START: duals_count={len(duals)}, time_limit={self.pricing_time_limit}s")
+        
+        # 1. Generate duties lazily using current duals
+        duties_by_day: dict[int, list[DutyV2]] = {}
+        self.last_duty_counts = {}
+        
+        self.duty_factory.reset_telemetry()
+        
+        for day in self.sorted_days:
+            try:
+                t0 = time.time()
+                duties = self.duty_factory.get_day_duties(day, duals, self.duty_caps)
+                duties_by_day[day] = duties
+                self.last_duty_counts[day] = len(duties)
+                if self.debug:
+                    logger.info(f"DUTY_GEN: day={day}, count={len(duties)}, time={time.time()-t0:.2f}s")
+            except RuntimeError as e:
+                # Cap exceeded - propagate failure
+                logger.error(f"Duty generation failed: {e}")
+                raise
+        
+        total_duties = sum(len(d) for d in duties_by_day.values())
+        if self.debug:
+            logger.info(f"DUTY_GEN_DONE: total={total_duties}, elapsed={time.time()-start_time:.2f}s")
+        
+        # 2. Run label-setting SPPRC
         # Labels bucketed by Day -> DutyID -> List[Label]
-        # Since graph is DAG by day, we just process days in order.
-        
-        # 1. Initialize (Day 0..N)
-        # Seed labels for single duties on their respective days
-        # A partial roster can start on any day.
-        
-        # We maintain "active labels" list for current expansion frontier?
-        # Actually, simpler:
-        # labels[day][duty_id] = [Label, ...]
-        
         labels_by_day: dict[int, dict[str, list[Label]]] = {
             d: {} for d in self.sorted_days
         }
         
-        # 0. Generate "Start" labels (duties acting as start of roster)
+        # Build duty lookup map
+        duty_map: dict[str, DutyV2] = {}
+        for dlist in duties_by_day.values():
+            for d in dlist:
+                duty_map[d.duty_id] = d
+        
+        # 2a. Generate "Start" labels (duties acting as start of roster)
+        if self.debug:
+            logger.info(f"LABEL_INIT_START: days={len(self.sorted_days)}")
+        
+        label_count = 0
         for day in self.sorted_days:
-            for duty in self.duties_by_day[day]:
+            for duty in duties_by_day.get(day, []):
                 rc = self._calc_reduced_cost_duty(duty, duals)
-                # Note: This RC excludes global penalties (weekly hours) which are non-additive.
-                # We handle global penalties by checking them at end? 
-                # OR we add partial penalties if possible?
-                # Linear penalties (e.g. cost per hour under target) can be additive?
-                # "Under 30h" is a step function.
-                # We can't model step function perfectly in additive RC unless we check it at finish.
-                # We rely on "work_min" dominance to keep paths that MIGHT satisfy it.
                 
                 lab = Label(
                     path=(duty.duty_id,),
@@ -87,40 +119,52 @@ class SPPRCPricer:
                 if duty.duty_id not in labels_by_day[day]:
                     labels_by_day[day][duty.duty_id] = []
                 labels_by_day[day][duty.duty_id].append(lab)
+                label_count += 1
+        
+        if self.debug:
+            logger.info(f"LABEL_INIT_DONE: labels={label_count}, elapsed={time.time()-start_time:.2f}s")
 
-        # 1. Propagate Forward (Dynamic Programming)
+        # 2b. Propagate Forward (Dynamic Programming)
+        if self.debug:
+            logger.info(f"LABEL_PROPAGATE_START: days={len(self.sorted_days)}")
+        
+        extensions_done = 0
         for i, current_day in enumerate(self.sorted_days):
-            # For each duty in current day...
-            if current_day not in labels_by_day: continue
+            day_start = time.time()
             
+            # Time check at day level
+            elapsed = time.time() - start_time
+            if elapsed > self.pricing_time_limit:
+                if self.debug:
+                    logger.info(f"PRICE_TIMEOUT: at day {current_day}, elapsed={elapsed:.2f}s")
+                break
+            
+            if current_day not in labels_by_day: 
+                continue
+            
+            day_extensions = 0
             for duty_id, current_labels in labels_by_day[current_day].items():
+                if not current_labels:
+                    continue
                 
-                # Prune before expanding (keep diverse set)
-                # Dominance check already done? Do it again just in case?
-                # self._prune_dominated()
+                # Limit labels to process per duty (avoid explosion)
+                labels_to_extend = current_labels[:self.max_labels_per_node]
                 
                 # Try to extend to future days
-                start_next_idx = i + 1
-                for next_day_idx in range(start_next_idx, len(self.sorted_days)):
+                for next_day_idx in range(i + 1, len(self.sorted_days)):
                     next_day = self.sorted_days[next_day_idx]
+                    next_duties = duties_by_day.get(next_day, [])
                     
-                    # Optimization: Don't skip too many days? Max gap?
-                    # RULES.MAX_DUTIES_PER_WEEK constraint implies we shouldn't skip too much if we want hours?
-                    # But legal gap can be anything.
-                    
-                    for next_duty in self.duties_by_day[next_day]:
+                    # Limit next duties to check (avoid O(N²) explosion)
+                    for next_duty in next_duties[:100]:
                         # Check connectivity
-                        # But wait, we have a list of labels ending at `duty_id`.
-                        # Connectivity depends on `duty_id` vs `next_duty`.
-                        # Since all labels here end at `duty_id` (= `current_labels[0].last_duty`),
-                        # we can check connectivity ONCE for the group.
-                        prev_duty = current_labels[0].last_duty
+                        prev_duty = labels_to_extend[0].last_duty
                         
                         if ValidatorV2.can_chain_days(prev_duty, next_duty):
-                            # Extension valid. Extend ALL labels.
+                            # Extension valid. Extend labels.
                             duty_rc_delta = self._calc_reduced_cost_duty(next_duty, duals)
                             
-                            for lab in current_labels:
+                            for lab in labels_to_extend[:10]:  # Further limit
                                 new_rc = lab.reduced_cost + duty_rc_delta
                                 new_work = lab.total_work_min + next_duty.work_min
                                 new_days = lab.days_worked + 1
@@ -142,7 +186,7 @@ class SPPRCPricer:
                                     new_lab
                                 )
 
-        # 2. Collect Final Columns
+        # 3. Collect Final Columns
         candidates = []
         for day in self.sorted_days:
             for d_id, labs in labels_by_day[day].items():
@@ -150,36 +194,28 @@ class SPPRCPricer:
                     # Finalize Cost (Apply Global Penalties)
                     final_rc = self._finalize_rc(lab)
                     
-                    if final_rc < -1e-5: # Negative Reduced Cost
+                    if final_rc < -1e-5:  # Negative Reduced Cost
                         candidates.append((final_rc, lab))
         
-        # 3. Sort and Select Top-K
-        candidates.sort(key=lambda x: x[0]) # Lowest RC first
+        # 4. Sort and Select Top-K
+        candidates.sort(key=lambda x: x[0])  # Lowest RC first
         selected_candidates = candidates[:max_new_cols]
         
         # Convert to Columns
-        # Need to reconstruct full duty objects from IDs?
-        # Label has `path` (IDs).
-        # We need a map ID->Duty?
-        # Or Label could store list of duties? Tuple of strings is lighter.
-        # Let's verify we can reconstruct.
-        # We have duties_by_day. I can build a lookup map in init.
-        
-        # Hack: Just rebuild map now
-        duty_map = {}
-        for dlist in self.duties_by_day.values():
-            for d in dlist:
-                duty_map[d.duty_id] = d
-                
         result_cols = []
         for rc, lab in selected_candidates:
-            duties = [duty_map[did] for did in lab.path]
+            duties = [duty_map[did] for did in lab.path if did in duty_map]
+            if not duties:
+                continue
             col = ColumnV2.from_duties(
-                col_id=f"prc_{lab.path[0]}_{lab.path[-1]}", # Temp ID, will be hashed anyway
+                col_id=f"prc_{lab.path[0]}_{lab.path[-1]}",
                 duties=duties,
                 origin="pricing"
             )
             result_cols.append(col)
+        
+        pricing_time = time.time() - start_time
+        logger.debug(f"Pricing completed in {pricing_time:.2f}s: {len(result_cols)} columns")
             
         return result_cols
 
@@ -187,16 +223,6 @@ class SPPRCPricer:
         """
         RC contribution of a single duty.
         Delta = BaseCost(Duty) - Sum(Duals)
-        
-        BaseCost is amortized?
-        Driver cost is 1.0 globally.
-        Let's say per-day cost is 0.0?
-        And we add 1.0 at the end (for "Is Active")?
-        Yes, adding 1.0 at start (first duty) or end is correct.
-        Let's add 1.0/N? No, N is unknown.
-        Let's add 1.0 to the "Start Label" or "Finalize".
-        Let's do Finalize.
-        So here: Delta = 0 - Sum(Duals).
         """
         dual_sum = sum(duals.get(tid, 0.0) for tid in duty.tour_ids)
         return -dual_sum
@@ -204,50 +230,39 @@ class SPPRCPricer:
     def _finalize_rc(self, lab: Label) -> float:
         """
         Apply global costs (Base + Penalties) to get final RC.
+        STRICT STAGE 1: c(col) = 1.0.
+        RC = 1.0 - Sum(Duals)
         """
-        # 1. Base Driver Cost
+        # 1. Base Driver Cost = 1.0 (Strict "Minimize Drivers")
         cost = 1.0
         
-        # 2. Utilization Penalties (Non-additive)
-        hours = lab.total_work_min / 60.0
-        
-        if self.week_category == WeekCategory.COMPRESSED:
-            # Stage 4 Objective: Min Sum Underutil (Target 33h)
-            # Stage 2 Gate: < 30h hard penalty
-            underutil = max(0.0, 33.0 - hours)
-            cost += underutil * 0.1 # Small weight to guide generation towards fuller rosters
-            
-            if hours < 30.0: cost += 0.5 # Harder penalty for gate
-            if hours < 20.0: cost += 1.0
-        else: # NORMAL
-            underutil = max(0.0, 38.0 - hours)
-            cost += underutil * 0.1
-            
-            if hours < 35.0: cost += 0.5
-            
-        if len(lab.path) == 1:
-            cost += 0.2
+        # 2. NO Utilization Penalties in Stage 1 Pricing!
+        # Penalties belong in Stage 2 (MIP) only.
             
         # 3. Accumulated RC from duties (which was just -Duals)
         return cost + lab.reduced_cost
 
     def _add_with_dominance(self, existing: list[Label], new_lab: Label):
-        """
-        Add new_lab to existing list, keeping it Pareto-optimal.
-        """
+        """Add new_lab to existing list, keeping it Pareto-optimal."""
         # Check if dominated by any existing
         for ex in existing:
             if ex.dominates(new_lab):
-                return # Reject
+                return  # Reject
         
         # Remove any existing dominated by new
-        # "existing[:] = ..." modifies list in place
         existing[:] = [ex for ex in existing if not new_lab.dominates(ex)]
         
         existing.append(new_lab)
         
         # Safety Cap
         if len(existing) > self.max_labels_per_node:
-            # Heuristic prune: Sort by RC and keep best
             existing.sort(key=lambda l: l.reduced_cost)
             del existing[self.max_labels_per_node:]
+    
+    def get_duty_telemetry(self) -> dict:
+        """Get duty generation telemetry from last price() call."""
+        return {
+            "duty_counts_by_day": self.last_duty_counts,
+            "factory_telemetry": self.duty_factory.get_telemetry_summary(),
+        }
+
