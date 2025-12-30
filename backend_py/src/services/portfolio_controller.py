@@ -49,6 +49,14 @@ try:
 except ImportError:
     METRICS_ENABLED = False
 
+# Fleet Counter integration (v7.2.0)
+try:
+    from fleet_counter import compute_fleet_peaks, FleetPeakSummary
+    FLEET_COUNTER_AVAILABLE = True
+except ImportError:
+    FLEET_COUNTER_AVAILABLE = False
+    FleetPeakSummary = None
+
 # Alias to prevent shadowing issues inside functions
 PS = PathSelection
 
@@ -460,6 +468,19 @@ def run_portfolio(
             f"pool_pressure={features.pool_pressure}, "
             f"lower_bound={features.lower_bound_drivers}")
         
+        # S1.1: INTEGRATE GENUINE FLEET COUNTER (v7.2.0)
+        # Used as Source-of-Truth Lower Bound for D-Search
+        if FLEET_COUNTER_AVAILABLE:
+            try:
+                fleet_summary = compute_fleet_peaks(tours, turnaround_minutes=5)
+                features.fleet_peak = fleet_summary.global_peak_count
+                log(f"Fleet Counter (Pre-Solve): Peak {features.fleet_peak} vehicles @ {fleet_summary.global_peak_day.value} {fleet_summary.global_peak_time.strftime('%H:%M')}")
+            except Exception as fleet_err:
+                log(f"Fleet counter pre-solve error: {fleet_err}")
+                features.fleet_peak = features.lower_bound_drivers # Fallback to geometric
+        else:
+            features.fleet_peak = features.lower_bound_drivers # Fallback
+        
         # ==========================================================================
         # PHASE 2: v5 FIXED SINGLE PATH (Set-Partitioning)
         # ==========================================================================
@@ -669,6 +690,60 @@ def run_portfolio(
             "gap_3er_min_minutes": config.gap_3er_min_minutes,
         }
         
+        # ==========================================================================
+        # FLEET COUNTER INTEGRATION (v7.2.0)
+        # ==========================================================================
+        if FLEET_COUNTER_AVAILABLE:
+            try:
+                fleet_summary = compute_fleet_peaks(tours, turnaround_minutes=5)
+                kpi["fleet_peak_count"] = fleet_summary.global_peak_count
+                kpi["fleet_peak_day"] = fleet_summary.global_peak_day.value
+                kpi["fleet_peak_time"] = fleet_summary.global_peak_time.strftime("%H:%M")
+                kpi["fleet_total_tours"] = fleet_summary.total_tours
+                # Per-day peaks as nested dict
+                kpi["fleet_day_peaks"] = {
+                    day.value: {"count": peak.peak_count, "time": peak.peak_time.strftime("%H:%M")}
+                    for day, peak in fleet_summary.day_peaks.items()
+                }
+                log(f"Fleet Counter: Peak {fleet_summary.global_peak_count} vehicles @ {fleet_summary.global_peak_day.value} {fleet_summary.global_peak_time.strftime('%H:%M')}")
+            except Exception as fleet_err:
+                log(f"Fleet counter error (non-fatal): {fleet_err}")
+                kpi["fleet_peak_count"] = 0
+                kpi["fleet_peak_day"] = "N/A"
+                kpi["fleet_peak_time"] = "N/A"
+        else:
+            kpi["fleet_peak_count"] = 0
+            kpi["fleet_peak_day"] = "N/A"
+            kpi["fleet_peak_time"] = "N/A"
+        
+        # ==========================================================================
+        # POST-SOLVE DIAGNOSTICS (Holiday Week Support - v7.3.0)
+        # ==========================================================================
+        # Compute active days from tours (post-solve, assignments-independent)
+        active_day_set = set()
+        for tour in tours:
+            if hasattr(tour, 'day'):
+                day_val = tour.day.value if hasattr(tour.day, 'value') else str(tour.day)
+                active_day_set.add(day_val)
+        
+        day_order = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
+        active_days_list = [d for d in day_order if d in active_day_set]
+        k = len(active_days_list)
+        drivers_total = len(assignments)
+        fleet_peak = kpi.get("fleet_peak_count", 0)
+        
+        kpi["active_days"] = active_days_list
+        kpi["active_days_count"] = k
+        kpi["is_compressed_week"] = k <= 4
+        kpi["drivers_total"] = drivers_total
+        kpi["drivers_vs_peak"] = drivers_total - fleet_peak
+        kpi["tours_per_driver"] = round(len(tours) / max(1, drivers_total), 2)
+        
+        if k <= 4:
+            log(f"COMPRESSED WEEK: {k} active days ({active_days_list})")
+            log(f"  Drivers vs Peak: {drivers_total} - {fleet_peak} = {drivers_total - fleet_peak}")
+            log(f"  Tours per Driver: {kpi['tours_per_driver']}")
+        
         # Merge two-pass stats from phase1_stats into kpi (for BEST_BALANCED profile)
         twopass_keys = [
             "twopass_executed", "D_pass1_seed", "D_min", "driver_cap", "block_cap",
@@ -711,6 +786,129 @@ def run_portfolio(
         log(f"Gap to LB: {gap_to_lb*100:.1f}%")
         log(f"Runtime: {total_runtime:.1f}s")
         log("=" * 70)
+        
+        # ==========================================================================
+        # CORE V2 INTEGRATION (SHADOW / LIVE)
+        # ==========================================================================
+        use_v2 = getattr(config, 'use_core_v2', False)
+        shadow_v2 = getattr(config, 'enable_shadow_v2', False)
+        
+        if (use_v2 or shadow_v2):
+            log("Core v2: Triggering execution check...")
+            try:
+                # Check for highspy first to avoid crashing on import if missing
+                import importlib.util
+                if importlib.util.find_spec("highspy") is None:
+                    log("Core v2 SKIPPED: 'highspy' module not found.")
+                    if use_v2:
+                        log("Core v2: Falling back to v1 pipeline.")
+                        use_v2 = False
+                else:
+                    # Generic import assuming installed
+                    # Lazy imports to prevent top-level dependency
+                    from src.core_v2.optimizer_v2 import OptimizerCoreV2
+                    from src.core_v2.adapter import Adapter
+                    
+                    log("Core v2: Starting Shadow/Live execution...")
+                    t_v2_start = perf_counter()
+                    
+                    # 1. Adapt Input
+                    adapter = Adapter(tours)
+                    tours_v2 = adapter.convert_to_v2()
+                    
+                    # 2. Configure
+                    opt_v2 = OptimizerCoreV2()
+                    v2_conf = {
+                        "time_limit": time_budget,
+                        "use_duals": True,
+                        "active_days": kpi.get("active_days_count", 5),
+                    }
+                    
+                    # 3. Solve
+                    res_v2 = opt_v2.solve(tours_v2, v2_conf)
+                    
+                    v2_runtime = perf_counter() - t_v2_start
+                    v2_drivers = res_v2.num_drivers
+                    
+                    log(f"Core v2 Result: {v2_drivers} drivers in {v2_runtime:.1f}s (Status: {res_v2.status})")
+                    log(f"Comparison: v1={len(assignments)} vs v2={v2_drivers}")
+                    
+                    # 4. Use Result if Live Mode
+                    if use_v2 and res_v2.status in ["OPTIMAL", "FEASIBLE"]:
+                        log("Core v2: Promoting v2 solution to primary result.")
+                        
+                        # Convert back to v1 models
+                        assignments_v2 = adapter.convert_to_v1(res_v2.best_columns)
+                        assignments_v2 = _renumber_driver_ids(assignments_v2, log_fn=log)
+                        
+                        # Update KPI
+                        fte_drivers_v2 = [a for a in assignments_v2 if a.driver_type == "FTE"]
+                        pt_drivers_v2 = [a for a in assignments_v2 if a.driver_type == "PT"]
+                        
+                        kpi.update({
+                            "solver_arch": "core_v2_cg",
+                            "status": res_v2.status,
+                            "drivers_fte": len(fte_drivers_v2),
+                            "drivers_pt": len(pt_drivers_v2),
+                            "path_used": "CORE_V2",
+                            "fallback_used": False,
+                            "lower_bound": lower_bound, # Keep original LB
+                        })
+                        
+                        # Re-wrap solution
+                        solution = SolveResultV4(
+                            status=res_v2.status,
+                            assignments=assignments_v2,
+                            kpi=kpi,
+                            solve_times={**solve_times, "core_v2": v2_runtime},
+                            block_stats={}, # v2 doesn't use block building stats
+                            missing_tours=[],
+                        )
+                        
+                        return PortfolioResult(
+                            solution=solution,
+                            features=features,
+                            initial_path=initial_path,
+                            final_path=initial_path, # Marker
+                            parameters_used=params,
+                            reason_codes=reason_codes + ["CORE_V2_ACTIVE"],
+                            total_runtime_s=v2_runtime + profiling_time,
+                            profiling_time_s=profiling_time,
+                        )
+                    
+            except Exception as e:
+                log(f"Core v2 Execution Failed: {e}")
+                if use_v2: 
+                    log("Core v2: Falling back to v1 due to exception.")
+
+        # ==========================================================================
+        # MANDATORY UTILIZATION REPORT
+        # ==========================================================================
+        try:
+            from src.services.utilization_report import generate_utilization_report
+            import os
+            
+            # Determine output directory (artifacts or current working directory)
+            artifacts_dir = os.path.join(os.getcwd(), "artifacts")
+            
+            # Determine scenario name from context or features
+            active_days = kpi.get("active_days", [])
+            scenario_name = f"KW_{''.join([d[:2] for d in active_days])}" if active_days else "scenario"
+            
+            log(f"[UTILIZATION] Generating mandatory report...")
+            summary_file, csv_file = generate_utilization_report(
+                assignments=assignments,
+                output_dir=artifacts_dir,
+                scenario_name=scenario_name
+            )
+            
+            # Add paths to KPI for reference
+            kpi["utilization_summary_file"] = str(summary_file)
+            kpi["utilization_rosters_file"] = str(csv_file)
+            
+        except Exception as util_err:
+            log(f"[WARN] Utilization report generation failed: {util_err}")
+            # Non-fatal, continue
         
         # ==========================================================================
         # PROMETHEUS METRICS
@@ -884,6 +1082,7 @@ def _execute_path(
             config=config,
             global_deadline=global_deadline,
             context=context,
+            features=features,  # Step 5: Pass features for compressed week detection
         )
         
         assign_time = perf_counter() - t_assign

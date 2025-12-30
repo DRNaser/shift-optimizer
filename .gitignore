@@ -72,3 +72,11 @@ backend_py/server.err
 !frontend_v5/
 !frontend_v5/lib/
 
+
+# Execution Artifacts (Root)
+snapshot_iter_*.json
+diag_run_result*.json
+test_report.json
+server_log.txt
+solver_logs_export.txt
+baseline_metrics_raw.txt

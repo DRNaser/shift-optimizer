@@ -362,6 +362,127 @@ class RosterColumnGenerator:
         )
         
         return roster if roster.is_valid else None
+
+    def generate_collapse_candidates(
+        self,
+        rosters: list[RosterColumn],
+        max_attempts: int = 200,
+        tours_limit: int = 3
+    ) -> list[RosterColumn]:
+        """
+        [Step 11] 3-to-2 Collapse Neighborhood.
+        Attempt to take 3 short rosters and repartition their blocks into 2 valid rosters.
+        Focuses on COMPRESSED week improvement.
+        """
+        # 1. Identify short rosters
+        shorts = [r for r in rosters if len(r.covered_tour_ids) <= tours_limit]
+        if len(shorts) < 3:
+            return []
+            
+        candidates = []
+        
+        # Determine strictness of validity (same as build_from_seed)
+        # We assume blocks are from valid rosters so they are individually valid.
+        
+        for _ in range(max_attempts):
+            if len(shorts) < 3: break
+            triplet = self.rng.sample(shorts, 3)
+            
+            # Collect unique blocks
+            all_blocks = []
+            seen = set()
+            for r in triplet:
+                for bid in r.block_ids:
+                    if bid in self.block_by_id and bid not in seen:
+                        b = self.block_by_id[bid]
+                        all_blocks.append(b)
+                        seen.add(bid)
+            
+            # Constraints
+            total_min = sum(b.work_min for b in all_blocks)
+            if total_min < 2 * MIN_WEEK_MINUTES: 
+                # Impossible to form 2 valid FTE rosters
+                continue
+                
+            # Heuristic partitioning:
+            # Shuffle blocks and fill R1, then R2.
+            # Try 5 shuffles.
+            success = False
+            
+            for _ in range(5):
+                shuffled = list(all_blocks)
+                self.rng.shuffle(shuffled)
+                
+                r1_blocks = []
+                r2_blocks = []
+                cur_min_1 = 0.0
+                
+                # Build R1
+                r1_blocks.append(shuffled[0])
+                cur_min_1 += shuffled[0].work_min
+                
+                remaining = shuffled[1:]
+                # Sort remaining by time to help sequential fill?
+                remaining.sort(key=lambda b: b.start_time)
+                
+                rejected = []
+                
+                for cand in remaining:
+                    if cur_min_1 > MAX_WEEK_MINUTES:
+                        rejected.append(cand)
+                        continue
+                        
+                    can, _ = can_add_block_to_roster(r1_blocks, cand, cur_min_1)
+                    if can:
+                        r1_blocks.append(cand)
+                        cur_min_1 += cand.work_min
+                    else:
+                        rejected.append(cand)
+                
+                # Check R1 validity (soft check min hours)
+                if cur_min_1 < MIN_WEEK_MINUTES:
+                    # Too short, fail
+                    continue
+                    
+                # R1 looks good. Build R2 from rejected.
+                if not rejected:
+                    # 3->1 collapse! Amazing.
+                    c1 = create_roster_from_blocks(self._get_next_roster_id(), r1_blocks)
+                    if c1.is_valid:
+                        candidates.append(c1)
+                        success = True
+                        break
+                else:
+                    # Try to build R2
+                    rejected.sort(key=lambda b: b.start_time)
+                    r2_blocks = [rejected[0]]
+                    cur_min_2 = rejected[0].work_min
+                    valid_r2 = True
+                    
+                    for cand in rejected[1:]:
+                        can, _ = can_add_block_to_roster(r2_blocks, cand, cur_min_2)
+                        if can:
+                            r2_blocks.append(cand)
+                            cur_min_2 += cand.work_min
+                        else:
+                            valid_r2 = False
+                            break
+                    
+                    if valid_r2 and MIN_WEEK_MINUTES <= cur_min_2 <= MAX_WEEK_MINUTES:
+                         # Success!
+                         c1 = create_roster_from_blocks(self._get_next_roster_id(), r1_blocks)
+                         c2 = create_roster_from_blocks(self._get_next_roster_id(), r2_blocks)
+                         if c1.is_valid and c2.is_valid:
+                             candidates.append(c1)
+                             candidates.append(c2)
+                             success = True
+                             break
+            
+            if success:
+                # Move to next attempt
+                pass
+
+        return candidates
     
     # =========================================================================
     # MOVE 2: REPAIR-UNCOVERED
@@ -494,6 +615,117 @@ class RosterColumnGenerator:
         rare.sort(key=lambda x: x[1])
         return [bid for bid, _ in rare]
 
+    def merge_low_hour_into_hosts(
+        self,
+        low_hour_rosters: list[RosterColumn],
+        max_attempts: int = 500,
+        target_min_hours: float = 30.0,
+        target_max_hours: float = 45.0,
+    ) -> list[RosterColumn]:
+        """
+        Merge low-hour rosters into compatible host rosters to create higher-hour columns.
+        
+        This solves the "227 drivers @ 25h avg" problem by creating columns that replace
+        singletons (4.5h, 9h) with merged columns (30-45h).
+        
+        Strategy:
+        1. For each low_hour roster r_low (e.g., 4.5h, 9h):
+           - Extract its blocks
+           - Find compatible other blocks from pool that can be added
+           - Build merged column with target_min_hours <= hours <= target_max_hours
+        2. Return merged columns (pool size limited to max_attempts)
+        
+        Args:
+            low_hour_rosters: Rosters with hours < 30 (candidates for merging)
+            max_attempts: Maximum merged columns to generate
+            target_min_hours: Minimum hours for merged column (default 30h)
+            target_max_hours: Maximum hours for merged column (default 45h)
+        
+        Returns:
+            List of new merged RosterColumns
+        """
+        if not low_hour_rosters:
+            return []
+        
+        merged_columns = []
+        attempts = 0
+        
+        # Sort low-hour rosters by hours (lowest first - most impactful to merge)
+        sorted_low = sorted(low_hour_rosters, key=lambda r: r.total_hours)[:50]  # Limit candidates
+        
+        # Group available blocks by day for efficient lookup
+        blocks_by_day = defaultdict(list)
+        for b in self.block_infos:
+            blocks_by_day[b.day].append(b)
+        
+        for r_low in sorted_low:
+            if attempts >= max_attempts:
+                break
+            
+            # Get blocks from low-hour roster
+            low_blocks = [self.block_by_id[bid] for bid in r_low.block_ids if bid in self.block_by_id]
+            if not low_blocks:
+                continue
+            
+            # Collect days already used by low-hour roster
+            low_days = set(b.day for b in low_blocks)
+            
+            # Try to build a merged column by adding more blocks
+            current_blocks = list(low_blocks)
+            current_minutes = sum(b.work_min for b in current_blocks)
+            target_min_minutes = int(target_min_hours * 60)
+            target_max_minutes = int(target_max_hours * 60)
+            
+            # Try adding blocks from other days first (less likely to conflict)
+            other_days = [d for d in blocks_by_day.keys() if d not in low_days]
+            same_days = list(low_days)
+            
+            # Prioritize other days, then same days
+            day_order = other_days + same_days
+            
+            for day in day_order:
+                if current_minutes >= target_max_minutes:
+                    break
+                
+                # Get candidates for this day, sorted by work_min descending
+                day_candidates = sorted(
+                    blocks_by_day[day],
+                    key=lambda b: -b.work_min
+                )
+                
+                for cand in day_candidates:
+                    if cand.block_id in r_low.block_ids:
+                        continue  # Skip blocks already in roster
+                    
+                    if current_minutes + cand.work_min > target_max_minutes:
+                        continue
+                    
+                    can_add, _ = can_add_block_to_roster(current_blocks, cand, current_minutes)
+                    if can_add:
+                        current_blocks.append(cand)
+                        current_minutes += cand.work_min
+                        
+                        # Check if we've reached target
+                        if current_minutes >= target_min_minutes:
+                            break
+            
+            # Create merged roster if it meets threshold
+            if current_minutes >= target_min_minutes:
+                merged_roster = create_roster_from_blocks(
+                    roster_id=self._get_next_roster_id(),
+                    block_infos=current_blocks,
+                )
+                
+                if merged_roster.is_valid and self.add_column(merged_roster):
+                    merged_columns.append(merged_roster)
+                    attempts += 1
+        
+        if merged_columns:
+            self.log_fn(f"[MERGE-LOW] Generated {len(merged_columns)} merged columns (target: {target_min_hours}-{target_max_hours}h)")
+        
+        return merged_columns
+
+
     
     def targeted_repair(
         self,
@@ -617,9 +849,125 @@ class RosterColumnGenerator:
         return roster if roster.is_valid else None
 
     
-    # =========================================================================
-    # MOVE 3: SWAP BUILDER
-    # =========================================================================
+    def generate_merge_repair_columns_capaware(
+        self,
+        anchor_tours: list[str],
+        max_cols: int = 400,
+    ) -> int:
+        """
+        Step 14: Cap-Aware Merge Repair.
+        Build new dense rosters that include anchor tours by merging short incumbents.
+        Deterministic. Uses can_add_block_to_roster incremental validator.
+        Returns number of UNIQUE columns added to pool.
+        """
+        if not anchor_tours:
+            return 0
+            
+        generated_count = 0
+        anchor_set = set(anchor_tours)
+        
+        # 1. Identify short incumbents (<= 3 tours)
+        # Prefer rosters with INC_GREEDY_ prefix or similar
+        incumbent_shorts = []
+        other_shorts = []
+        
+        for col in self.pool.values():
+            if len(col.covered_tour_ids) <= 3:
+                if col.roster_id.startswith(("INC_GREEDY_", "SNAP_", "BEST_")):
+                    incumbent_shorts.append(col)
+                else:
+                    other_shorts.append(col)
+        
+        # Sort for determinism
+        incumbent_shorts.sort(key=lambda c: c.roster_id)
+        other_shorts.sort(key=lambda c: c.roster_id)
+        
+        candidates = incumbent_shorts + other_shorts
+        if not candidates:
+            return 0
+            
+        # 2. Filter base rosters that contain at least one anchor tour
+        base_rosters = [c for c in candidates if any(t in anchor_set for t in c.covered_tour_ids)]
+        
+        self.log_fn(f"[CAP-MERGE] Found {len(base_rosters)} base rosters hitting anchors")
+        
+        # 3. Attempt merges
+        # Strategy: Take a base roster, try to add blocks from 1-2 other candidates
+        
+        # Pre-compute block objects for speed
+        roster_blocks = {}
+        for c in candidates:
+            blocks = []
+            for bid in c.block_ids:
+                if bid in self.block_by_id:
+                    blocks.append(self.block_by_id[bid])
+            roster_blocks[c.signature] = blocks
+            
+        attempts = 0
+        max_attempts = max_cols * 5
+        
+        for base in base_rosters:
+            if generated_count >= max_cols or attempts >= max_attempts:
+                break
+                
+            base_b_objs = roster_blocks.get(base.signature)
+            if not base_b_objs: continue
+            
+            # Try to merge with other candidates
+            # Sort candidates by length (shortest first) to pack tightly
+            current_blocks = list(base_b_objs)
+            current_min = base.total_hours * 60
+            
+            merged_something = False
+            
+            # Inner loop: iterate through candidates to find merge partners
+            # Limit scan to avoid N^2 explosion
+            for partner in candidates:
+                if partner.signature == base.signature:
+                    continue
+                    
+                # Skip if hours Would exceed max immediately
+                if current_min + (partner.total_hours * 60) > MAX_WEEK_MINUTES:
+                    continue
+                
+                partner_b_objs = roster_blocks.get(partner.signature)
+                if not partner_b_objs: continue
+                
+                # Check compatibility of all blocks in partner
+                valid_merge = True
+                temp_blocks = list(current_blocks)
+                temp_min = current_min
+                
+                for b in partner_b_objs:
+                    can_add, _ = can_add_block_to_roster(temp_blocks, b, temp_min)
+                    if can_add:
+                        temp_blocks.append(b)
+                        temp_min += b.work_min
+                    else:
+                        valid_merge = False
+                        break
+                
+                if valid_merge:
+                    current_blocks = temp_blocks
+                    current_min = temp_min
+                    merged_something = True
+                    # If we reached FTE range, stop merging and try to add
+                    if current_min >= MIN_WEEK_MINUTES:
+                        break
+            
+            attempts += 1
+            
+            if merged_something and current_min >= MIN_WEEK_MINUTES:
+                # Create new roster
+                new_roster = create_roster_from_blocks(
+                    self._get_next_roster_id(),
+                    current_blocks
+                )
+                if new_roster.is_valid and self.add_column(new_roster):
+                    generated_count += 1
+                    
+        return generated_count
+
     
     def swap_builder(self, max_attempts: int = 100) -> list[RosterColumn]:
         """
@@ -784,6 +1132,148 @@ class RosterColumnGenerator:
             covered_blocks.update(col.block_ids)
             
         return len(covered_blocks) / len(self.block_infos) if self.block_infos else 0.0
+
+    # =========================================================================
+    # STEP 15B: FORECAST-AWARE GENERATION
+    # =========================================================================
+    
+    def generate_sparse_window_seeds(self, max_concurrent: int = 2) -> int:
+        """
+        Step 15B: Targets 'thin tail' blocks in sparsely occupied time windows.
+        Identifies time buckets with <= max_concurrent blocks active.
+        """
+        stats = {
+            "identified_sparse": 0,
+            "added_columns": 0,
+            "failed_columns": 0
+        }
+        
+        try:
+            # Build Occupancy Map: (Day, Bucket) -> Count
+            occupancy = defaultdict(int) 
+            for b in self.block_infos:
+                d = b.day
+                start_bucket = b.start_min // 15
+                end_bucket = b.end_min // 15
+                for i in range(start_bucket, end_bucket):
+                    occupancy[(d, i)] += 1
+                    
+            # Find Sparse Blocks
+            sparse_blocks = set()
+            for b in self.block_infos:
+                d = b.day
+                start_bucket = b.start_min // 15
+                end_bucket = b.end_min // 15
+                buckets = range(start_bucket, end_bucket)
+                if any(occupancy[(d, i)] <= max_concurrent for i in buckets):
+                    sparse_blocks.add(b.block_id)
+                    
+            stats["identified_sparse"] = len(sparse_blocks)
+            self.log_fn(f"[SPARSE-GEN] Identified {len(sparse_blocks)} blocks in thin windows")
+            
+            # Build columns from these seeds
+            added = 0
+            sorted_ids = sorted(list(sparse_blocks))
+            
+            for bid in sorted_ids:
+                 col = self.build_from_seed_diversified(
+                     seed_block_id=bid,
+                     prefer_rare=True,
+                     avoid_set=set() 
+                 )
+                 if col and self.add_column(col):
+                     added += 1
+                 else:
+                     stats["failed_columns"] += 1
+                     
+            stats["added_columns"] = added
+            self.log_fn(f"[SPARSE-GEN] Added {added} columns")
+            return added
+            
+        finally:
+            # Dump Stats to Artifact
+            try:
+                import json
+                import os
+                artifact_path = r"C:\Users\n.zaher\.gemini\antigravity\brain\ca05176a-833c-4592-af77-ceeeba361ffa\step15b_sparse_stats.json"
+                os.makedirs(os.path.dirname(artifact_path), exist_ok=True)
+                with open(artifact_path, "w") as f:
+                    json.dump(stats, f, indent=2)
+            except Exception as e:
+                self.log_fn(f"[SPARSE-GEN] Failed to write stats: {e}")
+
+    def generate_friday_absorbers(self) -> int:
+        """
+        Step 15B: Targets Friday unpaired/short blocks.
+        Attempts to combine Fri (4.5h) with Mon-Thu (9h+) to reach FTE.
+        """
+        stats = {
+            "found_friday_shorts": 0,
+            "candidates_per_day": {},
+            "added_columns": 0
+        }
+        
+        try:
+            # Find Friday blocks < 5h
+            fri_shorts = [b for b in self.block_infos if b.day == 4 and b.work_min < 300]
+            stats["found_friday_shorts"] = len(fri_shorts)
+            
+            if not fri_shorts:
+                return 0
+                
+            self.log_fn(f"[FRI-ABSORB] Found {len(fri_shorts)} short Friday blocks")
+            added = 0
+            
+            # Sort by ID
+            fri_shorts.sort(key=lambda b: b.block_id)
+            
+            for fri_b in fri_shorts:
+                 current_blocks = [fri_b]
+                 current_min = fri_b.work_min
+                 
+                 # Greedily finding longest possible blocks on Mon-Thu
+                 for day in [0, 1, 2, 3]: # Mon, Tue, Wed, Thu
+                     cands = [b for b in self.block_infos if b.day == day and b.work_min >= 480] # >= 8h
+                     
+                     if str(day) not in stats["candidates_per_day"]:
+                         stats["candidates_per_day"][str(day)] = 0
+                     stats["candidates_per_day"][str(day)] += len(cands)
+                     
+                     if not cands: continue
+                     
+                     # Sort desc length
+                     cands.sort(key=lambda b: -b.work_min)
+                     
+                     best_b = None
+                     for cand in cands:
+                         can_add, _ = can_add_block_to_roster(current_blocks, cand, current_min)
+                         if can_add:
+                             best_b = cand
+                             break
+                     
+                     if best_b:
+                         current_blocks.append(best_b)
+                         current_min += best_b.work_min
+                     
+                 if current_min >= 2400: # 40h
+                     roster = create_roster_from_blocks(self._get_next_roster_id(), current_blocks)
+                     if roster.is_valid and self.add_column(roster):
+                         added += 1
+                         
+            stats["added_columns"] = added
+            self.log_fn(f"[FRI-ABSORB] Added {added} columns")
+            return added
+            
+        finally:
+            try:
+                import json
+                import os
+                artifact_path = r"C:\Users\n.zaher\.gemini\antigravity\brain\ca05176a-833c-4592-af77-ceeeba361ffa\step15b_friday_stats.json"
+                os.makedirs(os.path.dirname(artifact_path), exist_ok=True)
+                with open(artifact_path, "w") as f:
+                    json.dump(stats, f, indent=2)
+            except Exception as e:
+                self.log_fn(f"[FRI-ABSORB] Failed to write stats: {e}")
 
     def generate_multistage_pool(
         self,

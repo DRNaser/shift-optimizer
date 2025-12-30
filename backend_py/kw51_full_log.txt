@@ -1,0 +1,245 @@
+======================================================================
+KW51 FORECAST (Mon, Tue, Wed, Fri only)
+  Contract FTE Pool: 176
+======================================================================
+Parsing day: Mon
+Parsing day: Tue
+Parsing day: Wed
+Parsing day: Fri
+
+Loaded 1272 tours
+
+Tours by day:
+  Fri: 322
+  Mon: 290
+  Tue: 394
+  Wed: 266
+
+Total hours: 5723.8h
+
+======================================================================
+FLEET COUNTER
+======================================================================
+Global Peak: 169 vehicles @ Wed 10:45
+  Mon: 111 vehicles @ 09:15
+  Tue: 133 vehicles @ 14:30
+  Wed: 169 vehicles @ 10:45 <- PEAK
+  Thu: 0 vehicles @ 00:00
+  Fri: 124 vehicles @ 09:00
+  Sat: 0 vehicles @ 00:00
+
+======================================================================
+Running solver (budget=240.0s)...
+======================================================================
+[PORTFOLIO DEBUG] ======================================================================
+[PORTFOLIO DEBUG] PORTFOLIO CONTROLLER - Starting optimization
+[PORTFOLIO DEBUG] ======================================================================
+[PORTFOLIO DEBUG] Tours: 1272, Time budget: 240.0s, Seed: 42
+[PORTFOLIO DEBUG] S0.2 Budget Slices: phase1=48.0s, phase2=156.0s, lns=19.2s
+[PORTFOLIO DEBUG] PHASE 0: Block building...
+[PORTFOLIO DEBUG] BlockGen Overrides: {'min_pause': 30, 'max_pause_regular': 90, 'split_pause_min': 240, 'split_pause_max': 480, 'max_daily_span_hours': 14.0, 'max_spread_split': 840, 'hot_tour_penalty_alpha': 0.0}
+[SmartBuilder] Loaded policy: 100 pair templates, 100 triple templates
+[SmartBuilder] Step 2: Scoring blocks with policy...
+[SmartBuilder] Scored 237278 blocks
+[SmartBuilder] Step 3: Deduplicating...
+[SmartBuilder] After dedupe: 237278 blocks
+[SmartBuilder] Step 4: Smart capping...
+[SmartBuilder] Step 5: Computing stats...
+[SmartBuilder] Final: 18145 blocks in 3.60s
+[PORTFOLIO DEBUG] Generated 18145 blocks in 3.7s (profile=MIN_HEADCOUNT_3ER)
+[PORTFOLIO DEBUG] PHASE 1: Instance profiling...
+[PORTFOLIO DEBUG] Features: peakiness=0.29, pool_pressure=LOW, lower_bound=169
+[PORTFOLIO DEBUG] ======================================================================
+[PORTFOLIO DEBUG] v5 PIPELINE: Fixed Single Path (Set-Partitioning)
+[PORTFOLIO DEBUG] ======================================================================
+[PORTFOLIO DEBUG] ======================================================================
+[PORTFOLIO DEBUG] PIPELINE MODE: PATH C (Day-Choice Optimization)
+[PORTFOLIO DEBUG] ======================================================================
+[PORTFOLIO DEBUG] v5: Fixed pipeline - executing Path C (Day-Choice)
+[PORTFOLIO DEBUG]   Path: HEAVY (Set-Partitioning)
+[PORTFOLIO DEBUG]   LNS iterations: 30
+[PORTFOLIO DEBUG]   Destroy fraction: 0.15
+[PORTFOLIO DEBUG]   DAY_CAP: 220
+[PORTFOLIO DEBUG] ======================================================================
+[PORTFOLIO DEBUG] PHASE 3: Block selection (CP-SAT)...
+
+============================================================
+PHASE 1: Capacity Planning (use_block model)
+============================================================
+Blocks: 18145, Tours: 1272
+
+--- DAY-MIN-SOLVE (TRUE Lower Bounds) ---
+  Fri: min_blocks=156 (OPTIMAL), 1er=21, 2er=104, 3er=31, avg=2.06 tours/block
+  Mon: min_blocks=144 (OPTIMAL), 1er=14, 2er=114, 3er=16, avg=2.01 tours/block
+  => Peak day minimum: 156 blocks (theoretical FTE floor)
+
+--- SOLVING (HOTFIX A: No Tightening) (Budget: 48.0s) ---
+
+--- ITER 1: CAP=220 (Time left: 48.0s) ---
+Variables: 18145 (vs 2721750+ in old model)
+Adding coverage constraints...
+Coverage constraints added.
+  SCORE DEBUG: min=10.0 max=760.0 %>1000=0.0%
+  TRAP PRESSURE: Mon=0.22, Tue=0.44, Wed=0.00, Fri=0.00
+  CHAINABILITY: 1378 blocks have low next-day options (<50). Applied penalties.
+  COMPAT HISTOGRAM: {'10+': 10484, '0': 7661}
+    Mon: HARD cap at 220
+    Fri: HARD cap at 220
+  REALITY CHECK: 61 tours (4.8%) FORCED to be 1er (no multi option found)
+  PACKABILITY: 1211/1272 tours have multi-block options
+
+============================================================
+RC1: MULTI-SOLVE LEXICOGRAPHIC PACKING
+============================================================
+  AVAILABLE BLOCKS: 1er=1272, 2er_REG=7926, 2er_SPLIT=3569, 3er=5378
+  COUNT EXPRESSIONS: c3er, c2R, c2S, c1er built as IntVars
+  TWO-PASS BUDGET (total=48.0s):
+    Pass 1 (Capacity): 19.2s
+    Pass 2 (Quality):  28.8s
+      Stage 1: 10.1s
+      Stage 2: 7.2s
+      Stage 3: 4.3s
+      Stage 4: 2.9s
+      Stage 5: 4.3s
+
+============================================================
+v5 PASS 1: HEADCOUNT MINIMIZATION
+============================================================
+  Objective: Minimize max_day (peak headcount)
+  DAY_CAP: 220 (hard constraint for peak days)
+  PASS 1: FEASIBLE (not proven optimal)
+  PASS 1 RESULT: headcount = 237 blocks/peak-day
+  HEADCOUNT LOCK: max_day <= 237 (fail-open, pass1 was FEASIBLE)
+  HINTS: Cleared and reset from Pass 1 solution
+
+============================================================
+v5 PASS 2: QUALITY OPTIMIZATION (locked headcount)
+============================================================
+
+  --- STAGE 1: MAXIMIZE count_3er ---
+  STAGE 1: FEASIBLE (not proven optimal)
+  STAGE 1 RESULT: count_3er = 77
+
+  --- STAGE 2: MAXIMIZE count_2er_regular ---
+  STAGE 2: FEASIBLE (not proven optimal)
+  STAGE 2 RESULT: count_2er_regular = 234
+  Fixation: count_2er_regular >= 234 (FEASIBLE, fail-open)
+
+  PRE-FLIGHT: Validating model after Stage 2 fixation...
+  PRE-FLIGHT: UNKNOWN
+  PRE-FLIGHT PASSED (model valid)
+
+  --- STAGE 3: MAXIMIZE count_2er_split ---
+  STAGE 3: FEASIBLE (not proven optimal)
+  STAGE 3 RESULT: count_2er_split = 93
+
+  --- STAGE 4: MINIMIZE count_1er ---
+  STAGE 4: UNKNOWN (using Stage 3 fallback)
+  STAGE 4 FALLBACK RESULT: count_1er = 387
+
+  --- STAGE 5: SECONDARY OPTIMIZATION (under locked packing) ---
+  SECONDARY OBJ: 1000000*max_day + 100000*total_blocks + 10000*slack - 1*score
+  STAGE 5 FAILED: UNKNOWN (using Stage 4 fallback)
+
+============================================================
+RC1 PACKING LOCKED:
+  3er blocks:       77
+  2er_REG blocks:   234
+  2er_SPLIT blocks: 93
+  1er blocks:       387
+  Stage 5 fallback: YES (Stage 4)
+============================================================
+  Using Stage 4 solution (Stage 5 failed)
+  SELECTED BLOCKS: 3er=77, 2er_REG=234, 2er_SPLIT=93, 1er=387
+Selected 791 blocks: {'1er': 387, '2er': 327, '3er': 77}
+Block mix: 1er=48.9%, 2er=41.3%, 3er=9.7%
+Template matches: 212
+Total hours: 5723.8h
+Time: 50.68s
+
+==================== DIAGNOSTICS ====================
+  Mon: 165 blocks (67 1er, 71 2er, 27 3er)
+  Tue: 231 blocks (91 1er, 117 2er, 23 3er)
+  Wed: 208 blocks (150 1er, 58 2er, 0 3er)
+  Fri: 187 blocks (79 1er, 81 2er, 27 3er)
+FORCED 1er TOURS: 61 (No multi-block option available in pool)
+MISSED 3er OPPS: 237 (Assigned 1er, but 3er option existed)
+  Example missed opps: ['T0018', 'T0019', 'T0021', 'T0022', 'T0023', 'T0024', 'T0025', 'T0026', 'T0031', 'T0032']...
+DAY MIN LOWER BOUND (Max Concurrent Tours):
+  Mon: LB=112 vs Actual=165 (Gap=53)
+  Tue: LB=134 vs Actual=231 (Gap=97)
+  Wed: LB=158 vs Actual=208 (Gap=50)
+  Fri: LB=119 vs Actual=187 (Gap=68)
+=====================================================
+  FEASIBLE: 791 blocks, max_day=231
+  Cannot tighten further (next=230 >= curr=220). Done.
+
+=== TIGHTENING COMPLETE ===
+  Best CAP: 220 (Floor: 156)
+  Iterations: 1
+  Time: 50.7s / 48.0s
+
+==================== DIAGNOSTICS ====================
+SELECTED BLOCKS BY DAY:
+  Mon: 165 blocks (67 1er, 71 2er, 27 3er) | avg=1.76 tours/block
+  Tue: 231 blocks (91 1er, 117 2er, 23 3er) | avg=1.71 tours/block
+  Wed: 208 blocks (150 1er, 58 2er, 0 3er) | avg=1.28 tours/block
+  Fri: 187 blocks (79 1er, 81 2er, 27 3er) | avg=1.72 tours/block
+FORCED 1er TOURS: 61 (No multi-block option)
+MISSED 3er OPPS: 237 (Chose 1er despite 3er existing)
+GAP TO THEORETICAL MINIMUM:
+  Mon: Actual=165 vs LB=112 (Gap=53)
+  Tue: Actual=231 vs LB=134 (Gap=97)
+  Wed: Actual=208 vs LB=158 (Gap=50)
+  Fri: Actual=187 vs LB=119 (Gap=68)
+=====================================================
+
+--- LNS Friday Reopt: 187 -> target~156 ---
+    LNS attempt: Fri cap=182
+  LNS improved blocks: 791 -> 771
+  COMPRESSION: 22 moves, saved 22 blocks
+  POST-COMPRESSION: Replaced 22 block sets (savings: ~44 blocks)
+[PORTFOLIO DEBUG] PHASE 1 COMPLETE: selected_blocks=749, tours=1272
+[PORTFOLIO DEBUG] WARNING: Phase 1 overrun 66.6s > 48.0s
+[PORTFOLIO DEBUG] Selected 749 blocks in 66.6s
+[PORTFOLIO DEBUG] PHASE 4: Executing Path HEAVY (phase2=156.0s, lns=19.2s)...
+[PORTFOLIO DEBUG] Path C: Set Partitioning (Column Generation)...
+[PORTFOLIO DEBUG] Path HEAVY failed with exception: unterminated string literal (detected at line 214) (set_partition_solver.py, line 214)
+[PORTFOLIO DEBUG] Early stop triggered: GOOD_ENOUGH
+[PORTFOLIO DEBUG] Packability: forced_1er_rate=4.80%, missed_3er_opps=153
+[PORTFOLIO DEBUG] Fleet Counter: Peak 169 vehicles @ Wed 10:45
+[PORTFOLIO DEBUG] COMPRESSED WEEK: 4 active days (['Mon', 'Tue', 'Wed', 'Fri'])
+[PORTFOLIO DEBUG]   Drivers vs Peak: 0 - 169 = -169
+[PORTFOLIO DEBUG]   Tours per Driver: 1272.0
+[PORTFOLIO DEBUG] ======================================================================
+[PORTFOLIO DEBUG] PORTFOLIO CONTROLLER - Complete
+[PORTFOLIO DEBUG] Path: HEAVY -> HEAVY
+[PORTFOLIO DEBUG] Drivers: 0 FTE, 0 PT
+[PORTFOLIO DEBUG] Gap to LB: -100.0%
+[PORTFOLIO DEBUG] Runtime: 70.3s
+[PORTFOLIO DEBUG] ======================================================================
+
+======================================================================
+RESULT (Contract-Based Classification)
+======================================================================
+Status: COMPLETED
+Drivers: 0 FTE + 0 PT = 0 Total
+  (FTE Pool: 176, PT if drivers > pool)
+Active Days: ['Mon', 'Tue', 'Wed', 'Fri'] (k=4)
+Fleet Peak: 169 vehicles
+Drivers vs Peak: -169
+Tours per Driver: 1272.0
+
+[SUCCESS] Roster exported to: c:\Users\n.zaher\OneDrive - LTS Transport u. Logistik GmbH\Desktop\shift-optimizer\backend_py\roster_kw51.csv
+Total Drivers: 0
+
+
+===STDERR===
+Path HEAVY execution failed
+Traceback (most recent call last):
+  File "c:\Users\n.zaher\OneDrive - LTS Transport u. Logistik GmbH\Desktop\shift-optimizer\backend_py\src\services\portfolio_controller.py", line 930, in _execute_path
+    from src.services.set_partition_solver import solve_set_partitioning
+  File "c:\Users\n.zaher\OneDrive - LTS Transport u. Logistik GmbH\Desktop\shift-optimizer\backend_py\src\services\set_partition_solver.py", line 214
+    log_fn("\n# >>> STEP8: SUPPORT_HELPERS
+           ^
+SyntaxError: unterminated string literal (detected at line 214)

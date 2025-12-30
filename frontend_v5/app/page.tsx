@@ -195,7 +195,11 @@ export default function Home() {
         ["Durchschn. Arbeitsstunden", stats.average_work_hours?.toFixed(1) || "-"].join(SEPARATOR) + LINE_END +
         ["Blöcke 1er", stats.block_counts["1er"] || 0].join(SEPARATOR) + LINE_END +
         ["Blöcke 2er", stats.block_counts["2er"] || 0].join(SEPARATOR) + LINE_END +
-        ["Blöcke 3er", stats.block_counts["3er"] || 0].join(SEPARATOR) + LINE_END;
+        ["Blöcke 3er", stats.block_counts["3er"] || 0].join(SEPARATOR) + LINE_END +
+        // Fleet Counter metrics (v7.2.0)
+        ["Fahrzeuge Peak", stats.fleet_peak_count || 0].join(SEPARATOR) + LINE_END +
+        ["Peak Tag", stats.fleet_peak_day || "N/A"].join(SEPARATOR) + LINE_END +
+        ["Peak Zeit", stats.fleet_peak_time || "N/A"].join(SEPARATOR) + LINE_END;
 
       const blob = new Blob([kpiContent], { type: "text/csv;charset=utf-8;" });
       const url = URL.createObjectURL(blob);
@@ -398,6 +402,9 @@ export default function Home() {
               utilization={result?.stats.average_driver_utilization ?? 0}
               gapToLB={0}
               totalHours={result?.stats.total_hours ?? 0}
+              fleetPeakCount={result?.stats.fleet_peak_count ?? 0}
+              fleetPeakDay={result?.stats.fleet_peak_day ?? ""}
+              fleetPeakTime={result?.stats.fleet_peak_time ?? ""}
               isLoading={isRunning}
             />
 

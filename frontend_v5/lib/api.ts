@@ -60,6 +60,12 @@ export interface StatsOutput {
     drivers_fte: number;
     drivers_pt: number;
     total_hours?: number;
+    // Fleet Counter metrics (v7.2.0)
+    fleet_peak_count?: number;
+    fleet_peak_day?: string;
+    fleet_peak_time?: string;
+    fleet_total_tours?: number;
+    fleet_day_peaks?: Record<string, { count: number; time: string }>;
 }
 
 export interface BlockOutput {

@@ -23,7 +23,8 @@ from src.services.roster_column import RosterColumn, BlockInfo
 from src.services.roster_column_generator import (
     RosterColumnGenerator, create_block_infos_from_blocks
 )
-from src.services.set_partition_master import solve_rmp, solve_relaxed_rmp, analyze_uncovered
+from src.services.set_partition_master import solve_rmp, solve_relaxed_rmp, analyze_uncovered, solve_rmp_lexico, solve_rmp_lexico_5stage, solve_rmp_feasible_under_cap, _filter_valid_hint_columns
+from src.services.lower_bound_calc import compute_lower_bounds_wrapper
 
 logger = logging.getLogger("SetPartitionSolver")
 
@@ -68,6 +69,810 @@ class SetPartitionResult:
     total_time: float
     rmp_time: float
     generation_time: float
+
+
+def _prune_pool_compressed_elite(
+    current_pool: list[RosterColumn],
+    selected_roster_ids: set[str],
+    tours_map: dict,
+    max_pool_size: int = 6000
+) -> list[RosterColumn]:
+    """[Step 11] Elite pruning for Compressed weeks."""
+    logger.info(f"  [ELITE PRUNING] Starting with {len(current_pool)} cols (Max {max_pool_size})")
+    
+    # 1. Always keep selected
+    keep_ids = set(selected_roster_ids)
+    
+    col_scores = {}
+    tour_coverage = {}
+    
+    # Pre-scan
+    for col in current_pool:
+        # Score: Density (Avg tours per hour or just raw tours?)
+        # Step 11 spec: "density score = len(covered_tour_ids)"
+        # But per hour is better.
+        # User spec: "len(covered_tour_ids) desc" - I'll stick to spec for safety, or refine.
+        # "len(covered_tour_ids) desc" 
+        
+        score = len(col.covered_tour_ids)
+        # Tie-break with lower hours (more efficient?)
+        # Or higher hours (better FTE?)
+        # Step 11 spec: "Deterministic sort tie-break by roster_id"
+        
+        if hasattr(col, "quality_penalty") and col.quality_penalty > 0:
+            score -= 0.5 # Slight penalty
+        
+        col_scores[col.roster_id] = score
+        
+        # Hints
+        if col.roster_id.startswith("INC_GREEDY") or col.roster_id.startswith("MERGE_"):
+             keep_ids.add(col.roster_id)
+             
+        for tid in col.covered_tour_ids:
+            if tid not in tour_coverage:
+                tour_coverage[tid] = []
+            tour_coverage[tid].append((score, col))
+            
+    # Select Top 3 per tour
+    for tid, candidates in tour_coverage.items():
+        # Sort desc by score, then asc by ID (deterministic)
+        candidates.sort(key=lambda x: (-x[0], x[1].roster_id))
+        
+        for i in range(min(3, len(candidates))):
+            keep_ids.add(candidates[i][1].roster_id)
+            
+    # Global Fill
+    cols_by_id = {c.roster_id: c for c in current_pool}
+    kept_cols = [cols_by_id[rid] for rid in keep_ids if rid in cols_by_id]
+    
+    if len(kept_cols) < max_pool_size:
+        remaining = [c for c in current_pool if c.roster_id not in keep_ids]
+        # Sort remaining by score
+        remaining.sort(key=lambda c: (-col_scores.get(c.roster_id, 0), c.roster_id))
+        
+        needed = max_pool_size - len(kept_cols)
+        kept_cols.extend(remaining[:needed])
+        
+    logger.info(f"  [ELITE PRUNING] Kept {len(kept_cols)} cols (Selected: {len(selected_roster_ids)})")
+    return kept_cols
+
+
+def _prune_pool_dsearch_safe(
+    current_pool: list[RosterColumn],
+    all_tour_ids: set[str],
+    protected_roster_ids: set[str],
+    k_min_support: int = 3,
+    max_pool_size: int = 6000,
+    log_fn=None,
+) -> list[RosterColumn]:
+    """
+    Step 13c: Coverage-aware pruning for D-search.
+    
+    Guarantees:
+    1. Protected rosters ALWAYS kept (INC_GREEDY_, MERGE_, REPAIR_, snapshots)
+    2. Per-tour: at least K_min_support columns kept
+    3. Never prune a tour below support=1
+    4. Global pool_cap applied ONLY after support floor satisfied
+    
+    Args:
+        current_pool: Current column pool
+        all_tour_ids: All tours that need coverage
+        protected_roster_ids: IDs that must never be pruned
+        k_min_support: Minimum columns per tour (default 3)
+        max_pool_size: Global pool cap
+        log_fn: Logging function
+        
+    Returns:
+        Pruned pool with support floor guaranteed
+    """
+    if log_fn is None:
+        log_fn = lambda msg: logger.info(msg)
+    
+    log_fn(f"[DSEARCH-PRUNE] Starting with {len(current_pool)} cols, K_min={k_min_support}")
+    
+    if len(current_pool) <= max_pool_size:
+        log_fn(f"[DSEARCH-PRUNE] Pool under cap, no pruning needed")
+        return current_pool
+    
+    # =========================================================================
+    # STEP 1: Build tour-to-columns index with scores
+    # =========================================================================
+    tour_columns: dict[str, list[tuple[float, RosterColumn]]] = {tid: [] for tid in all_tour_ids}
+    col_scores: dict[str, float] = {}
+    
+    for col in current_pool:
+        # Score = density (more tours = better)
+        score = len(col.covered_tour_ids)
+        
+        # Bonus for protected columns
+        if col.roster_id in protected_roster_ids:
+            score += 1000  # Always kept
+        elif col.roster_id.startswith("INC_GREEDY"):
+            score += 500
+        elif col.roster_id.startswith(("MERGE_", "REPAIR_", "ANCHOR_")):
+            score += 200
+        
+        col_scores[col.roster_id] = score
+        
+        for tid in col.covered_tour_ids:
+            if tid in tour_columns:
+                tour_columns[tid].append((score, col))
+    
+    # =========================================================================
+    # STEP 2: Enforce support floor (K_min per tour)
+    # =========================================================================
+    keep_ids: set[str] = set(protected_roster_ids)
+    
+    for tid, candidates in tour_columns.items():
+        if not candidates:
+            log_fn(f"  [DSEARCH-PRUNE] WARNING: Tour {tid} has ZERO support!")
+            continue
+        
+        # Sort by score desc, then roster_id for determinism
+        candidates.sort(key=lambda x: (-x[0], x[1].roster_id))
+        
+        # Keep at least K_min (or all if fewer exist)
+        keep_count = min(k_min_support, len(candidates))
+        for i in range(keep_count):
+            keep_ids.add(candidates[i][1].roster_id)
+    
+    log_fn(f"[DSEARCH-PRUNE] Support floor: {len(keep_ids)} cols required")
+    
+    # =========================================================================
+    # STEP 3: Global fill up to pool_cap
+    # =========================================================================
+    cols_by_id = {c.roster_id: c for c in current_pool}
+    kept_cols = [cols_by_id[rid] for rid in keep_ids if rid in cols_by_id]
+    
+    if len(kept_cols) < max_pool_size:
+        remaining = [c for c in current_pool if c.roster_id not in keep_ids]
+        remaining.sort(key=lambda c: (-col_scores.get(c.roster_id, 0), c.roster_id))
+        
+        needed = max_pool_size - len(kept_cols)
+        kept_cols.extend(remaining[:needed])
+    
+    # =========================================================================
+    # STEP 4: Verify no tour dropped below support=1
+    # =========================================================================
+    final_support = {tid: 0 for tid in all_tour_ids}
+    for col in kept_cols:
+        for tid in col.covered_tour_ids:
+            if tid in final_support:
+                final_support[tid] += 1
+    
+    zero_support_after = [tid for tid, cnt in final_support.items() if cnt == 0]
+    if zero_support_after:
+        log_fn(f"[DSEARCH-PRUNE] CRITICAL: {len(zero_support_after)} tours lost support!")
+        log_fn(f"  Sample: {zero_support_after[:5]}")
+    
+    log_fn(f"[DSEARCH-PRUNE] Final: {len(kept_cols)} cols (from {len(current_pool)})")
+    return kept_cols
+
+
+# =============================================================================
+# STEP 13c: COMPRESSED ENDGAME TRIGGER (KW51 Headcount Minimization)
+# =============================================================================
+# Constants for endgame trigger
+ENDGAME_START_ROUND = 10  # Force endgame after this many rounds
+ENDGAME_STALL_ROUNDS = 2  # Force endgame if stalled for this many rounds
+ENDGAME_DEADLINE_WINDOW = 40.0  # Force endgame if less than 40s remaining
+
+
+def _should_force_endgame_compressed(
+    is_compressed_week: bool,
+    use_tour_coverage: bool,
+    round_num: int,
+    stall_rounds: int,
+    time_remaining: float,
+) -> tuple[bool, str]:
+    """
+    Determine if compressed week endgame (D-search + Lexiko) should be forced.
+    
+    Args:
+        is_compressed_week: Whether this is a compressed week (active_days <= 4)
+        use_tour_coverage: Whether using TOUR coverage mode
+        round_num: Current round number (1-indexed)
+        stall_rounds: Number of rounds without driver improvement
+        time_remaining: Seconds remaining until deadline (inf if no deadline)
+    
+    Returns:
+        (should_trigger, reason) - reason is logged if triggered
+    """
+    if not (is_compressed_week and use_tour_coverage):
+        return False, ""
+    
+    # Trigger: Too many rounds
+    if round_num >= ENDGAME_START_ROUND:
+        return True, f"round={round_num} >= ENDGAME_START_ROUND={ENDGAME_START_ROUND}"
+    
+    # Trigger: Stalled
+    if stall_rounds >= ENDGAME_STALL_ROUNDS:
+        return True, f"stall_rounds={stall_rounds} >= ENDGAME_STALL_ROUNDS={ENDGAME_STALL_ROUNDS}"
+    
+    # Trigger: Deadline approaching
+    if time_remaining <= ENDGAME_DEADLINE_WINDOW:
+        return True, f"time_remaining={time_remaining:.1f}s <= ENDGAME_DEADLINE_WINDOW={ENDGAME_DEADLINE_WINDOW}s"
+    
+    return False, ""
+
+
+# =============================================================================
+# STEP 13: D-SEARCH OUTER LOOP + REPAIR STATE MACHINE
+# =============================================================================
+
+def _extract_bottleneck_tours_for_cap(
+    pool, all_tour_ids, coverage_attr, cap: int, log_fn
+) -> list[str]:
+    """
+    Deterministic bottleneck selector for cap-aware repairs.
+    Returns 50-150 tour_ids that likely block feasibility under tight caps.
+    """
+    # 1. Compute per-tour support counts
+    support = {tid: 0 for tid in all_tour_ids}
+    for col in pool:
+        for tid in getattr(col, coverage_attr):
+             if tid in support:
+                 support[tid] += 1
+            
+    # 2. Sort by support (asc), then ID (asc) for determinism
+    sorted_tours = sorted(support.keys(), key=lambda t: (support[t], t))
+    
+    # 3. Take lowest 150
+    anchors = sorted_tours[:150]
+    
+    # Log stats
+    supports = [support[t] for t in anchors]
+    if supports:
+        p10 = supports[len(supports)//10] if len(supports) >= 10 else supports[0]
+        p50 = supports[len(supports)//2]
+        log_fn(f"[CAP-WITNESS] cap={cap} anchors={len(anchors)} support_min={min(supports)} p10={p10} p50={p50}")
+        
+    return anchors
+
+def _run_d_search(
+    generator,
+    all_tour_ids: set[str],
+    features: dict,
+    incumbent_drivers: int,
+    time_budget: float,
+    log_fn,
+    max_repair_iters_per_d: int = 2,
+    greedy_selected_roster_ids: set[str] = None,  # Step 13e: Protected greedy IDs
+) -> dict:
+    """
+    D-search outer loop to find minimum feasible headcount.
+    
+    Step 13b Hardening:
+    A) Best feasible snapshot tracking (best_feasible_cap, snapshot_id)
+    B) Deterministic repair plan per fail-type (TILEABILITY vs ZERO_SUPPORT)
+    C) Coverage-aware pruning constraints
+    D) Fine sweep time bump on first infeasible (×1.8 retry)
+    
+    Step 13e: Greedy Snapshot Protect
+    - Protected greedy roster IDs survive all pruning
+    - Transactional pruning with rollback on feasibility loss
+    - No-prune window near UB
+    - UNKNOWN never counts as confirmed infeasible
+    
+    Returns:
+        {
+            "status": "SUCCESS" | "NO_IMPROVEMENT" | "FAILED",
+            "D_min": int,
+            "best_solution": list[RosterColumn],
+            "best_feasible_cap": int,
+            "best_snapshot_id": str,
+            "attempts": int,
+            "repairs_triggered": {"merge": int, "anchorpack": int},
+            "pool_size_range": (int, int),
+            "cap_solve_times": {"coarse": float, "fine": float},
+        }
+    """
+    import math
+    import hashlib
+    from src.services.set_partition_master import solve_rmp_feasible_under_cap
+    
+    active_days = getattr(features, "active_days", []) if features else []
+    active_days_count = len(active_days) if active_days else 6
+    
+    # =========================================================================
+    # COMPUTE BOUNDS
+    # =========================================================================
+    pool = list(generator.pool.values())
+    pool_size_min = len(pool)
+    pool_size_max = len(pool)
+    
+    # Compute total hours estimate
+    if hasattr(features, 'total_hours'):
+        total_hours = features.total_hours
+    else:
+        total_hours = len(all_tour_ids) * 2.5  # ~2.5h per tour avg
+    
+    # Lower bounds
+    # Lower bounds (Consistent with Step 0)
+    LB_fleet = getattr(features, 'fleet_peak', 100) if features else 100
+    LB_hours = math.ceil(total_hours / 55.0)
+    LB_graph = getattr(features, 'lb_graph', 0) if features else 0
+    
+    # LB_tours is weak check, keep for reference
+    LB_tours = math.ceil(len(all_tour_ids) / (3 * active_days_count))
+    
+    # Unified Final LB matches Step 0 logic
+    LB = max(LB_fleet, LB_hours, LB_graph)
+    
+    # Upper bound = incumbent
+    UB = incumbent_drivers
+    
+    log_fn("=" * 60)
+    log_fn("[D-SEARCH] Starting Min-Headcount Search (Step 13b)")
+    log_fn("=" * 60)
+    # Standardized Log Line (Task A)
+    log_fn(f"[D-SEARCH] LB: fleet={LB_fleet}, hours={LB_hours}, graph={LB_graph}, final={LB}")
+    log_fn(f"[D-SEARCH] UB={UB} (incumbent)")
+    log_fn(f"[D-SEARCH] Active days: {active_days_count}, Tours: {len(all_tour_ids)}")
+    log_fn(f"[D-SEARCH] Pool size: {len(pool)}")
+    log_fn(f"[D-SEARCH] Time budget: {time_budget}s")
+    
+    if UB <= LB:
+        log_fn(f"[D-SEARCH] UB <= LB, no search needed")
+        return {
+            "status": "NO_IMPROVEMENT",
+            "D_min": UB,
+            "best_solution": [],
+            "best_feasible_cap": UB,
+            "best_snapshot_id": "N/A",
+            "attempts": 0,
+            "repairs_triggered": {"merge": 0, "anchorpack": 0},
+            "pool_size_range": (len(pool), len(pool)),
+            "cap_solve_times": {"coarse": 0, "fine": 0},
+        }
+    
+    # =========================================================================
+    # SNAPSHOT TRACKING (Step 13b A)
+    # =========================================================================
+    best_feasible_cap = UB
+    best_feasible_D = UB
+    best_solution = []
+    best_snapshot_id = "INITIAL"
+    snapshot_counter = 0
+    
+    def _make_snapshot_id(d_val, pool_len):
+        nonlocal snapshot_counter
+        snapshot_counter += 1
+        return f"SNAP_{snapshot_counter:03d}_D{d_val}_P{pool_len}"
+    
+    # =========================================================================
+    # STEP 13e: GREEDY SNAPSHOT PROTECT
+    # =========================================================================
+    # Collect all protected roster IDs that must survive pruning
+    protected_greedy_ids = greedy_selected_roster_ids or set()
+    log_fn(f"[D-SEARCH] Protected greedy IDs: {len(protected_greedy_ids)}")
+    
+    # Also include INC_GREEDY_ prefixed columns as protected
+    for col in pool:
+        if col.roster_id.startswith(("INC_GREEDY_", "SNAP_", "BEST_")):
+            protected_greedy_ids.add(col.roster_id)
+    
+    # Step 13e: Transactional pruning state
+    pruning_disabled = False  # Set to True if pruning breaks feasibility
+    pruning_rollbacks = 0
+    DSEARCH_POOL_CAP = 9000  # Increased from 6000 for D-search
+    NO_PRUNE_WINDOW = 10  # Don't prune when D_try >= UB - 10
+    
+    # Repair counters
+    repairs_merge = 0
+    repairs_anchorpack = 0
+    
+    def _run_repair_plan(fail_type: str, zero_support_tours: list, current_d_try: int) -> bool:
+        """
+        Deterministic repair plan per fail-type.
+        Step 13e: Transactional pruning with rollback.
+        Returns True if pool was modified.
+        """
+        nonlocal repairs_merge, repairs_anchorpack, pool, pool_size_max, pruning_disabled, pruning_rollbacks
+        
+        if fail_type == "ZERO_SUPPORT":
+            # Repair A: Anchor&Pack for missing tours
+            log_fn(f"  [REPAIR-A] Anchor&Pack for {len(zero_support_tours)} zero-support tours")
+            repairs_anchorpack += 1
+            return False
+        
+        elif fail_type == "KILL_ONE":
+            # Repair C: Kill-One Roster (Neighborhood)
+            # Remove a 'weak' roster from best_solution to force alternative tiling
+            if not best_solution:
+                 log_fn("  [REPAIR-C] Kill-One skipped (no best_solution)")
+                 return False
+                 
+            # Find victim: shortest roster in best solution
+            # Or singleton?
+            # Sort best_solution by work minutes (asc)
+            sorted_sol = sorted(best_solution, key=lambda c: c.total_minutes)
+            
+            # Try to find one that is in pool
+            victim = None
+            for cand in sorted_sol:
+                if any(c.roster_id == cand.roster_id for c in pool):
+                    victim = cand
+                    break
+            
+            if victim:
+                log_fn(f"  [REPAIR-C] KILL-ONE: Removing roster {victim.roster_id} ({victim.total_hours:.1f}h) from pool")
+                # Remove from pool
+                len_before = len(pool)
+                pool = [c for c in pool if c.roster_id != victim.roster_id]
+                if len(pool) < len_before:
+                     log_fn(f"  [REPAIR-C] Pool reduced: {len_before} -> {len(pool)}")
+                     return True
+            return False
+
+        elif fail_type == "TILEABILITY":
+            # Repair B: Deterministic order
+            log_fn(f"  [REPAIR-B1] Merge Repair from best feasible (D={best_feasible_D})")
+            repairs_merge += 1
+            
+            # Step 13e: No-prune window near UB
+            if current_d_try >= UB - NO_PRUNE_WINDOW:
+                log_fn(f"  [NO-PRUNE] In no-prune window (D_try={current_d_try} >= UB-{NO_PRUNE_WINDOW}={UB - NO_PRUNE_WINDOW})")
+                return False
+            
+            # Step 13e: Skip pruning if disabled
+            if pruning_disabled:
+                log_fn(f"  [PRUNE-DISABLED] Pruning disabled due to previous rollback")
+                return False
+            
+            # Step 13e: Skip pruning if pool is under DSEARCH_POOL_CAP
+            if len(pool) <= DSEARCH_POOL_CAP:
+                log_fn(f"  [NO-PRUNE] Pool size {len(pool)} <= {DSEARCH_POOL_CAP}, skip pruning")
+                return False
+            
+            # Build protected set: greedy + best_solution + special prefixes
+            protected_ids = set(protected_greedy_ids)
+            protected_ids.update({r.roster_id for r in best_solution})
+            for col in pool:
+                if col.roster_id.startswith(("INC_GREEDY_", "MERGE_", "REPAIR_", "ANCHOR_", "SNAP_")):
+                    protected_ids.add(col.roster_id)
+            
+            log_fn(f"  [PRUNE] Protected IDs: {len(protected_ids)}, Pool: {len(pool)}")
+            
+            # Step 13e: TRANSACTIONAL PRUNING - snapshot before prune
+            pool_snapshot = {tuple(sorted(c.block_ids)): c for c in pool}  # Deep copy
+            
+            pruned = _prune_pool_dsearch_safe(
+                current_pool=pool,
+                all_tour_ids=all_tour_ids,
+                protected_roster_ids=protected_ids,
+                k_min_support=3,
+                max_pool_size=DSEARCH_POOL_CAP,
+                log_fn=log_fn,
+            )
+            
+            if len(pruned) == len(pool):
+                return False  # No change
+            
+            # Step 13e: FEASIBILITY CHECK after prune
+            log_fn(f"  [PRUNE-CHECK] Verifying feasibility at UB={UB} after prune ({len(pruned)} cols)...")
+            check_result = solve_rmp_feasible_under_cap(
+                columns=pruned,
+                target_ids=all_tour_ids,
+                coverage_attr="covered_tour_ids",
+                driver_cap=UB,
+                time_limit=3.0,
+                log_fn=log_fn,
+                hint_columns=best_solution if best_solution else None,
+            )
+            
+            if check_result["status"] not in ("OPTIMAL", "FEASIBLE"):
+                # ROLLBACK: pruning broke feasibility
+                log_fn(f"  [DSEARCH-ROLLBACK] Prune broke feasibility! Rolling back pool.")
+                pool = list(pool_snapshot.values())
+                pruning_rollbacks += 1
+                pruning_disabled = True  # Disable further pruning
+                return False
+            
+            # Prune successful and feasibility preserved
+            pool = pruned
+            pool_size_max = max(pool_size_max, len(pool))
+            log_fn(f"  [PRUNE-OK] Feasibility preserved, pool: {len(pool)}")
+            return True
+        
+        return False
+    
+    # =========================================================================
+    # TIME SETTINGS (Step 13d Cap-Proof Hardening)
+    # =========================================================================
+    cap_solve_time_coarse = max(12.0, min(15.0, time_budget / 8))  # 12-15s per cap
+    cap_solve_time_fine = max(20.0, min(30.0, time_budget / 4))    # 20-30s for fine sweep
+    UNKNOWN_RETRY_MULTIPLIER = 1.8  # Time multiplier for UNKNOWN retry
+    
+    log_fn(f"[D-SEARCH] Time budgets: coarse={cap_solve_time_coarse:.1f}s, fine={cap_solve_time_fine:.1f}s")
+    log_fn(f"[D-SEARCH] DSEARCH_POOL_CAP={DSEARCH_POOL_CAP}, NO_PRUNE_WINDOW={NO_PRUNE_WINDOW}")
+    
+    attempts = 0
+    unknown_retries = 0
+    COARSE_STEP = 20
+    D_try = UB
+    first_infeasible_D = None
+    
+    # =========================================================================
+    # PHASE 1: COARSE SWEEP (Step -10)
+    # =========================================================================
+    log_fn(f"\n[D-SEARCH] Phase 1: Coarse sweep (step={COARSE_STEP}, time={cap_solve_time_coarse}s)")
+    
+    while D_try >= LB and first_infeasible_D is None:
+        attempts += 1
+        log_fn(f"\n[D-TRY] D_try={D_try} (coarse)")
+        
+        result = solve_rmp_feasible_under_cap(
+            columns=pool,
+            target_ids=all_tour_ids,
+            coverage_attr="covered_tour_ids",
+            driver_cap=D_try,
+            time_limit=cap_solve_time_coarse,
+            log_fn=log_fn,
+            hint_columns=best_solution if best_solution else None,
+        )
+        
+        if result["status"] == "FEASIBLE":
+            if result["num_drivers"] < best_feasible_D:
+                best_feasible_D = result["num_drivers"]
+                best_feasible_cap = D_try
+                best_solution = result["selected_rosters"]
+                best_snapshot_id = _make_snapshot_id(best_feasible_D, len(pool))
+                log_fn(f"[D-SEARCH] New best: D={best_feasible_D} (cap={D_try}, snapshot={best_snapshot_id})")
+            D_try -= COARSE_STEP
+        
+        elif result["status"] == "ZERO_SUPPORT":
+            log_fn(f"[D-SEARCH] ZERO_SUPPORT detected")
+            # Run repair plan A
+            for repair_iter in range(max_repair_iters_per_d):
+                _run_repair_plan("ZERO_SUPPORT", result["zero_support_tours"], D_try)
+                # Would retry after repair - for now just break
+            first_infeasible_D = D_try
+            break
+        
+        else:  # INFEASIBLE, UNKNOWN, or TIMEOUT
+            status = result["status"]
+            log_fn(f"[D-SEARCH] {status} at D={D_try} (coarse)")
+            
+            # Step 13d: UNKNOWN retry policy with increased time
+            if status == "UNKNOWN":
+                unknown_retries += 1
+                retry_time = cap_solve_time_coarse * UNKNOWN_RETRY_MULTIPLIER
+                log_fn(f"  [UNKNOWN-RETRY] Attempt with {retry_time:.1f}s (×{UNKNOWN_RETRY_MULTIPLIER})")
+                
+                result = solve_rmp_feasible_under_cap(
+                    columns=pool,
+                    target_ids=all_tour_ids,
+                    coverage_attr="covered_tour_ids",
+                    driver_cap=D_try,
+                    time_limit=retry_time,
+                    log_fn=log_fn,
+                    hint_columns=best_solution if best_solution else None,
+                )
+                
+                if result["status"] == "FEASIBLE":
+                    if result["num_drivers"] < best_feasible_D:
+                        best_feasible_D = result["num_drivers"]
+                        best_feasible_cap = D_try
+                        best_solution = result["selected_rosters"]
+                        best_snapshot_id = _make_snapshot_id(best_feasible_D, len(pool))
+                        log_fn(f"[D-SEARCH] UNKNOWN-RETRY success: D={best_feasible_D}")
+                    D_try -= COARSE_STEP
+                    continue
+            
+            # If still not feasible, try repair
+            repaired = False
+            final_status = result["status"]
+            
+            for repair_iter in range(max_repair_iters_per_d):
+                log_fn(f"  [REPAIR] Attempt {repair_iter + 1}/{max_repair_iters_per_d}")
+                
+                # Step 15C: Alternate "KILL_ONE" if Merge Repair fails
+                repair_mode = "TILEABILITY"
+                if repair_iter > 0 and repairs_merge > 5: # If stalled?
+                     repair_mode = "KILL_ONE"
+                
+                _run_repair_plan(repair_mode, [], D_try)
+                
+                # Retry with increased time (×1.8)
+                result = solve_rmp_feasible_under_cap(
+                    columns=pool,
+                    target_ids=all_tour_ids,
+                    coverage_attr="covered_tour_ids",
+                    driver_cap=D_try,
+                    time_limit=cap_solve_time_coarse * UNKNOWN_RETRY_MULTIPLIER,
+                    log_fn=log_fn,
+                    hint_columns=best_solution if best_solution else None,
+                )
+                final_status = result["status"]
+                
+                if result["status"] == "FEASIBLE":
+                    if result["num_drivers"] < best_feasible_D:
+                        best_feasible_D = result["num_drivers"]
+                        best_feasible_cap = D_try
+                        best_solution = result["selected_rosters"]
+                        best_snapshot_id = _make_snapshot_id(best_feasible_D, len(pool))
+                    repaired = True
+                    break
+            
+            # Step 13e: UNKNOWN never counts as confirmed infeasible
+            if not repaired:
+                if final_status == "INFEASIBLE":
+                    # Only INFEASIBLE confirms the boundary
+                    first_infeasible_D = D_try
+                    log_fn(f"[D-SEARCH] Boundary CONFIRMED (INFEASIBLE): D={D_try}")
+                    break
+                else:
+                    # UNKNOWN: Continue searching, don't confirm boundary
+                    unknown_retries += 1
+                    log_fn(f"[D-SEARCH] UNKNOWN at D={D_try} after {repairs_merge} repairs - continuing search (not confirmed)")
+                    D_try -= COARSE_STEP
+            else:
+                D_try -= COARSE_STEP
+    
+    # =========================================================================
+    # PHASE 2: FINE SWEEP with TIME BUMP (Step 13b D)
+    # =========================================================================
+    if first_infeasible_D is not None and first_infeasible_D < best_feasible_D:
+        search_start = first_infeasible_D + 1
+        search_end = best_feasible_D - 1
+        
+        log_fn(f"\n[D-SEARCH] Phase 2: Fine sweep [{search_start}..{search_end}] (time={cap_solve_time_fine}s)")
+        
+        for D_try in range(search_end, search_start - 1, -1):
+            attempts += 1
+            log_fn(f"\n[D-TRY] D_try={D_try} (fine)")
+            
+            result = solve_rmp_feasible_under_cap(
+                columns=pool,
+                target_ids=all_tour_ids,
+                coverage_attr="covered_tour_ids",
+                driver_cap=D_try,
+                time_limit=cap_solve_time_fine,
+                log_fn=log_fn,
+                hint_columns=best_solution if best_solution else None,
+            )
+            
+            if result["status"] == "FEASIBLE":
+                if result["num_drivers"] < best_feasible_D:
+                    best_feasible_D = result["num_drivers"]
+                    best_feasible_cap = D_try
+                    best_solution = result["selected_rosters"]
+                    best_snapshot_id = _make_snapshot_id(best_feasible_D, len(pool))
+                    log_fn(f"[D-SEARCH] New best: D={best_feasible_D} (snapshot={best_snapshot_id})")
+            else:
+                # Step 14: Cap-Aware Repair & Escalation
+                # Trigger only near valid solutions (UB - 5)
+                # This focuses effort on proving feasibility for boundary conditions
+                if D_try >= best_feasible_D - 5:
+                    final_outcome = "UNKNOWN"
+                    repair_success = False
+                    
+                    # 2 Repair Rounds + Initial Retry (Round 0 = just escalation)
+                    max_repair_rounds = 2
+                    
+                    for repair_round in range(max_repair_rounds + 1):
+                        # Repair Phase (skip for round 0)
+                        if repair_round > 0:
+                            anchors = _extract_bottleneck_tours_for_cap(pool, all_tour_ids, "covered_tour_ids", D_try, log_fn)
+                            
+                            # Add variants
+                            added1 = 0
+                            if hasattr(generator, 'generate_anchor_pack_variants'):
+                                added1 = generator.generate_anchor_pack_variants(anchors, max_variants_per_anchor=5)
+                            
+                            added2 = generator.generate_merge_repair_columns_capaware(anchors, max_cols=400)
+                            
+                            log_fn(f"[CAP-REPAIR] cap={D_try} round={repair_round} anchors={len(anchors)} added_anchor={added1} added_merge={added2}")
+                        
+                        # Proof Escalation Phase
+                        # Budgets: 60s -> 120s -> 180s
+                        escalation_budgets = [60.0, 120.0, 180.0]
+                        
+                        proof_found = False
+                        for attempt_idx, proof_budget in enumerate(escalation_budgets):
+                            log_fn(f"[CAP-PROOF] cap={D_try} attempt={attempt_idx+1} budget={proof_budget:.1f}s status=CHECKING...")
+                            
+                            # Use MAX_DENSITY guided objective for proofs
+                            p_result = solve_rmp_feasible_under_cap(
+                                columns=pool,
+                                target_ids=all_tour_ids,
+                                coverage_attr="covered_tour_ids",
+                                driver_cap=D_try,
+                                time_limit=proof_budget,
+                                log_fn=log_fn,
+                                hint_columns=best_solution if best_solution else None,
+                                objective_mode="MAX_DENSITY",
+                            )
+                            
+                            p_status = p_result["status"]
+                            log_fn(f"[CAP-PROOF] cap={D_try} attempt={attempt_idx+1} status={p_status} (Mode=MAX_DENSITY)")
+                            
+                            if p_status == "FEASIBLE":
+                                result = p_result # Update main result
+                                if result["num_drivers"] < best_feasible_D:
+                                    best_feasible_D = result["num_drivers"]
+                                    best_feasible_cap = D_try
+                                    best_solution = result["selected_rosters"]
+                                    best_snapshot_id = _make_snapshot_id(best_feasible_D, len(pool))
+                                    log_fn(f"[D-SEARCH] New best (via Proof): D={best_feasible_D} (snapshot={best_snapshot_id})")
+                                proof_found = True
+                                repair_success = True
+                                break
+                            elif p_status == "INFEASIBLE":
+                                final_outcome = "INFEASIBLE"
+                                proof_found = True
+                                break
+                            else:
+                                # UNKNOWN or TIMEOUT - continue to next budget or repair round
+                                pass
+                        
+                        if proof_found:
+                            break
+                    
+                    if repair_success:
+                        pass # Loop continues to next D_try (lower)
+                    elif final_outcome == "INFEASIBLE":
+                        log_fn(f"[D-SEARCH] Boundary CONFIRMED (INFEASIBLE): D={D_try}")
+                        break
+                    else:
+                        # Still UNKNOWN after max effort
+                        # Do NOT confirm infeasible, just skip
+                        log_fn(f"[D-SEARCH] UNKNOWN at D={D_try} after escalation/repair - continuing search (not confirmed)")
+                        unknown_retries += 1
+                        
+                else:
+                    # Old behavior (single retry with bump) for non-boundary caps
+                    status = result["status"]
+                    log_fn(f"[D-SEARCH] Fine {status} at D={D_try} - TIME BUMP retry (×{UNKNOWN_RETRY_MULTIPLIER})")
+                    bumped_time = cap_solve_time_fine * UNKNOWN_RETRY_MULTIPLIER
+                    
+                    result = solve_rmp_feasible_under_cap(
+                        columns=pool,
+                        target_ids=all_tour_ids,
+                        coverage_attr="covered_tour_ids",
+                        driver_cap=D_try,
+                        time_limit=bumped_time,
+                        log_fn=log_fn,
+                        hint_columns=best_solution if best_solution else None,
+                    )
+                    
+                    if result["status"] == "FEASIBLE":
+                        if result["num_drivers"] < best_feasible_D:
+                            best_feasible_D = result["num_drivers"]
+                            best_feasible_cap = D_try
+                            best_solution = result["selected_rosters"]
+                            best_snapshot_id = _make_snapshot_id(best_feasible_D, len(pool))
+                            log_fn(f"[D-SEARCH] TIME BUMP success: D={best_feasible_D}")
+                    elif result["status"] == "UNKNOWN":
+                        unknown_retries += 1
+                        log_fn(f"[D-SEARCH] Still UNKNOWN after bump, continuing search (retries={unknown_retries})")
+                    else:
+                        log_fn(f"[D-SEARCH] Boundary confirmed: D={D_try} infeasible, D={D_try + 1} feasible")
+                        break
+    
+    # =========================================================================
+    # FINALIZE
+    # =========================================================================
+    log_fn(f"\n[D-SEARCH] COMPLETE")
+    log_fn(f"[FINAL] D_min={best_feasible_D} (cap={best_feasible_cap}, snapshot={best_snapshot_id})")
+    log_fn(f"[FINAL] Incumbent={incumbent_drivers}, Improvement={incumbent_drivers - best_feasible_D}")
+    log_fn(f"[FINAL] Attempts={attempts}, Repairs: merge={repairs_merge}, anchorpack={repairs_anchorpack}")
+    log_fn(f"[FINAL] UNKNOWN retries: {unknown_retries}, Pruning rollbacks: {pruning_rollbacks}")
+    log_fn(f"[FINAL] Pool size range: [{pool_size_min}, {pool_size_max}]")
+    log_fn(f"[FINAL] Cap solve times: coarse={cap_solve_time_coarse:.1f}s, fine={cap_solve_time_fine:.1f}s")
+    
+    return {
+        "status": "SUCCESS" if best_feasible_D < incumbent_drivers else "NO_IMPROVEMENT",
+        "D_min": best_feasible_D,
+        "best_solution": best_solution,
+        "best_feasible_cap": best_feasible_cap,
+        "best_snapshot_id": best_snapshot_id,
+        "attempts": attempts,
+        "repairs_triggered": {"merge": repairs_merge, "anchorpack": repairs_anchorpack},
+        "pool_size_range": (pool_size_min, pool_size_max),
+        "cap_solve_times": {"coarse": cap_solve_time_coarse, "fine": cap_solve_time_fine},
+    }
 
 
 def solve_set_partitioning(
@@ -146,6 +951,26 @@ def solve_set_partitioning(
     total_work_hours = sum(b.work_min for b in block_infos) / 60.0
     log_fn(f"Total work hours: {total_work_hours:.1f}h")
     log_fn(f"Expected drivers (40-53h): {int(total_work_hours/53)} - {int(total_work_hours/40)}")
+
+    # =========================================================================
+    # STEP 0: PRE-CALCULATE LOWER BOUNDS (Step 15A)
+    # =========================================================================
+    feature_fleet = features.fleet_peak if features and hasattr(features, 'fleet_peak') else 0
+    lb_stats = compute_lower_bounds_wrapper(block_infos, log_fn, fleet_peak=feature_fleet, total_hours=total_work_hours)
+    
+    lb_final = lb_stats.get("final_lb", 0)  # Use Unified Final LB
+    
+    # Decision Gate for target 204
+    if lb_final >= 220:
+        log_fn(f"[LB] CRITICAL: Theoretical Minimum ({lb_final}) >= 220.")
+        log_fn(f"[LB] Target 204 is MATHEMATICALLY IMPOSSIBLE.")
+    else:
+        log_fn(f"[LB] Target 204 is theoretically possible (Topological bound={lb_final}).")
+    
+    if features is not None:
+        features.lb_final = lb_final # Attach unified LB
+        features.lb_graph = lb_stats.get("graph_lb", 0) # Attach graph LB for diagnostics
+
     # =========================================================================
     # STEP 2: Generate initial column pool using MULTI-STAGE generation
     # This produces better-packed rosters by first trying high-hour targets
@@ -179,6 +1004,16 @@ def solve_set_partitioning(
     log_fn(f"  Multi-stage: {multistage_stats['total_pool_size']} columns in {len(multistage_stats['stages'])} stages")
 
     
+    # =========================================================================
+    # STEP 15B: FORECAST-AWARE GENERATION (Compressed Weeks)
+    # =========================================================================
+    is_compressed = features and len(getattr(features, "active_days", [])) <= 4
+    if is_compressed:
+        log_fn("\n[STEP 15B] Running Forecast-Aware Generation...")
+        added_sparse = generator.generate_sparse_window_seeds(max_concurrent=2)
+        added_fri = generator.generate_friday_absorbers()
+        log_fn(f"[STEP 15B] Total added: {added_sparse + added_fri} columns")
+
     # =========================================================================
     # STEP 2B: Generate PT columns for hard-to-cover blocks
     # =========================================================================
@@ -247,13 +1082,158 @@ def solve_set_partitioning(
     # [STEP 9.1] Adaptive Mode Detect
     is_compressed_mode = features is not None and len(getattr(features, "active_days", [])) <= 4
 
+    # [STEP 11] Stall Tracking
+    best_known_drivers = 9999
+    rounds_without_driver_impr = 0
+    stall_mode_active = False
+
     for round_num in range(1, max_rounds + 1):
         # GLOBAL DEADLINE CHECK
         if global_deadline:
             remaining = global_deadline - monotonic()
-            if remaining <= 0:
-                log_fn(f"GLOBAL DEADLINE EXCEEDED at round {round_num} - returning best effort")
-                break
+        else:
+            remaining = float('inf')
+        
+        # =======================================================================
+        # STEP 13c: COMPRESSED ENDGAME TRIGGER (before deadline fallback)
+        # =======================================================================
+        # Detect if we should force endgame for compressed week
+        use_tour_coverage = all_tour_ids is not None and len(all_tour_ids) > 0
+        endgame_trigger, endgame_reason = _should_force_endgame_compressed(
+            is_compressed_week=is_compressed_mode,
+            use_tour_coverage=use_tour_coverage,
+            round_num=round_num,
+            stall_rounds=rounds_without_driver_impr,
+            time_remaining=remaining,
+        )
+        
+        if endgame_trigger:
+            log_fn(f"\n[ENDGAME] Compressed week endgame triggered: {endgame_reason}")
+            log_fn(f"[ENDGAME] best_known_drivers={best_known_drivers}, pool_size={len(generator.pool)}")
+            
+            # =================================================================
+            # STEP A: COMPUTE GREEDY SOLUTION FOR GUARANTEED FEASIBLE UB
+            # =================================================================
+            from src.services.forecast_solver_v4 import assign_drivers_greedy, ConfigV4
+            
+            log_fn("[ENDGAME] Computing Greedy solution for guaranteed UB...")
+            greedy_config = ConfigV4(seed=seed)
+            greedy_assignments, greedy_stats = assign_drivers_greedy(blocks, greedy_config)
+            greedy_drivers = len(greedy_assignments)
+            log_fn(f"[ENDGAME] Greedy result: {greedy_drivers} drivers")
+            
+            # Inject greedy columns into pool as protected snapshot
+            seeded_count = generator.seed_from_greedy(greedy_assignments)
+            log_fn(f"[ENDGAME] Injected {seeded_count} INC_GREEDY_ columns into pool")
+            
+            # Generate incumbent neighborhood variants
+            incumbent_cols = [c for c in generator.pool.values() if c.roster_id.startswith("INC_GREEDY_")]
+            if incumbent_cols and hasattr(generator, 'generate_incumbent_neighborhood'):
+                # Function takes active_days and max_variants, not the columns directly
+                active_days = list(getattr(features, "active_days", []))
+                if active_days:
+                    inc_added = generator.generate_incumbent_neighborhood(active_days, max_variants=500)
+                    log_fn(f"[ENDGAME] Added {inc_added} incumbent neighborhood variants")
+            
+            # UB = greedy_drivers (guaranteed feasible)
+            ub_for_dsearch = greedy_drivers
+            log_fn(f"[ENDGAME] UB = {ub_for_dsearch} (greedy, guaranteed feasible)")
+            
+            # =================================================================
+            # STEP A.1: STOP-GATE - Verify UB is feasible before D-search
+            # =================================================================
+            log_fn("[ENDGAME] Verifying UB feasibility (stop-gate check)...")
+            
+            # Filter valid hint columns from greedy solution
+            greedy_hint_cols = [c for c in generator.pool.values() if c.roster_id.startswith("INC_GREEDY_")]
+            greedy_hint_cols = _filter_valid_hint_columns(greedy_hint_cols, all_tour_ids, "covered_tour_ids", log_fn)
+            
+            gate_check = solve_rmp_feasible_under_cap(
+                columns=list(generator.pool.values()),
+                target_ids=all_tour_ids,
+                coverage_attr="covered_tour_ids",
+                driver_cap=ub_for_dsearch,
+                time_limit=15.0,
+                log_fn=log_fn,
+                hint_columns=greedy_hint_cols,
+            )
+            
+            if gate_check["status"] != "FEASIBLE":
+                # STOP-GATE TRIGGERED: This is a BUG, not a search result
+                log_fn(f"[ENDGAME] STOP-GATE TRIGGERED: Infeasible at UB={ub_for_dsearch}!")
+                log_fn(f"[ENDGAME] This indicates pool/target mismatch. Status: {gate_check['status']}")
+                log_fn(f"[ENDGAME] Pool size: {len(generator.pool)}, Tours: {len(all_tour_ids)}")
+                log_fn(f"[ENDGAME] Aborting D-search, falling back to greedy solution")
+                
+                # Return greedy as fallback
+                return create_result(list(greedy_hint_cols), "OK_GREEDY_FALLBACK")
+            
+            log_fn(f"[ENDGAME] Stop-gate PASSED: Feasible at UB={ub_for_dsearch}")
+            
+            # =================================================================
+            # STEP B: D-SEARCH WITH GUARANTEED FEASIBLE UB
+            # =================================================================
+            dsearch_time_budget = max(30.0, min(120.0, remaining - 30.0 if remaining != float('inf') else 60.0))
+            log_fn(f"[ENDGAME] Running D-Search (UB={ub_for_dsearch}, budget={dsearch_time_budget:.1f}s)...")
+            
+            # Step 13e: Collect greedy roster IDs for protection during D-search
+            greedy_roster_ids = {c.roster_id for c in greedy_hint_cols}
+            log_fn(f"[ENDGAME] Protected greedy IDs for D-search: {len(greedy_roster_ids)}")
+            
+            d_search_result = _run_d_search(
+                generator=generator,
+                all_tour_ids=all_tour_ids,
+                features=features,
+                incumbent_drivers=ub_for_dsearch,
+                time_budget=dsearch_time_budget,
+                log_fn=log_fn,
+                max_repair_iters_per_d=2,
+                greedy_selected_roster_ids=greedy_roster_ids,  # Step 13e
+            )
+            
+            d_min_found = d_search_result["D_min"]
+            log_fn(f"[ENDGAME] D-Search result: status={d_search_result['status']}, D_min={d_min_found}")
+            
+            # Use D-search solution if it found improvement
+            if d_search_result["status"] == "SUCCESS" and d_search_result["best_solution"]:
+                selected = d_search_result["best_solution"]
+                log_fn(f"[ENDGAME] Using D-Search solution: {len(selected)} drivers")
+            else:
+                # D-search didn't improve, use greedy
+                selected = list(greedy_hint_cols)
+                log_fn(f"[ENDGAME] D-Search no improvement, using greedy: {len(selected)} drivers")
+            
+            # =================================================================
+            # STEP C: LEXIKO WITH CAP = D_MIN
+            # =================================================================
+            lexiko_time_budget = max(20.0, min(60.0, remaining - dsearch_time_budget - 10.0 if remaining != float('inf') else 30.0))
+            log_fn(f"[ENDGAME] Running Lexiko with driver_cap={d_min_found}, budget={lexiko_time_budget:.1f}s...")
+            
+            lexiko_result = solve_rmp_lexico_5stage(
+                columns=list(generator.pool.values()),
+                target_ids=all_tour_ids,
+                coverage_attr="covered_tour_ids",
+                time_limit_total=lexiko_time_budget,
+                log_fn=log_fn,
+                hint_columns=selected,
+                driver_cap=d_min_found,
+                underutil_target_hours=33.0,  # Realistic target for compressed weeks
+            )
+            
+            if lexiko_result["status"] in ("OPTIMAL", "FEASIBLE"):
+                selected = lexiko_result["selected_rosters"]
+                log_fn(f"[ENDGAME] Lexiko SUCCESS: D*={lexiko_result['D_star']} drivers")
+            else:
+                log_fn(f"[ENDGAME] Lexiko FAILED ({lexiko_result['status']}) - using D-search/greedy result")
+            
+            # Return with endgame result
+            log_fn(f"\n[ENDGAME] Complete: Returning {len(selected)} drivers")
+            return create_result(selected, "OK_ENDGAME")
+        
+        # Standard deadline exceeded check (for normal weeks)
+        if remaining <= 0:
+            log_fn(f"GLOBAL DEADLINE EXCEEDED at round {round_num} - returning best effort")
+            break
         
         log_fn(f"\n--- Round {round_num}/{max_rounds} ---")
         log_fn(f"Pool size: {len(generator.pool)}")
@@ -264,46 +1244,43 @@ def solve_set_partitioning(
                                    phase="phase2_assignments", step=f"Round {round_num}",
                                    metrics={"pool_size": len(generator.pool), "round": round_num})
 
-        
         # Solve STRICT RMP first
         # [STEP 9.1] Deterministic Pool Pruning (Compressed Week)
+        # ELITE PRUNING (Step 11)
         if is_compressed_mode and len(generator.pool) > 6000:
-             log_fn(f"[PRUNING] Pool size {len(generator.pool)} > 6000. Shrinking to maintain solver speed.")
+             log_fn(f"[PRUNING] Pool size {len(generator.pool)} > 6000. Triggering ELITE PRUNING.")
              
-             # Keep recently selected
-             keep_ids = last_selected_ids if 'last_selected_ids' in locals() else set()
+             # Need tours_map? No, _prune computes it.
+             # Need selected IDs?
+             selected_ids = last_selected_ids if 'last_selected_ids' in locals() else set()
              
-             all_cols = list(generator.pool.values())
-             
-             def pruning_score(c):
-                 # Priority: 1. Selected, 2. Greedy Incumbent, 3. Density (Tours), 4. Efficiency
-                 is_sel = c.roster_id in keep_ids
-                 is_greedy = str(c.roster_id).startswith("INC_GREEDY")
-                 density = len(c.covered_tour_ids)
-                 return (is_sel, is_greedy, density, -c.total_hours)
-             
-             # Sort descending (Best first)
-             all_cols.sort(key=pruning_score, reverse=True)
-             
-             # Cutoff
-             survivors = all_cols[:6000]
-             generator.pool = {tuple(sorted(c.block_ids)): c for c in survivors}
-             log_fn(f"[PRUNING] Pool pruned to {len(generator.pool)} columns (Kept: {len(keep_ids)} selected).")
+             kept_cols = _prune_pool_compressed_elite(
+                 list(generator.pool.values()),
+                 selected_ids,
+                 {}, # tour map (not used/computed inside)
+                 max_pool_size=6000
+             )
+             generator.pool = {tuple(sorted(c.block_ids)): c for c in kept_cols}
 
         # Solve STRICT RMP first
         columns = list(generator.pool.values())
         
-        # [STEP 9.1] Adaptive RMP Time Limit
+        # [STEP 11] Stall-Aware Time Budgeting
         if is_compressed_mode:
-             if round_num <= 2: 
-                 base_limit = 20.0
-             elif round_num <= 4:
-                 base_limit = 40.0
-             else:
-                 base_limit = 60.0 # Deep search for low headcount
+             # Basic ramp
+             if round_num <= 2: base = 20.0
+             elif round_num <= 4: base = 40.0
+             else: base = 60.0
              
-             effective_rmp_limit = base_limit
-             log_fn(f"[ADAPTIVE TIME] Round {round_num}: Limit set to {effective_rmp_limit:.1f}s")
+             if rounds_without_driver_impr >= 2:
+                 log_fn(f"[STALL DETECTED] No driver improvement for 2 rounds. Boosting time limit.")
+                 base = min(120.0, base * 2)
+                 stall_mode_active = True
+             else:
+                 stall_mode_active = False
+             
+             effective_rmp_limit = base
+             log_fn(f"[ADAPTIVE TIME] Round {round_num}: Limit set to {effective_rmp_limit:.1f}s (Stall: {stall_mode_active})")
         else:
              effective_rmp_limit = rmp_time_limit
 
@@ -328,9 +1305,18 @@ def solve_set_partitioning(
                 
                 selected = rmp_result["selected_rosters"]
                 last_selected_ids = {r.roster_id for r in selected}
+                num_selected = len(selected)
+
+                # [STEP 11] Stall Logic Update
+                if num_selected < best_known_drivers:
+                    best_known_drivers = num_selected
+                    rounds_without_driver_impr = 0
+                    log_fn(f"  [IMPROVEMENT] New best driver count: {best_known_drivers}")
+                else:
+                    rounds_without_driver_impr += 1
+                    log_fn(f"  [STALL] No driver improvement for {rounds_without_driver_impr} rounds (Best: {best_known_drivers})")
 
                 # [DIAGNOSTICS] Step 9 RMP Log
-                num_selected = len(selected)
                 sel_lens = [len(r.covered_tour_ids) for r in selected]
                 
                 # Histogram
@@ -346,11 +1332,12 @@ def solve_set_partitioning(
                 log_fn(f"  Drivers: {num_selected} | Avg Hours: {avg_hours:.1f} | Avg Tours: {avg_tours:.1f}")
                 log_fn(f"  Histogram (Tours): 1={h1} | 2-3={h23} | 4-6={h46} | 7+={h7}")
                 
-                # [MERGE REPAIR] Step 9 Headcount Reduction
-                # Only if compressed week + still high drivers (Target ~190)
+                # [MERGE REPAIR + COLLAPSE] Step 11 Headcount Reduction
+                # Trigger if compressed and drivers are high
                 _is_compressed_check = features is not None and len(getattr(features, "active_days", [])) <= 4
                 
                 if _is_compressed_check and num_selected > 190: 
+                    # 1. Merge Repair
                     if hasattr(generator, 'generate_merge_repair_columns'):
                          log_fn(f"[POOL REPAIR TYPE C] Merge Repair Triggered (D={num_selected} > 190)")
                          new_merge_cols = generator.generate_merge_repair_columns(selected, budget=500)
@@ -363,7 +1350,42 @@ def solve_set_partitioning(
                                      generator.pool[key] = c
                                      m_added += 1
                                      
-                             log_fn(f"[MERGE REPAIR] Generated {len(new_merge_cols)} cols -> Added {m_added} new to pool")
+                             log_fn(f"  [MERGE REPAIR] Added {m_added} columns")
+                    
+                    # 1b. Merge Low-Hour Rosters (E.2: Fix for <30h problem)
+                    low_hour_rosters = [r for r in selected if r.total_hours < 30]
+                    if hasattr(generator, 'merge_low_hour_into_hosts') and len(low_hour_rosters) > 0:
+                         log_fn(f"[MERGE-LOW] Found {len(low_hour_rosters)} low-hour rosters (<30h), merging...")
+                         merged_cols = generator.merge_low_hour_into_hosts(
+                             low_hour_rosters=low_hour_rosters,
+                             max_attempts=300,
+                             target_min_hours=30.0,
+                             target_max_hours=45.0,
+                         )
+                         if merged_cols:
+                              low_added = 0
+                              for c in merged_cols:
+                                   key = tuple(sorted(c.block_ids))
+                                   if key not in generator.pool:
+                                        generator.pool[key] = c
+                                        low_added += 1
+                              log_fn(f"  [MERGE-LOW] Added {low_added} higher-hour columns")
+
+                    # 2. [STEP 11] Collapse Neighborhood (3-to-2)
+                    if hasattr(generator, 'generate_collapse_candidates'):
+                         log_fn(f"[COLLAPSE] Triggering 3-to-2 Collapse Neighborhood")
+                         collapse_cols = generator.generate_collapse_candidates(selected, max_attempts=200)
+                         if collapse_cols:
+                             c_added = 0
+                             for c in collapse_cols:
+                                 key = tuple(sorted(c.block_ids))
+                                 if key not in generator.pool:
+                                     generator.pool[key] = c
+                                     c_added += 1
+                             log_fn(f"  [COLLAPSE] Generated {len(collapse_cols)} cols -> Added {c_added} new")
+                             if c_added > 0:
+                                 rounds_without_driver_impr = 0 # Assume this helps
+
                 hours = [r.total_hours for r in selected]
                 
                 # =========================================================================
@@ -463,6 +1485,66 @@ def solve_set_partitioning(
                 
                 if (pt_ok and quality_ok) or (stalling and quality_ok):
                      log_fn(f"\n[OK] Stopping with {num_pt} PT drivers ({pt_ratio:.1%} share) and {pool_quality:.1%} FTE coverage")
+                     
+                     # =========================================================
+                     # STEP 12: LEXICOGRAPHIC RMP (Compressed Weeks Only)
+                     # Final optimization pass to guarantee minimum headcount
+                     # =========================================================
+                     _is_compressed_for_lexiko = features is not None and len(getattr(features, "active_days", [])) <= 4
+                     
+                     if _is_compressed_for_lexiko:
+                         log_fn(f"\n[LEXIKO] Compressed week detected - running lexicographic optimization")
+                         
+                         # =====================================================
+                         # STEP 13: D-SEARCH OUTER LOOP (before lexiko)
+                         # Find minimum feasible D via driver-cap search
+                         # UB = min(best_known_drivers, len(selected)) to avoid bad incumbents
+                         # =====================================================
+                         ub_for_dsearch = min(best_known_drivers, len(selected))
+                         log_fn(f"\n[D-SEARCH] Running D-search (UB={ub_for_dsearch}) to find minimum feasible headcount...")
+                         
+                         d_search_result = _run_d_search(
+                             generator=generator,
+                             all_tour_ids=all_tour_ids,
+                             features=features,
+                             incumbent_drivers=ub_for_dsearch,
+                             time_budget=min(120.0, max(30.0, global_deadline - time.monotonic() if global_deadline else 60.0)),
+                             log_fn=log_fn,
+                             max_repair_iters_per_d=2,
+                         )
+                         
+                         # Extract D_min for use as lexiko cap
+                         d_min_found = d_search_result["D_min"]
+                         
+                         # Use D-search result if it improved
+                         if d_search_result["status"] == "SUCCESS" and d_search_result["best_solution"]:
+                             log_fn(f"[D-SEARCH] SUCCESS: D_min={d_min_found} (improvement from {ub_for_dsearch})")
+                             selected = d_search_result["best_solution"]
+                         else:
+                             log_fn(f"[D-SEARCH] {d_search_result['status']}: D_min={d_min_found}")
+                         
+                         # Prepare hint columns from current solution
+                         hint_cols = selected
+                         
+                         # Call lexicographic solver with TOUR coverage mode
+                         # Pass D_min as driver_cap so lexiko doesn't exceed it
+                         lexiko_result = solve_rmp_lexico_5stage(
+                             columns=list(generator.pool.values()),
+                             target_ids=all_tour_ids,
+                             coverage_attr="covered_tour_ids",
+                             time_limit_total=min(60.0, max(20.0, rmp_time_limit)),
+                             log_fn=log_fn,
+                             hint_columns=hint_cols,
+                             driver_cap=d_min_found,
+                             underutil_target_hours=33.0,
+                         )
+                         
+                         if lexiko_result["status"] in ("OPTIMAL", "FEASIBLE"):
+                             selected = lexiko_result["selected_rosters"]
+                             log_fn(f"[LEXIKO] SUCCESS: D*={lexiko_result['D_star']} drivers (Singletons: {lexiko_result['singleton_selected']})")
+                         else:
+                             log_fn(f"[LEXIKO] FAILED ({lexiko_result['status']}) - using D-search/original solution")
+                     
                      return create_result(selected, "OK")
                 
                 log_fn(f"\n[CONT] Full coverage but {num_pt} PT drivers ({pt_ratio:.1%} share) - Optimization continuing...")

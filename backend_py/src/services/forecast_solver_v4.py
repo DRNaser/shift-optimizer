@@ -1051,7 +1051,13 @@ def solve_capacity_phase(
     # Start high (above current Fri peak), then tighten
     # OPTIMIZATION: Use binding cap updates (next_cap < incumbent_max)
     
-    INITIAL_CAP = max(220, max_day_min + 30)
+    # PROOF MODE: Use config.day_cap_hard as initial cap if provided (strict proof mode)
+    if hasattr(config, 'day_cap_hard') and config.day_cap_hard is not None and config.day_cap_hard > 0:
+        INITIAL_CAP = config.day_cap_hard
+        safe_print(f"  PROOF MODE: Using config.day_cap_hard={INITIAL_CAP} as initial cap", flush=True)
+    else:
+        INITIAL_CAP = max(220, max_day_min + 30)
+    
     # OPTIMIZATION: Min cap should dynamic, not hardcoded 140
     # Use max_day_min as absolute floor, but target aggressive packing
     MIN_CAP = max(max_day_min, 1) 
@@ -1457,6 +1463,82 @@ def _run_phase1_diagnostics(selected: list[Block], tours: list[Tour], block_inde
     stats["missed_3er_count"] = len(missed_3er_tours)
 
 
+def _build_phase1_result_from_solution(
+    selected: list,
+    blocks: list,
+    tours: list,
+    block_index: dict,
+    block_props: dict,
+    block_scores: dict,
+    t0: float,
+    avail_1er: int,
+    avail_2er_reg: int,
+    avail_2er_split: int,
+    avail_3er: int,
+    tour_has_multi: set,
+) -> tuple:
+    """
+    Build Phase 1 result from a solution (selected blocks).
+    
+    This is a pure result-builder - no optimization or modification of the solution.
+    Returns (selected_blocks, stats_dict) tuple matching downstream expectations.
+    """
+    from time import perf_counter
+    from collections import defaultdict
+    
+    elapsed = perf_counter() - t0
+    
+    # Calculate block type counts
+    by_type = {
+        "1er": sum(1 for b in selected if len(b.tours) == 1),
+        "2er": sum(1 for b in selected if len(b.tours) == 2),
+        "3er": sum(1 for b in selected if len(b.tours) == 3),
+    }
+    
+    # Calculate 2er subtypes
+    sel_2er_regular = sum(1 for b in selected if len(b.tours) == 2 and b.pause_zone.value == "REGULAR")
+    sel_2er_split = sum(1 for b in selected if len(b.tours) == 2 and b.pause_zone.value == "SPLIT")
+    
+    # Calculate blocks by day
+    by_day = defaultdict(int)
+    for block in selected:
+        by_day[block.day.value] += 1
+    
+    # Calculate total work hours
+    total_hours = sum(b.total_work_hours for b in selected)
+    
+    # Calculate block mix percentages
+    total_selected = len(selected)
+    block_mix = {
+        "1er": round(by_type["1er"] / total_selected, 3) if total_selected else 0,
+        "2er": round(by_type["2er"] / total_selected, 3) if total_selected else 0,
+        "3er": round(by_type["3er"] / total_selected, 3) if total_selected else 0,
+    }
+    
+    # Build stats dictionary matching downstream expectations
+    stats = {
+        "status": "OK",
+        "selected_blocks": len(selected),
+        "blocks_1er": by_type["1er"],
+        "blocks_2er": by_type["2er"],
+        "blocks_3er": by_type["3er"],
+        "blocks_2er_regular": sel_2er_regular,
+        "blocks_2er_split": sel_2er_split,
+        "blocks_by_day": dict(by_day),
+        "total_hours": round(total_hours, 2),
+        "time": round(elapsed, 2),
+        "block_mix": block_mix,
+        "fallback_stage": "Stage 1",  # Indicates this came from early fallback
+        # Candidate counts for telemetry
+        "candidate_count_1er": avail_1er,
+        "candidate_count_2er_regular": avail_2er_reg,
+        "candidate_count_2er_split": avail_2er_split,
+        "candidate_count_3er": avail_3er,
+    }
+    
+    return selected, stats
+
+
 def _solve_capacity_single_cap(
     blocks: list[Block],
     tours: list[Tour],
@@ -1562,6 +1644,26 @@ def _solve_capacity_single_cap(
     day_order = {"Mon": 0, "Tue": 1, "Wed": 2, "Thu": 3, "Fri": 4, "Sat": 5, "Sun": 6}
     # Inverse map for next-day lookup
     idx_to_day = {v: k for k, v in day_order.items()}
+    
+    # GAP-AWARE LOGIC: Define active days sequence
+    # For KW51: Thu is holiday (0 cap). Wed connected to Fri.
+    # We detect "active" days from the block set.
+    active_days_set = sorted(list(set(day_order.get(b.day.value, -1) for b in blocks)))
+    active_days_set = [d for d in active_days_set if d != -1]
+    
+    # Build next_active_day map
+    next_active_day_map = {}
+    for i, current_d_idx in enumerate(active_days_set):
+        # Wrap around using modulo logic on the list index
+        next_idx_in_list = (i + 1) % len(active_days_set)
+        next_d_idx = active_days_set[next_idx_in_list]
+        
+        # Map current day name -> next active day name
+        current_name = idx_to_day[current_d_idx]
+        next_name = idx_to_day[next_d_idx]
+        next_active_day_map[current_name] = next_name
+        
+    safe_print(f"  GAP-AWARE CHAINABILITY: Active days {active_days_set}, Next Map: {next_active_day_map}", flush=True)
 
     trap_pressure = {}
     for day_val in days:
@@ -1569,9 +1671,8 @@ def _solve_capacity_single_cap(
              trap_pressure[day_val] = 0.0
              continue
              
-        day_idx = day_order[day_val]
-        # Pressure = Late(Today) * Early(Tomorrow)
-        next_day_val = idx_to_day.get((day_idx + 1) % 7, "Mon")
+        # Pressure = Late(Today) * Early(NextActiveDay)
+        next_day_val = next_active_day_map.get(day_val, "Mon")
         trap_pressure[day_val] = late_pressure.get(day_val, 0) * early_pressure.get(next_day_val, 0)
     
     safe_print(f"  TRAP PRESSURE: {', '.join(f'{d[:3]}={trap_pressure.get(d, 0):.2f}' for d in days)}", flush=True)
@@ -1604,46 +1705,59 @@ def _solve_capacity_single_cap(
     count_low_compat = 0
     
     for b in blocks:
-        # Determine next day
-        current_day_idx = day_order.get(b.day.value, 0)
-        next_day_val = idx_to_day.get((current_day_idx + 1) % 7)
+        # Determine next day using gap-aware map
+        next_day_val = next_active_day_map.get(b.day.value)
+        
+        if not next_day_val:
+            # Should not happen given logic above, but fallback
+            chain_penalty_map[b.id] = 0
+            continue
         
         # Determine rest requirement
-        # If 3-tour: 14h rest (840 min). Else 11h (660 min).
-        # But wait, 3-tour rule says "14h rest OR max 2 tours next day".
-        # It's a complex rule. The chainability metric is a heuristic.
-        # Let's assume standard 11h rest for connectivity potential.
         rest_min = 14 * 60 if len(b.tours) >= 3 else 11 * 60
         
         # End time in minutes from start of day
-        # (This assumes shifts don't span midnight for start/end logic roughly)
-        # Actually verify: block.last_end is time object.
         end_min = b.last_end.hour * 60 + b.last_end.minute
         
-        # Earliest valid start next day
-        # If we end at 20:00 (1200), +11h = 31:00 = 07:00 next day.
-        # Logic: end_min + rest_min - 24*60
-        # If result < 0, it means we can start at 00:00 next day (no constraint effectively overlapping day start).
+        # Calculate gap in days to adjust rest calculation
+        curr_idx = day_order.get(b.day.value, 0)
+        next_idx = day_order.get(next_day_val, 0)
         
-        min_next_start = end_min + rest_min - (24 * 60)
-        # CLAMP: If negative, means block can connect to anything starting at 00:00+
+        # Days diff: (next - curr) % 7
+        # e.g. Wed(2) -> Fri(4) = 2 days
+        # e.g. Fri(4) -> Mon(0) = 3 days
+        days_gap = (next_idx - curr_idx) % 7
+        if days_gap == 0: days_gap = 7 # minimal 1 week if same day?
+        
+        # Time available until next day start 00:00:
+        # (24*60 - end_min) + (days_gap - 1)*24*60
+        # Wait, if days_gap=1 (Tue->Wed), we have until Wed 00:00.
+        # If days_gap=2 (Wed->Fri), we have (Wed rest) + (Thu full) + (Fri start)
+        
+        # Let's simplify:
+        # We need start_time_next_day >= end_time_today + rest_min - (days_gap * 24*60)
+        # e.g. end 20:00 (1200), rest 11h (660). Need 1860 total min.
+        # Next day starts at t=0 relative to next day.
+        # Previous day end relative to next day start:
+        # 1200 - (days_gap * 1440).
+        # So we need start >= (1200 - days_gap*1440) + 660.
+        
+        min_next_start = end_min + rest_min - (days_gap * 1440)
+        # CLAMP: If negative, means we are fully rested before 00:00 of next active day
         min_next_start = max(0, min_next_start)
         
         if next_day_val not in day_starts or not day_starts[next_day_val]:
-            # No blocks next day (e.g. Sunday -> Monday if empty context, or Saturday->Sunday)
-            # If Sunday, maybe no penalty needed (end of week).
-            if b.day.value == "Sun" or b.day.value == "Sat":
-                chain_penalty_map[b.id] = 0
-                compat_counts["10+"] = compat_counts.get("10+", 0) + 1  # Sat/Sun end of week
-            else:
-                # Scary! No options.
-                chain_penalty_map[b.id] = W_CHAIN * TARGET_COMPAT
-                compat_counts["0"] = compat_counts.get("0", 0) + 1
+            # No blocks next day
+            if b.day.value == "Sun" or b.day.value == "Sat": # End of week heuristics still apply?
+                 # If Sat is active, next is Mon.
+                 pass
+            
+            chain_penalty_map[b.id] = W_CHAIN * TARGET_COMPAT
+            compat_counts["0"] = compat_counts.get("0", 0) + 1
             continue
             
         # Count options >= min_next_start
         options = day_starts[next_day_val]
-        # binary search: find index of first valid start
         idx = bisect_left(options, min_next_start)
         count = len(options) - idx
         
@@ -1655,9 +1769,6 @@ def _solve_capacity_single_cap(
         
         if count < TARGET_COMPAT:
             penalty = (TARGET_COMPAT - count) * W_CHAIN
-            # Boost penalty for 1er blocks that dead-end? 
-            # No, if a 1er dead-ends it's just as bad as a 3er dead-ending.
-            # Actually 3ers dead-ending is worse (waste of efficiency).
             if len(b.tours) >= 3:
                 penalty *= 2
             
@@ -1666,30 +1777,36 @@ def _solve_capacity_single_cap(
         else:
             chain_penalty_map[b.id] = 0
             
-    safe_print(f"  CHAINABILITY: {count_low_compat} blocks have low next-day options (<{TARGET_COMPAT}). Applied penalties.", flush=True)
+    safe_print(f"  CHAINABILITY (Gap-Aware): {count_low_compat} blocks have low next-day options (<{TARGET_COMPAT}).", flush=True)
     safe_print(f"  COMPAT HISTOGRAM: {compat_counts}", flush=True)
 
-    # Day count variable + soft cap
+    # Day count variable + cap enforcement
     # v5: Use day_cap_hard for operational constraint (default 220)
+    # STRICT MODE: If day_cap_override is set, enforce HARD cap on ALL days (proof mode)
     if day_cap_override is not None:
         DAY_CAP = day_cap_override
+        STRICT_CAP_ALL_DAYS = True  # Proof mode: force ALL days <= cap
+        safe_print(f"  STRICT CAP MODE: Enforcing {DAY_CAP} on ALL active days (Proof Mode)", flush=True)
     else:
         # v5: Fixed cap for operational constraints (not dynamic from target_ftes)
         DAY_CAP = config.day_cap_hard if hasattr(config, 'day_cap_hard') else 220
+        STRICT_CAP_ALL_DAYS = False  # Standard mode: only peak days hard-capped
     
     day_count = {}
     day_slack = {}
-    PEAK_DAYS = {"Fri", "Mon"}  # These get HARD cap
+    PEAK_DAYS = {"Fri", "Mon"}  # These get HARD cap in standard mode
     
     for day_val in days:
         day_count[day_val] = model.NewIntVar(0, 5000, f"day_count_{day_val}")
         model.Add(day_count[day_val] == sum(use[b] for b in blocks_by_day[day_val]))
         day_slack[day_val] = model.NewIntVar(0, 500, f"day_slack_{day_val}")
         
-        if day_val in PEAK_DAYS:
-            # HARD CONSTRAINT for peak days: No slack!
+        # STRICT MODE: All days get HARD cap when in proof mode
+        if STRICT_CAP_ALL_DAYS or day_val in PEAK_DAYS:
+            # HARD CONSTRAINT: No slack!
             model.Add(day_count[day_val] <= DAY_CAP)
-            safe_print(f"    {day_val}: HARD cap at {DAY_CAP}", flush=True)
+            mode_str = "STRICT" if STRICT_CAP_ALL_DAYS else "PEAK"
+            safe_print(f"    {day_val}: HARD cap at {DAY_CAP} ({mode_str})", flush=True)
         else:
             # SOFT cap for other days (slack penalized in objective)
             model.Add(day_count[day_val] <= DAY_CAP + day_slack[day_val])
@@ -1798,7 +1915,16 @@ def _solve_capacity_single_cap(
     ))
     
     safe_print(f"  COUNT EXPRESSIONS: c3er, c2R, c2S, c1er built as IntVars", flush=True)
-    
+
+    # Task B: Chainability Penalty (Tie-breaker for all stages)
+    # Prefer blocks that have good next-day connections
+    total_chain_penalty = model.NewIntVar(0, len(blocks) * 10000, "total_chain_penalty")
+    model.Add(total_chain_penalty == sum(
+        use[b] * int(chain_penalty_map.get(block.id, 0))
+        for b, block in enumerate(blocks)
+    ))
+    safe_print(f"  CHAIN PENALTY: Injected as tie-breaker (weight=1).", flush=True)
+
     # Time budget split across stages (deterministic)
     # Total budget from config or override
     total_budget = time_limit if time_limit is not None else config.time_limit_phase1
@@ -1862,12 +1988,17 @@ def _solve_capacity_single_cap(
     # v5: Lock headcount for Pass 2
     # If Pass 1 was OPTIMAL, use strict equality (==)
     # If Pass 1 was only FEASIBLE, use fail-open (<=) to avoid artificial infeasibility
+    
+    # FIX: Relax lock by +5 to allow Stage 1 (3ers) to trade off peak efficiency for quality
+    # Strictly minimizing max_day forces "Split" blocks (2 tours/block), preventing 3ers that span to peak days.
+    HEADCOUNT_SLACK = 5
+    
     if pass1_is_optimal:
-        model.Add(max_day == headcount_pass1)
-        safe_print(f"  HEADCOUNT LOCK: max_day == {headcount_pass1} (strict, pass1 was OPTIMAL)", flush=True)
+        model.Add(max_day <= headcount_pass1 + HEADCOUNT_SLACK)
+        safe_print(f"  HEADCOUNT LOCK: max_day <= {headcount_pass1 + HEADCOUNT_SLACK} (opt + {HEADCOUNT_SLACK} slack)", flush=True)
     else:
-        model.Add(max_day <= headcount_pass1)
-        safe_print(f"  HEADCOUNT LOCK: max_day <= {headcount_pass1} (fail-open, pass1 was FEASIBLE)", flush=True)
+        model.Add(max_day <= headcount_pass1 + HEADCOUNT_SLACK)
+        safe_print(f"  HEADCOUNT LOCK: max_day <= {headcount_pass1 + HEADCOUNT_SLACK} (feas + {HEADCOUNT_SLACK} slack)", flush=True)
     
     # v5: Clear hints and add fresh hints from Pass 1 solution
     model.ClearHints()
@@ -1882,11 +2013,15 @@ def _solve_capacity_single_cap(
     safe_print("v5 PASS 2: QUALITY OPTIMIZATION (locked headcount)", flush=True)
     safe_print(f"{'='*60}", flush=True)
     
+    # Weights for Lexicographical Tie-Breaking
+    # Fixed: Increase weight to 1B to strictly dominate chain penalty (max ~100M)
+    W_PRIO_STAGE = 1_000_000_000 
+    
     # =========================================================================
     # STAGE 1: MAXIMIZE count_3er
     # =========================================================================
-    safe_print(f"\n  --- STAGE 1: MAXIMIZE count_3er ---", flush=True)
-    model.Maximize(count_3er)
+    safe_print(f"\n  --- STAGE 1: MAXIMIZE count_3er (Tie-break: Chainability) ---", flush=True)
+    model.Maximize(count_3er * W_PRIO_STAGE - total_chain_penalty)
     
     solver_s1 = cp_model.CpSolver()
     solver_s1.parameters.max_time_in_seconds = stage_budgets[1]
@@ -1929,8 +2064,8 @@ def _solve_capacity_single_cap(
     # =========================================================================
     # STAGE 2: MAXIMIZE count_2er_regular (with count_3er fixed)
     # =========================================================================
-    safe_print(f"\n  --- STAGE 2: MAXIMIZE count_2er_regular ---", flush=True)
-    model.Maximize(count_2er_regular)
+    safe_print(f"\n  --- STAGE 2: MAXIMIZE count_2er_regular (Tie-break: Chainability) ---", flush=True)
+    model.Maximize(count_2er_regular * W_PRIO_STAGE - total_chain_penalty)
     
     solver_s2 = cp_model.CpSolver()
     solver_s2.parameters.max_time_in_seconds = stage_budgets[2]
@@ -2049,8 +2184,8 @@ def _solve_capacity_single_cap(
     # =========================================================================
     # STAGE 3: MAXIMIZE count_2er_split (with 3er, 2R fixed)
     # =========================================================================
-    safe_print(f"\n  --- STAGE 3: MAXIMIZE count_2er_split ---", flush=True)
-    model.Maximize(count_2er_split)
+    safe_print(f"\n  --- STAGE 3: MAXIMIZE count_2er_split (Tie-break: Chainability) ---", flush=True)
+    model.Maximize(count_2er_split * W_PRIO_STAGE - total_chain_penalty)
     
     solver_s3 = cp_model.CpSolver()
     solver_s3.parameters.max_time_in_seconds = stage_budgets[3]
@@ -2098,8 +2233,8 @@ def _solve_capacity_single_cap(
     # =========================================================================
     # STAGE 4: MINIMIZE count_1er (with all multi-counts fixed)
     # =========================================================================
-    safe_print(f"\n  --- STAGE 4: MINIMIZE count_1er ---", flush=True)
-    model.Minimize(count_1er)
+    safe_print(f"\n  --- STAGE 4: MINIMIZE count_1er (Tie-break: Chainability) ---", flush=True)
+    model.Minimize(count_1er * W_PRIO_STAGE + total_chain_penalty)
     
     solver_s4 = cp_model.CpSolver()
     solver_s4.parameters.max_time_in_seconds = stage_budgets[4]
@@ -2117,13 +2252,19 @@ def _solve_capacity_single_cap(
     else:
         safe_print(f"  STAGE 4 FAILED: {status_str(status_s4)}", flush=True)
         return None
-    
     if status_s4 in (cp_model.OPTIMAL, cp_model.FEASIBLE):
         best_count_1er = solver_s4.Value(count_1er)
         safe_print(f"  STAGE 4 RESULT: count_1er = {int(best_count_1er)}", flush=True)
 
-        # Fix count_1er for stage 5
-        model.Add(count_1er == int(best_count_1er))
+        # Fix count_1er for stage 5 with GUARANTEE
+        # User Requirement: "After Stage-4 (minimize count_1er), add fixation constraint... never allowed to increase 1ers."
+        if status_s4 == cp_model.OPTIMAL:
+             model.Add(count_1er == int(best_count_1er))
+             safe_print(f"  Fixation: count_1er == {int(best_count_1er)} (OPTIMAL)", flush=True)
+        else:
+             # Even if FEASIBLE, we must not accept worse than this
+             model.Add(count_1er <= int(best_count_1er))
+             safe_print(f"  Fixation: count_1er <= {int(best_count_1er)} (FEASIBLE, fail-open)", flush=True)
 
         # K5: Explicitly save Stage 4 solution for fallback
         stage4_solution = [solver_s4.Value(use[b]) for b in range(len(blocks))]
@@ -2135,7 +2276,7 @@ def _solve_capacity_single_cap(
         safe_print(f"  STAGE 4 FALLBACK RESULT: count_1er = {int(best_count_1er)}", flush=True)
 
         # Fix count_1er for stage 5 using Stage 3 value
-        model.Add(count_1er == int(best_count_1er))
+        model.Add(count_1er <= int(best_count_1er))
 
         # Use Stage 3 solution as fallback
         stage4_solution = [solver_s3.Value(use[b]) for b in range(len(blocks))]
@@ -2182,14 +2323,17 @@ def _solve_capacity_single_cap(
     )
     
     # K4: Full secondary objective (weights chosen to prioritize in order)
+    # NOTE: Chain penalty is strictly SECONDARY here. 
     W_MAXDAY_SEC = 1_000_000    # Highest secondary priority
     W_COUNT_SEC = 100_000       # Second (but packing is fixed, so mostly tie-break)
-    W_SLACK_SEC = 10_000        # Third
+    W_CHAIN_SEC = 1_000         # Third: Chainability
+    W_SLACK_SEC = 10_000        # Fourth
     W_SCORE_SEC = 1             # Lowest (final tie-break)
     
     secondary_objective = (
         W_MAXDAY_SEC * max_day +
         W_COUNT_SEC * total_blocks +
+        W_CHAIN_SEC * total_chain_penalty +
         W_SLACK_SEC * total_slack -
         W_SCORE_SEC * score_sum  # Subtract (higher score = better)
     )
@@ -2205,20 +2349,54 @@ def _solve_capacity_single_cap(
     
     status_s5 = solver_s5.Solve(model)
     
-    # K5: Clean fallback logic
+    # PHASE-1 STATUS CONTRACT: Stage 5 failures use fallback (Stage 4)
+    # User Requirement: "If Stage-5 UNKNOWN, fallback must return Stage-4 solution, not worse."
     if status_s5 == cp_model.OPTIMAL:
         safe_print(f"  STAGE 5: OPTIMAL", flush=True)
-        final_solver = solver_s5
-        used_stage4_fallback = False
+        best_so_far_solver = solver_s5
     elif status_s5 == cp_model.FEASIBLE:
         safe_print(f"  STAGE 5: FEASIBLE (not proven optimal)", flush=True)
-        final_solver = solver_s5
-        used_stage4_fallback = False
+        best_so_far_solver = solver_s5
     else:
         safe_print(f"  STAGE 5 FAILED: {status_str(status_s5)} (using Stage 4 fallback)", flush=True)
-        # Reconstruct solution from stage4_solution
-        final_solver = None  # Signal to use stage4_solution directly
-        used_stage4_fallback = True
+        # Use Stage 4 explicit solution
+        selected = [blocks[b] for b in range(len(blocks)) if stage4_solution[b] == 1]
+        safe_print(f"  FALLBACK: Using Stage 4 solution ({len(selected)} blocks)", flush=True)
+        
+        elapsed = perf_counter() - t0
+        by_type = {"1er": sum(1 for b in selected if len(b.tours) == 1),
+                   "2er": sum(1 for b in selected if len(b.tours) == 2),
+                   "3er": sum(1 for b in selected if len(b.tours) == 3)}
+        by_day = defaultdict(int)
+        for block in selected:
+            by_day[block.day.value] += 1
+        total_hours = sum(b.total_work_hours for b in selected)
+        
+        # INVARIANT CHECK: Packing counts must match locked values
+        actual_3er = sum(1 for b in selected if len(b.tours) == 3)
+        actual_2R = sum(1 for b in selected if len(b.tours) == 2 and b.pause_zone.value == "REGULAR")
+        actual_2S = sum(1 for b in selected if len(b.tours) == 2 and b.pause_zone.value == "SPLIT")
+        actual_1er = sum(1 for b in selected if len(b.tours) == 1)
+            
+        mismatch = (
+            actual_3er != int(best_count_3er) or
+            actual_2R != int(best_count_2er_regular) or
+            actual_2S != int(best_count_2er_split) or
+            actual_1er != int(best_count_1er)
+        )
+        if mismatch:
+            safe_print(f"  WARNING: Packing invariant violated in Stage 5!", flush=True)
+            # This can happen if secondary objective pushes solver to find DIFFERENT solution with same costs?
+            # Or if strict equality constraint was flawed.
+            pass
+
+        return selected, {"status": "OK", "selected_blocks": len(selected), "blocks_1er": actual_1er,
+                         "blocks_2er": actual_2R + actual_2S, "blocks_3er": actual_3er,
+                         "blocks_by_day": dict(by_day), "total_hours": round(total_hours, 2),
+                         "time": round(elapsed, 2), "fallback_stage": "Stage 4"}
+
+    # Extract FINAL solution (if Stage 5 succeeded)
+    selected = [blocks[b] for b in range(len(blocks)) if best_so_far_solver.Value(use[b]) == 1]
     
     # =========================================================================
     # EXTRACT FINAL SOLUTION
@@ -2229,37 +2407,35 @@ def _solve_capacity_single_cap(
     safe_print(f"  2er_REG blocks:   {int(best_count_2er_regular)}", flush=True)
     safe_print(f"  2er_SPLIT blocks: {int(best_count_2er_split)}", flush=True)
     safe_print(f"  1er blocks:       {int(best_count_1er)}", flush=True)
-    safe_print(f"  Stage 5 fallback: {'YES (Stage 4)' if used_stage4_fallback else 'NO'}", flush=True)
-    safe_print(f"{'='*60}", flush=True)
-    
     # K5: Extract solution based on fallback status
-    if used_stage4_fallback:
-        # Use stage4_solution directly
-        selected = [blocks[b] for b in range(len(blocks)) if stage4_solution[b] == 1]
-        safe_print(f"  Using Stage 4 solution (Stage 5 failed)", flush=True)
-    else:
+    if status_s5 in (cp_model.OPTIMAL, cp_model.FEASIBLE):
         # Use final_solver (Stage 5)
-        selected = [blocks[b] for b in range(len(blocks)) if final_solver.Value(use[b]) == 1]
+        selected = [blocks[b] for b in range(len(blocks)) if best_so_far_solver.Value(use[b]) == 1]
+    else:
+        # Fallback (Stage 4) was already handled above in the failure block return
+        # But if we reach here, it means we must have skipped the return or logic flaw?
+        # Ah, the failure block returns. So here we are safe.
+        pass
+
+    # INVARIANT CHECK: Packing counts must match locked values
+    actual_3er = sum(1 for b in selected if len(b.tours) == 3)
+    actual_2R = sum(1 for b in selected if len(b.tours) == 2 and b.pause_zone.value == "REGULAR")
+    actual_2S = sum(1 for b in selected if len(b.tours) == 2 and b.pause_zone.value == "SPLIT")
+    actual_1er = sum(1 for b in selected if len(b.tours) == 1)
         
-        # INVARIANT CHECK: Packing counts must match locked values
-        actual_3er = sum(1 for b in selected if len(b.tours) == 3)
-        actual_2R = sum(1 for b in selected if len(b.tours) == 2 and b.pause_zone.value == "REGULAR")
-        actual_2S = sum(1 for b in selected if len(b.tours) == 2 and b.pause_zone.value == "SPLIT")
-        actual_1er = sum(1 for b in selected if len(b.tours) == 1)
+    mismatch = (
+        actual_3er != int(best_count_3er) or
+        actual_2R != int(best_count_2er_regular) or
+        actual_2S != int(best_count_2er_split) or
+        actual_1er != int(best_count_1er)
+    )
         
-        mismatch = (
-            actual_3er != int(best_count_3er) or
-            actual_2R != int(best_count_2er_regular) or
-            actual_2S != int(best_count_2er_split) or
-            actual_1er != int(best_count_1er)
-        )
-        
-        if mismatch:
-            safe_print(f"  WARNING: Packing invariant violated in Stage 5!", flush=True)
-            safe_print(f"    Expected: 3er={int(best_count_3er)}, 2R={int(best_count_2er_regular)}, 2S={int(best_count_2er_split)}, 1er={int(best_count_1er)}", flush=True)
-            safe_print(f"    Actual:   3er={actual_3er}, 2R={actual_2R}, 2S={actual_2S}, 1er={actual_1er}", flush=True)
-        else:
-            safe_print(f"  [OK] Packing invariant verified (counts locked)", flush=True)
+    if mismatch:
+        safe_print(f"  WARNING: Packing invariant violated in Stage 5!", flush=True)
+        safe_print(f"    Expected: 3er={int(best_count_3er)}, 2R={int(best_count_2er_regular)}, 2S={int(best_count_2er_split)}, 1er={int(best_count_1er)}", flush=True)
+        safe_print(f"    Actual:   3er={actual_3er}, 2R={actual_2R}, 2S={actual_2S}, 1er={actual_1er}", flush=True)
+    else:
+        safe_print(f"  [OK] Packing invariant verified (counts locked)", flush=True)
     
     # Compute elapsed time (from model build start)
     elapsed = perf_counter() - t0

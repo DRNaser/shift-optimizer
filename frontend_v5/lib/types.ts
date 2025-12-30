@@ -23,8 +23,12 @@ export interface RunInsights {
     core_share: number;
     orphans_count: number;
     violation_count: number;
+    // Fleet Counter metrics (v7.2.0)
+    fleet_peak_count?: number;
+    fleet_peak_day?: string;
+    fleet_peak_time?: string;
     // Add dynamic keys if necessary
-    [key: string]: number | string;
+    [key: string]: number | string | undefined;
 }
 
 export interface RunDetailData {

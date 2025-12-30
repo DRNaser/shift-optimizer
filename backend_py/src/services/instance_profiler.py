@@ -65,6 +65,14 @@ class FeatureVector:
     total_work_hours: float = 0.0
     expected_drivers_min: int = 0      # total_hours / 53
     expected_drivers_max: int = 0      # total_hours / 42
+    
+    # Active Days (Holiday Week Support)
+    active_days: list = field(default_factory=list)  # e.g. ["Mon", "Tue", "Wed", "Fri"]
+    active_days_count: int = 6                       # k = number of active days
+    is_compressed_week: bool = False                 # True if k <= 4
+    
+    # Fleet Counter (v7.2.0) - Source of Truth for Fleet LB
+    fleet_peak: int = 0
 
     def to_dict(self) -> dict:
         """Convert to dictionary for serialization."""
@@ -92,6 +100,11 @@ class FeatureVector:
             "total_work_hours": round(self.total_work_hours, 1),
             "expected_drivers_min": self.expected_drivers_min,
             "expected_drivers_max": self.expected_drivers_max,
+            # Active Days (Holiday Week Support)
+            "active_days": self.active_days,
+            "active_days_count": self.active_days_count,
+            "is_compressed_week": self.is_compressed_week,
+            "fleet_peak": self.fleet_peak,
         }
 
 
@@ -181,9 +194,25 @@ def compute_features(
     features.daymin_sat = daymin.get("Sat", 0)
     features.lower_bound_drivers = max(daymin.values()) if daymin else 0
     
+    # Active Days (Holiday Week Support)
+    # Compute which days have tours > 0
+    active_day_set = set()
+    for tour in tours:
+        if hasattr(tour, 'day'):
+            day_val = tour.day.value if hasattr(tour.day, 'value') else str(tour.day)
+            active_day_set.add(day_val)
+    
+    # Sort in weekday order
+    day_order = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
+    features.active_days = [d for d in day_order if d in active_day_set]
+    features.active_days_count = len(features.active_days)
+    features.is_compressed_week = features.active_days_count <= 4
+    
     logger.info(f"Features computed: peakiness={features.peakiness_index:.2f}, "
                 f"pool_pressure={features.pool_pressure}, "
-                f"lower_bound={features.lower_bound_drivers}")
+                f"lower_bound={features.lower_bound_drivers}, "
+                f"active_days={features.active_days_count} ({features.active_days})"
+                f"{' [COMPRESSED WEEK]' if features.is_compressed_week else ''}")
     
     return features
 

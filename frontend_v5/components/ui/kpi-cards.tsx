@@ -1,6 +1,6 @@
 "use client";
 
-import { Activity, Cpu, Zap } from "lucide-react";
+import { Activity, Cpu, Zap, Truck } from "lucide-react";
 
 interface KPICardsProps {
     driversFTE: number;
@@ -8,6 +8,9 @@ interface KPICardsProps {
     utilization: number;
     gapToLB: number;
     totalHours: number;
+    fleetPeakCount?: number;
+    fleetPeakDay?: string;
+    fleetPeakTime?: string;
     isLoading?: boolean;
 }
 
@@ -17,16 +20,25 @@ export function KPICards({
     utilization,
     gapToLB,
     totalHours,
+    fleetPeakCount = 0,
+    fleetPeakDay = "",
+    fleetPeakTime = "",
     isLoading = false,
 }: KPICardsProps) {
+    // Format fleet peak subtitle
+    const fleetSubtitle = fleetPeakDay && fleetPeakTime
+        ? `${fleetPeakDay} @ ${fleetPeakTime}`
+        : "";
+
     const cards = [
         {
             label: "FTE Drivers",
             value: driversFTE,
-            format: (v: number) => v.toFixed(1),
+            format: (v: number) => v.toString(),
             icon: Cpu,
             color: "text-blue-400",
             bgColor: "bg-blue-500/10",
+            subtitle: "",
         },
         {
             label: "PT Drivers",
@@ -35,6 +47,7 @@ export function KPICards({
             icon: Activity,
             color: "text-emerald-400",
             bgColor: "bg-emerald-500/10",
+            subtitle: "",
         },
         {
             label: "Utilization",
@@ -43,6 +56,7 @@ export function KPICards({
             icon: Zap,
             color: "text-amber-400",
             bgColor: "bg-amber-500/10",
+            subtitle: "",
         },
         {
             label: "Gap to LB",
@@ -51,13 +65,23 @@ export function KPICards({
             icon: Zap,
             color: gapToLB === 0 ? "text-emerald-400" : "text-slate-400",
             bgColor: gapToLB === 0 ? "bg-emerald-500/10" : "bg-slate-500/10",
+            subtitle: "",
+        },
+        {
+            label: "Fleet Peak",
+            value: fleetPeakCount,
+            format: (v: number) => v > 0 ? `${v} vehicles` : "N/A",
+            icon: Truck,
+            color: "text-orange-400",
+            bgColor: "bg-orange-500/10",
+            subtitle: fleetSubtitle,
         },
     ];
 
     if (isLoading) {
         return (
-            <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-                {[1, 2, 3, 4].map((i) => (
+            <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
+                {[1, 2, 3, 4, 5].map((i) => (
                     <div
                         key={i}
                         className="bg-slate-900 border border-slate-800 rounded-lg p-4 animate-pulse"
@@ -71,7 +95,7 @@ export function KPICards({
     }
 
     return (
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+        <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
             {cards.map((card) => (
                 <div
                     key={card.label}
@@ -88,8 +112,14 @@ export function KPICards({
                     <div className={`text-2xl font-bold ${card.color}`}>
                         {card.format(card.value)}
                     </div>
+                    {card.subtitle && (
+                        <div className="text-xs text-slate-500 mt-1">
+                            {card.subtitle}
+                        </div>
+                    )}
                 </div>
             ))}
         </div>
     );
 }
+

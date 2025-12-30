@@ -23,7 +23,7 @@ logger = logging.getLogger("RosterColumn")
 MIN_WEEK_HOURS = 40.0  # Soft target for FTE hours (penalized in objective, not hard)
 MAX_WEEK_HOURS = 55.0
 MIN_REST_MINUTES = 660  # 11h
-HEAVY_REST_MINUTES = 840  # 14h
+HEAVY_REST_MINUTES = 660  # 11h (relaxed from 14h as per tuning request)
 DAY_MINUTES = 1440  # 24h
 MAX_TOURS_PER_DAY = 3
 MAX_TOURS_AFTER_HEAVY = 2
@@ -43,6 +43,7 @@ class RosterColumn:
         violations: Tuple of violation descriptions (for debugging)
         signature: Canonical tuple for deduplication
         roster_type: "FTE" (40-53h) or "PT" (0-40h)
+        covered_tour_ids: frozenset = frozenset()
     """
     roster_id: str
     block_ids: frozenset
@@ -52,6 +53,7 @@ class RosterColumn:
     violations: tuple
     signature: tuple
     roster_type: str = "FTE"  # "FTE" or "PT"
+    covered_tour_ids: frozenset = frozenset()
     
     @property
     def total_hours(self) -> float:
@@ -87,6 +89,7 @@ class BlockInfo:
     end_min: int  # Minutes from midnight
     work_min: int  # Actual work duration
     tours: int  # Number of tours in this block
+    tour_ids: tuple = ()  # Tuple of tour IDs covered by this block
 
 
 def create_roster_from_blocks(
@@ -110,7 +113,15 @@ def create_roster_from_blocks(
         )
     
     # Extract block IDs
+    # Extract block IDs
     block_ids = frozenset(b.block_id for b in block_infos)
+    
+    # Extract Tour IDs
+    tour_ids = set()
+    for b in block_infos:
+        if b.tour_ids:
+            tour_ids.update(b.tour_ids)
+    covered_tour_ids = frozenset(tour_ids)
     
     # Calculate total work minutes
     total_minutes = sum(b.work_min for b in block_infos)
@@ -152,6 +163,7 @@ def create_roster_from_blocks(
         violations=tuple(violations),
         signature=signature,
         roster_type="FTE",
+        covered_tour_ids=covered_tour_ids,
     )
 
 
@@ -299,7 +311,15 @@ def create_roster_from_blocks_pt(
         )
     
     # Extract block IDs
+    # Extract block IDs
     block_ids = frozenset(b.block_id for b in block_infos)
+    
+    # Extract Tour IDs
+    tour_ids = set()
+    for b in block_infos:
+        if b.tour_ids:
+            tour_ids.update(b.tour_ids)
+    covered_tour_ids = frozenset(tour_ids)
     
     # Calculate total work minutes
     total_minutes = sum(b.work_min for b in block_infos)
@@ -340,6 +360,7 @@ def create_roster_from_blocks_pt(
         violations=tuple(violations),
         signature=signature,
         roster_type="PT",
+        covered_tour_ids=covered_tour_ids,
     )
 
 
