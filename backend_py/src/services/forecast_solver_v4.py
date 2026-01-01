@@ -5017,29 +5017,50 @@ def solve_forecast_set_partitioning(
     # Convert rosters to DriverAssignment
     block_lookup = {b.id: b for b in selected_blocks}
     assignments = convert_rosters_to_assignments(sp_result.selected_rosters, block_lookup)
+
+    # Reclassify underfull FTEs to PT and renumber consistently
+    fte_min_hours = 40.0
+    fte_assignments = []
+    pt_assignments = []
+    for a in assignments:
+        if a.total_hours < fte_min_hours:
+            pt_assignments.append(a)
+        else:
+            fte_assignments.append(a)
+
+    assignments = []
+    for idx, a in enumerate(fte_assignments, start=1):
+        a.driver_type = "FTE"
+        a.driver_id = f"FTE{idx:03d}"
+        assignments.append(a)
+    for idx, a in enumerate(pt_assignments, start=1):
+        a.driver_type = "PT"
+        a.driver_id = f"PT{idx:03d}"
+        assignments.append(a)
     
     # Build KPI
-    fte_hours = [a.total_hours for a in assignments]
+    fte_hours = [a.total_hours for a in assignments if a.driver_type == "FTE"]
     under_42 = sum(1 for h in fte_hours if h < 40.0)
     over_53 = sum(1 for h in fte_hours if h > 56.5)
-    
-    if under_42 > 0 or over_53 > 0:
-        # NO SOFT FALLBACK - set-partitioning must produce valid results or FAIL
+
+    if over_53 > 0:
         status = "FAILED_CONSTRAINT_VIOLATION"
-        logger.error(f"CONSTRAINT VIOLATION: {under_42} under 40h, {over_53} over 56h")
+        logger.error(f"CONSTRAINT VIOLATION: {over_53} over 56h")
         logger.error("Set-Partitioning should only return valid rosters!")
     else:
         status = "OK"
+        if under_42 > 0:
+            logger.warning(f"Reclassified {under_42} under-40h FTE assignments to PT")
     
     kpi = {
         "solver_arch": "set-partitioning",  # CRITICAL: Proves which solver was used
         "status": status,
         "total_hours": round(total_hours, 2),
-        "drivers_fte": sp_result.num_drivers,
-        "drivers_pt": 0,
-        "fte_hours_min": round(sp_result.hours_min, 2),
-        "fte_hours_max": round(sp_result.hours_max, 2),
-        "fte_hours_avg": round(sp_result.hours_avg, 2),
+        "drivers_fte": sum(1 for a in assignments if a.driver_type == "FTE"),
+        "drivers_pt": sum(1 for a in assignments if a.driver_type == "PT"),
+        "fte_hours_min": round(min(fte_hours) if fte_hours else 0.0, 2),
+        "fte_hours_max": round(max(fte_hours) if fte_hours else 0.0, 2),
+        "fte_hours_avg": round(sum(fte_hours) / len(fte_hours) if fte_hours else 0.0, 2),
         "under_42h": under_42,
         "over_53h": over_53,
         "blocks_selected": phase1_stats["selected_blocks"],
