@@ -203,9 +203,10 @@ class MasterLP:
         if debug:
             logger.info(f"LP_SOLVE_DONE: status={status_str}, runtime={runtime:.2f}s")
         
+        hit_time_limit = status_str == "Time limit reached"
         if status_str != "Optimal":
             # If Time Limit reached but we have a solution, we can return it (marked as SUBOPTIMAL/TIMEOUT)
-            is_feasible = status_str == "Time limit reached" 
+            is_feasible = hit_time_limit 
             
             if not is_feasible:
                 # True failure
@@ -215,6 +216,8 @@ class MasterLP:
                     "duals": {},
                     "runtime": runtime,
                     "build_stats": self._build_stats,
+                    "hit_time_limit": hit_time_limit,
+                    "duals_stale": True,
                 }
             else:
                 if debug:
@@ -252,6 +255,8 @@ class MasterLP:
             "primal_values": solution.col_value,
             "artificial_used": artificial_used,
             "build_stats": self._build_stats,
+            "hit_time_limit": hit_time_limit,
+            "duals_stale": hit_time_limit,
         }
 
     def _compute_cost(self, col: ColumnV2, week_category: WeekCategory) -> float:

@@ -8,6 +8,8 @@ Uses lazy duty generation to avoid duty explosion.
 import time
 import logging
 import os
+import json
+import subprocess
 from typing import Optional
 
 from .contracts.result import CoreV2Result, CoreV2Proof
@@ -15,6 +17,12 @@ from .pricing.spprc import SPPRCPricer
 from .duty_factory import DutyFactoryTopK, DutyFactoryCaps
 from .seeder import GreedyWeeklySeeder
 from .adapter import Adapter
+from .guards import (
+    run_post_seed_guards,
+    run_pre_mip_guards,
+    run_post_solve_guards,
+    OutputContractGuard,
+)
 
 logger = logging.getLogger("OptimizerCoreV2")
 
@@ -73,6 +81,7 @@ class OptimizerCoreV2:
         # 0. Initialize Context
         artifacts_dir = config.get("artifacts_dir", ".")
         ctx = RunContext.create(run_id, tours, config, artifacts_dir)
+        os.makedirs(ctx.artifact_dir, exist_ok=True)
         log(f"Starting Core v2 Optimization for {len(tours)} tours. Category: {ctx.manifest.week_category.name}")
         
         start_time = time.time()
@@ -95,6 +104,19 @@ class OptimizerCoreV2:
             "cg_iterations": 0,
             "new_cols_added_total": 0,
         }
+
+        cg_telemetry = {
+            "generated_cols_hist": [],
+            "deduped_cols_hist": [],
+            "kept_cols_hist": [],
+            "unique_ratio_hist": [],
+            "best_rc_hist": [],
+            "duals_stale_hist": [],
+            "lp_time_limit_hist": [],
+            "profile_hist": [],
+            "lp_runtime_hist": [],
+        }
+        stop_reason = ""
         
         try:
             # 1. Group tours by day (NO duty enumeration yet!)
@@ -122,6 +144,50 @@ class OptimizerCoreV2:
             
             ctx.add_timing("seeding", time.time() - t0)
             log(f"Seeded pool with {pool.size} columns (target={target_seeds})")
+            pool_size_after_seed = pool.size
+
+            try:
+                run_post_seed_guards(pool.columns, set([t.tour_id for t in tours]))
+            except AssertionError as exc:
+                log(f"GUARD FAILURE POST-SEED: {exc}", level=logging.ERROR)
+                self._write_run_manifest(
+                    ctx=ctx,
+                    manifest_path=os.path.join(ctx.artifact_dir, "run_manifest.json"),
+                    status="FAIL",
+                    seed=config.get("seed"),
+                    config_snapshot=config,
+                    stop_reason="GUARD_FAIL_POST_SEED",
+                    coverage_exact_once=False,
+                    drivers_total=0,
+                    avg_days_per_driver=0.0,
+                    tours_per_driver=0.0,
+                    fleet_peak=self._compute_fleet_peak(tours),
+                    wall_time=0.0,
+                    lp_times=cg_telemetry["lp_runtime_hist"],
+                    mip_time=0.0,
+                    cg_iters=0,
+                    pool_size_after_seed=pool_size_after_seed,
+                    pool_size_final=pool.size,
+                    added_cols_hist=cg_telemetry["kept_cols_hist"],
+                    profile_hist=cg_telemetry["profile_hist"],
+                    best_rc_hist=cg_telemetry["best_rc_hist"],
+                    duals_stale_hist=cg_telemetry["duals_stale_hist"],
+                    dedupe_hist={
+                        "generated_cols": cg_telemetry["generated_cols_hist"],
+                        "deduped_cols": cg_telemetry["deduped_cols_hist"],
+                        "kept_cols": cg_telemetry["kept_cols_hist"],
+                        "unique_ratio": cg_telemetry["unique_ratio_hist"],
+                    },
+                    repairs_applied=[],
+                )
+                return self._fail_result(
+                    ctx,
+                    "GUARD_FAIL_POST_SEED",
+                    str(exc),
+                    logs,
+                    proof,
+                    telemetry,
+                )
             
             # 4. Column Generation Loop
             all_tour_ids = sorted([t.tour_id for t in tours])
@@ -131,6 +197,9 @@ class OptimizerCoreV2:
             
             max_iter = config.get("max_cg_iterations", 30)
             lp_time_limit = config.get("lp_time_limit", 10.0)
+            lp_time_limit_max = config.get("lp_time_limit_max", 90.0)
+            lp_time_limit_stall_min = config.get("lp_time_limit_stall_min", 45.0)
+            lp_time_limit_threshold = config.get("lp_time_limit_threshold", 20_000)
             max_new_cols = config.get("max_new_cols_per_iter", 1500)
             
             log(f"Starting CG loop (max {max_iter} iterations, LP limit {lp_time_limit}s)")
@@ -151,6 +220,7 @@ class OptimizerCoreV2:
             
             # STATE: Incumbent
             best_incumbent_drivers = 9999
+            stall_count = 0
             
             for iteration in range(1, max_iter + 1):
                 iter_start = time.time()
@@ -159,7 +229,19 @@ class OptimizerCoreV2:
                 # a. Solve Master LP
                 master_lp = MasterLP(pool.columns, all_tour_ids)
                 master_lp.build(ctx.manifest.week_category)
+                if pool.size >= lp_time_limit_threshold and lp_time_limit < lp_time_limit_max:
+                    lp_time_limit = min(lp_time_limit * 2, lp_time_limit_max)
+
                 lp_res = master_lp.solve(time_limit=lp_time_limit)
+                cg_telemetry["lp_time_limit_hist"].append(lp_time_limit)
+                cg_telemetry["lp_runtime_hist"].append(lp_res.get("runtime", 0.0))
+
+                if lp_res.get("duals_stale"):
+                    if lp_time_limit < lp_time_limit_max:
+                        lp_time_limit = min(lp_time_limit * 2, lp_time_limit_max)
+                        lp_res = master_lp.solve(time_limit=lp_time_limit)
+                        cg_telemetry["lp_time_limit_hist"].append(lp_time_limit)
+                        cg_telemetry["lp_runtime_hist"].append(lp_res.get("runtime", 0.0))
                 
                 lp_status = lp_res["status"]
                 lp_obj = lp_res.get("objective", 0.0)
@@ -288,6 +370,22 @@ class OptimizerCoreV2:
                 iter_time = time.time() - iter_start
                 pool_size = pool.size
                 dedupe_rate = 1.0 - (added_count / len(new_cols)) if new_cols else 0.0
+                unique_ratio = (added_count / len(new_cols)) if new_cols else 0.0
+                deduped_count = max(0, len(new_cols) - added_count)
+
+                cg_telemetry["generated_cols_hist"].append(len(new_cols))
+                cg_telemetry["deduped_cols_hist"].append(deduped_count)
+                cg_telemetry["kept_cols_hist"].append(added_count)
+                cg_telemetry["unique_ratio_hist"].append(unique_ratio)
+                cg_telemetry["best_rc_hist"].append(pricer.rc_telemetry.best_rc_total)
+                cg_telemetry["duals_stale_hist"].append(lp_res.get("duals_stale", False))
+
+                if unique_ratio < 0.6 and len(new_cols) > 0:
+                    log(
+                        f"Iter {iteration}: low unique_ratio={unique_ratio:.2f} "
+                        f"(generated={len(new_cols)}, deduped={deduped_count})",
+                        level=logging.WARNING,
+                    )
                 
                 log(
                     f"Iter {iteration}: LP_Obj={lp_obj:.1f} ({lp_status}), "
@@ -297,6 +395,20 @@ class OptimizerCoreV2:
                     f"Incumbent={incumbent_drivers if incumbent_drivers else 'N/A'}, "
                     f"Time={iter_time:.1f}s"
                 )
+
+                # --- f. Stall Detection (duals fresh only) ---
+                best_rc = pricer.rc_telemetry.best_rc_total
+                duals_stale = lp_res.get("duals_stale", False)
+                is_stalled = ((added_count == 0) or (best_rc >= -1e-5)) and not duals_stale
+                if is_stalled:
+                    stall_count += 1
+                else:
+                    stall_count = 0
+
+                profile = "STALL" if stall_count >= 2 else "NORMAL"
+                cg_telemetry["profile_hist"].append(profile)
+                if stall_count >= 2:
+                    lp_time_limit = max(lp_time_limit, lp_time_limit_stall_min)
                 
                 # Checkpoint Manifest
                 iter_log.update({
@@ -349,12 +461,56 @@ class OptimizerCoreV2:
                     break
             
             telemetry["cg_iterations"] = iteration
+            if not stop_reason and iteration >= max_iter:
+                stop_reason = "MAX_ITERS"
             ctx.add_timing("cg_loop", time.time() - cg_start)
             proof.artificial_used_lp = artificial_lp_max
             
             # 5. Final MIP
             t0 = time.time()
             log(f"Starting Final MIP Solve (pool size={pool.size})...")
+            try:
+                run_pre_mip_guards(pool.columns, set(all_tour_ids))
+            except AssertionError as exc:
+                log(f"GUARD FAILURE PRE-MIP: {exc}", level=logging.ERROR)
+                self._write_run_manifest(
+                    ctx=ctx,
+                    manifest_path=os.path.join(ctx.artifact_dir, "run_manifest.json"),
+                    status="FAIL",
+                    seed=config.get("seed"),
+                    config_snapshot=config,
+                    stop_reason="GUARD_FAIL_PRE_MIP",
+                    coverage_exact_once=False,
+                    drivers_total=0,
+                    avg_days_per_driver=0.0,
+                    tours_per_driver=0.0,
+                    fleet_peak=self._compute_fleet_peak(tours),
+                    wall_time=time.time() - start_time,
+                    lp_times=cg_telemetry["lp_runtime_hist"],
+                    mip_time=0.0,
+                    cg_iters=telemetry["cg_iterations"],
+                    pool_size_after_seed=pool_size_after_seed,
+                    pool_size_final=pool.size,
+                    added_cols_hist=cg_telemetry["kept_cols_hist"],
+                    profile_hist=cg_telemetry["profile_hist"],
+                    best_rc_hist=cg_telemetry["best_rc_hist"],
+                    duals_stale_hist=cg_telemetry["duals_stale_hist"],
+                    dedupe_hist={
+                        "generated_cols": cg_telemetry["generated_cols_hist"],
+                        "deduped_cols": cg_telemetry["deduped_cols_hist"],
+                        "kept_cols": cg_telemetry["kept_cols_hist"],
+                        "unique_ratio": cg_telemetry["unique_ratio_hist"],
+                    },
+                    repairs_applied=[],
+                )
+                return self._fail_result(
+                    ctx,
+                    "GUARD_FAIL_PRE_MIP",
+                    str(exc),
+                    logs,
+                    proof,
+                    telemetry,
+                )
             master_mip = MasterMIP(pool.columns, all_tour_ids)
             mip_res = master_mip.solve_lexico(
                 ctx.manifest.week_category,
@@ -383,9 +539,114 @@ class OptimizerCoreV2:
                 proof.covered_tours = len(covered_tours)
                 proof.coverage_pct = (len(covered_tours) / len(all_tour_ids)) * 100 if all_tour_ids else 100.0
                 proof.mip_gap = mip_res.get("mip_gap", 0.0)
+
+                try:
+                    run_post_solve_guards(selected_columns)
+                except AssertionError as exc:
+                    log(f"GUARD FAILURE POST-SOLVE: {exc}", level=logging.ERROR)
+                    self._write_run_manifest(
+                        ctx=ctx,
+                        manifest_path=os.path.join(ctx.artifact_dir, "run_manifest.json"),
+                        status="FAIL",
+                        seed=config.get("seed"),
+                        config_snapshot=config,
+                        stop_reason="GUARD_FAIL_POST_SOLVE",
+                        coverage_exact_once=False,
+                        drivers_total=0,
+                        avg_days_per_driver=0.0,
+                        tours_per_driver=0.0,
+                        fleet_peak=self._compute_fleet_peak(tours),
+                        wall_time=time.time() - start_time,
+                        lp_times=cg_telemetry["lp_runtime_hist"],
+                        mip_time=ctx.timings.get("final_mip", 0.0),
+                        cg_iters=telemetry["cg_iterations"],
+                        pool_size_after_seed=pool_size_after_seed,
+                        pool_size_final=pool.size,
+                        added_cols_hist=cg_telemetry["kept_cols_hist"],
+                        profile_hist=cg_telemetry["profile_hist"],
+                        best_rc_hist=cg_telemetry["best_rc_hist"],
+                        duals_stale_hist=cg_telemetry["duals_stale_hist"],
+                        dedupe_hist={
+                            "generated_cols": cg_telemetry["generated_cols_hist"],
+                            "deduped_cols": cg_telemetry["deduped_cols_hist"],
+                            "kept_cols": cg_telemetry["kept_cols_hist"],
+                            "unique_ratio": cg_telemetry["unique_ratio_hist"],
+                        },
+                        repairs_applied=[],
+                    )
+                    return self._fail_result(
+                        ctx,
+                        "GUARD_FAIL_POST_SOLVE",
+                        str(exc),
+                        logs,
+                        proof,
+                        telemetry,
+                    )
                 
                 solution = self._columns_to_assignments(selected_columns)
-                kpis = self._build_kpis(solution, total_time, mip_res["objective"], telemetry, converged, pool)
+                kpis = self._build_kpis(
+                    solution,
+                    selected_columns,
+                    total_time,
+                    mip_res["objective"],
+                    telemetry,
+                    converged,
+                    pool,
+                )
+
+                coverage_exact_once = self._check_exact_once(selected_columns, all_tour_ids)
+                avg_days_per_driver = (
+                    sum(c.days_worked for c in selected_columns) / len(selected_columns)
+                    if selected_columns
+                    else 0.0
+                )
+                tours_per_driver = (
+                    sum(len(c.covered_tour_ids) for c in selected_columns) / len(selected_columns)
+                    if selected_columns
+                    else 0.0
+                )
+                fleet_peak = self._compute_fleet_peak(tours)
+
+                manifest_path = os.path.join(ctx.artifact_dir, "run_manifest.json")
+                roster_path = os.path.join(ctx.artifact_dir, "roster.csv")
+                self._export_roster_csv(selected_columns, roster_path)
+                self._write_run_manifest(
+                    ctx=ctx,
+                    manifest_path=manifest_path,
+                    status="SUCCESS",
+                    seed=config.get("seed"),
+                    config_snapshot=config,
+                    stop_reason=stop_reason or "SUCCESS",
+                    coverage_exact_once=coverage_exact_once,
+                    drivers_total=len(selected_columns),
+                    avg_days_per_driver=avg_days_per_driver,
+                    tours_per_driver=tours_per_driver,
+                    fleet_peak=fleet_peak,
+                    wall_time=total_time,
+                    lp_times=cg_telemetry["lp_runtime_hist"],
+                    mip_time=ctx.timings.get("final_mip", 0.0),
+                    cg_iters=telemetry["cg_iterations"],
+                    pool_size_after_seed=pool_size_after_seed,
+                    pool_size_final=pool.size,
+                    added_cols_hist=cg_telemetry["kept_cols_hist"],
+                    profile_hist=cg_telemetry["profile_hist"],
+                    best_rc_hist=cg_telemetry["best_rc_hist"],
+                    duals_stale_hist=cg_telemetry["duals_stale_hist"],
+                    dedupe_hist={
+                        "generated_cols": cg_telemetry["generated_cols_hist"],
+                        "deduped_cols": cg_telemetry["deduped_cols_hist"],
+                        "kept_cols": cg_telemetry["kept_cols_hist"],
+                        "unique_ratio": cg_telemetry["unique_ratio_hist"],
+                    },
+                    repairs_applied=[],
+                )
+
+                OutputContractGuard.validate(
+                    manifest_path,
+                    roster_path,
+                    expected_tour_ids=set(all_tour_ids),
+                    strict=True,
+                )
                 
                 return CoreV2Result(
                     status="SUCCESS",
@@ -402,12 +663,72 @@ class OptimizerCoreV2:
                     _debug_columns=selected_columns,
                 )
             else:
+                self._write_run_manifest(
+                    ctx=ctx,
+                    manifest_path=os.path.join(ctx.artifact_dir, "run_manifest.json"),
+                    status="FAIL",
+                    seed=config.get("seed"),
+                    config_snapshot=config,
+                    stop_reason=mip_res["status"],
+                    coverage_exact_once=False,
+                    drivers_total=0,
+                    avg_days_per_driver=0.0,
+                    tours_per_driver=0.0,
+                    fleet_peak=self._compute_fleet_peak(tours),
+                    wall_time=total_time,
+                    lp_times=cg_telemetry["lp_runtime_hist"],
+                    mip_time=ctx.timings.get("final_mip", 0.0),
+                    cg_iters=telemetry["cg_iterations"],
+                    pool_size_after_seed=pool_size_after_seed,
+                    pool_size_final=pool.size,
+                    added_cols_hist=cg_telemetry["kept_cols_hist"],
+                    profile_hist=cg_telemetry["profile_hist"],
+                    best_rc_hist=cg_telemetry["best_rc_hist"],
+                    duals_stale_hist=cg_telemetry["duals_stale_hist"],
+                    dedupe_hist={
+                        "generated_cols": cg_telemetry["generated_cols_hist"],
+                        "deduped_cols": cg_telemetry["deduped_cols_hist"],
+                        "kept_cols": cg_telemetry["kept_cols_hist"],
+                        "unique_ratio": cg_telemetry["unique_ratio_hist"],
+                    },
+                    repairs_applied=[],
+                )
                 return self._fail_result(ctx, "MIP_FAILED", mip_res["status"], logs, proof, telemetry)
                 
         except Exception as e:
             import traceback
             tb = traceback.format_exc()
             log(f"EXCEPTION: {e}\n{tb}", level=logging.ERROR)
+            self._write_run_manifest(
+                ctx=ctx,
+                manifest_path=os.path.join(ctx.artifact_dir, "run_manifest.json"),
+                status="FAIL",
+                seed=config.get("seed"),
+                config_snapshot=config,
+                stop_reason="EXCEPTION",
+                coverage_exact_once=False,
+                drivers_total=0,
+                avg_days_per_driver=0.0,
+                tours_per_driver=0.0,
+                fleet_peak=self._compute_fleet_peak(tours),
+                wall_time=0.0,
+                lp_times=cg_telemetry["lp_runtime_hist"],
+                mip_time=ctx.timings.get("final_mip", 0.0),
+                cg_iters=telemetry.get("cg_iterations", 0),
+                pool_size_after_seed=pool_size_after_seed if "pool_size_after_seed" in locals() else 0,
+                pool_size_final=pool.size if "pool" in locals() else 0,
+                added_cols_hist=cg_telemetry["kept_cols_hist"],
+                profile_hist=cg_telemetry["profile_hist"],
+                best_rc_hist=cg_telemetry["best_rc_hist"],
+                duals_stale_hist=cg_telemetry["duals_stale_hist"],
+                dedupe_hist={
+                    "generated_cols": cg_telemetry["generated_cols_hist"],
+                    "deduped_cols": cg_telemetry["deduped_cols_hist"],
+                    "kept_cols": cg_telemetry["kept_cols_hist"],
+                    "unique_ratio": cg_telemetry["unique_ratio_hist"],
+                },
+                repairs_applied=[],
+            )
             return self._fail_result(ctx, "EXCEPTION", str(e), logs, proof, telemetry)
 
     def _fail_result(self, ctx, code, msg, logs, proof, telemetry):
@@ -426,7 +747,7 @@ class OptimizerCoreV2:
             logs=logs,
         )
 
-    def _build_kpis(self, solution, total_time, mip_obj, telemetry, converged, pool):
+    def _build_kpis(self, solution, selected_columns, total_time, mip_obj, telemetry, converged, pool):
         """Helper to build KPI dict."""
         fte_drivers = [a for a in solution if a.driver_type == "FTE"]
         pt_drivers = [a for a in solution if a.driver_type == "PT"]
@@ -444,6 +765,17 @@ class OptimizerCoreV2:
         for c in pool.columns:
             d = c.days_worked
             pool_days_hist[d] = pool_days_hist.get(d, 0) + 1
+
+        avg_days_per_driver = (
+            sum(c.days_worked for c in selected_columns) / len(selected_columns)
+            if selected_columns
+            else 0.0
+        )
+        tours_per_driver = (
+            sum(len(c.covered_tour_ids) for c in selected_columns) / len(selected_columns)
+            if selected_columns
+            else 0.0
+        )
         
         return {
             "total_time": total_time,
@@ -458,6 +790,8 @@ class OptimizerCoreV2:
             "pct_under_30": (sum(1 for h in all_hours if h < 30) / len(all_hours) * 100) if all_hours else 0,
             "pct_under_20": (sum(1 for h in all_hours if h < 20) / len(all_hours) * 100) if all_hours else 0,
             "avg_hours": sum(all_hours) / len(all_hours) if all_hours else 0,
+            "avg_days_per_driver": avg_days_per_driver,
+            "tours_per_driver": tours_per_driver,
             "pool_final_size": pool.size,
             "selected_days_worked_hist": dict(sorted(selected_days_hist.items())),
             "pool_days_worked_hist": dict(sorted(pool_days_hist.items())),
@@ -465,6 +799,129 @@ class OptimizerCoreV2:
             "new_cols_added_total": telemetry["new_cols_added_total"],
             "converged": converged,
         }
+
+    @staticmethod
+    def _check_exact_once(columns: list, all_tour_ids: list[str]) -> bool:
+        counts = {tid: 0 for tid in all_tour_ids}
+        for col in columns:
+            for tid in col.covered_tour_ids:
+                if tid in counts:
+                    counts[tid] += 1
+        return all(count == 1 for count in counts.values())
+
+    @staticmethod
+    def _get_git_sha() -> str:
+        try:
+            result = subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            return result.stdout.strip()
+        except Exception:
+            return "unknown"
+
+    @staticmethod
+    def _export_roster_csv(columns: list, filepath: str) -> None:
+        with open(filepath, "w", encoding="utf-8") as handle:
+            handle.write("driver_id,day,duty_start,duty_end,tour_ids,hours\n")
+            for i, col in enumerate(columns):
+                driver_type = "FTE" if col.hours >= 40.0 else "PT"
+                driver_id = f"D_{driver_type}{i+1:03d}"
+                for duty in col.duties:
+                    handle.write(
+                        f"{driver_id},{duty.day},{duty.start_min},{duty.end_min},"
+                        f"{'|'.join(duty.tour_ids)},{col.hours:.1f}\n"
+                    )
+
+    @staticmethod
+    def _percentile(values: list[float], percentile: float) -> float:
+        if not values:
+            return 0.0
+        values_sorted = sorted(values)
+        idx = int(round((len(values_sorted) - 1) * percentile))
+        return values_sorted[min(max(idx, 0), len(values_sorted) - 1)]
+
+    def _write_run_manifest(
+        self,
+        ctx: RunContext,
+        manifest_path: str,
+        status: str,
+        seed: Optional[int],
+        config_snapshot: dict,
+        stop_reason: str,
+        coverage_exact_once: bool,
+        drivers_total: int,
+        avg_days_per_driver: float,
+        tours_per_driver: float,
+        fleet_peak: int,
+        wall_time: float,
+        lp_times: list[float],
+        mip_time: float,
+        cg_iters: int,
+        pool_size_after_seed: int,
+        pool_size_final: int,
+        added_cols_hist: list[int],
+        profile_hist: list[str],
+        best_rc_hist: list[float],
+        duals_stale_hist: list[bool],
+        dedupe_hist: dict,
+        repairs_applied: list,
+    ) -> None:
+        manifest = {
+            "run_id": ctx.manifest.run_id,
+            "git_sha": self._get_git_sha(),
+            "seed": seed,
+            "profile": "core_v2",
+            "status": status,
+            "stop_reason": stop_reason,
+            "config_snapshot": config_snapshot,
+            "kpis": {
+                "coverage_exact_once": coverage_exact_once,
+                "drivers_total": drivers_total,
+                "avg_days_per_driver": round(avg_days_per_driver, 3),
+                "tours_per_driver": round(tours_per_driver, 3),
+                "fleet_peak": fleet_peak,
+            },
+            "timing": {
+                "wall_time_sec": round(wall_time, 3),
+                "lp_time_sec_p50": round(self._percentile(lp_times, 0.5), 3),
+                "lp_time_sec_p95": round(self._percentile(lp_times, 0.95), 3),
+                "mip_time_sec": round(mip_time, 3),
+            },
+            "cg": {
+                "iters_done": cg_iters,
+                "pool_size_after_seed": pool_size_after_seed,
+                "pool_size_final": pool_size_final,
+                "added_cols_hist": added_cols_hist,
+            },
+            "pricing": {
+                "profile_hist": profile_hist,
+                "best_rc_hist": best_rc_hist,
+                "duals_stale_hist": duals_stale_hist,
+            },
+            "telemetry": {
+                "dedupe": dedupe_hist,
+            },
+            "repairs_applied": repairs_applied,
+        }
+
+        with open(manifest_path, "w", encoding="utf-8") as handle:
+            json.dump(manifest, handle, indent=2, default=str)
+
+    @staticmethod
+    def _compute_fleet_peak(tours: list) -> int:
+        try:
+            from fleet_counter import compute_fleet_peaks
+        except Exception:
+            return 0
+
+        try:
+            summary = compute_fleet_peaks(tours, turnaround_minutes=5)
+            return summary.global_peak_count
+        except Exception:
+            return 0
     
     def _columns_to_assignments(self, columns: list) -> list:
         """Convert ColumnV2 list to DriverAssignment list (v1-compatible)."""
