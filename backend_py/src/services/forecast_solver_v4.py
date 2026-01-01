@@ -1950,35 +1950,11 @@ def _solve_capacity_single_cap(
     # Total budget from config or override
     total_budget = time_limit if time_limit is not None else config.time_limit_phase1
     
-    # v5: Two-Pass budget split: 40% Pass 1 (Capacity), 60% Pass 2 (Quality/Lexicographic)
-    pass1_budget = total_budget * 0.40
-    pass2_budget = total_budget * 0.60
+    # v5: Two-Pass budget split: favor quality lexicographic stages with a hard floor for pass1
+    pass1_budget = max(total_budget * 0.30, 8.0)
+    pass2_budget = max(0.0, total_budget - pass1_budget)
     
-    # Pass 2 stage budgets (split among 5 lexicographic stages)
-    # Split: 30% stage1, 30% stage2, 20% stage3, 10% stage4, 10% stage5
-    stage_weights = {1: 0.30, 2: 0.30, 3: 0.20, 4: 0.10, 5: 0.10}
-    stage_budgets = {stage: pass2_budget * weight for stage, weight in stage_weights.items()}
-    min_stage_budget = min(3.0, pass2_budget * 0.2)
-    for stage, budget in stage_budgets.items():
-        if budget < min_stage_budget:
-            stage_budgets[stage] = min_stage_budget
-    budget_over = sum(stage_budgets.values()) - pass2_budget
-    if budget_over > 0:
-        for stage in sorted(stage_budgets, key=stage_budgets.get, reverse=True):
-            if budget_over <= 0:
-                break
-            available = stage_budgets[stage] - min_stage_budget
-            if available <= 0:
-                continue
-            reduce_by = min(available, budget_over)
-            stage_budgets[stage] -= reduce_by
-            budget_over -= reduce_by
-    
-    safe_print(f"  TWO-PASS BUDGET (total={total_budget:.1f}s):", flush=True)
-    safe_print(f"    Pass 1 (Capacity): {pass1_budget:.1f}s", flush=True)
-    safe_print(f"    Pass 2 (Quality):  {pass2_budget:.1f}s", flush=True)
-    for st, bud in stage_budgets.items():
-        safe_print(f"      Stage {st}: {bud:.1f}s", flush=True)
+    stage_budgets = {}
     
     # Lexicographic status tracking
     lexiko_stage_status = {}
@@ -2005,6 +1981,14 @@ def _solve_capacity_single_cap(
     # PHASE-1 STATUS CONTRACT: Track best_so_far to avoid UNKNOWN escaping Phase-1
     best_so_far_solver = None    # Solver instance with values we can extract
     
+    if status_pass1 == cp_model.UNKNOWN and pass2_budget > 1.0:
+        retry_budget = min(4.0, pass2_budget)
+        safe_print(f"  PASS 1 RETRY: UNKNOWN -> retrying with +{retry_budget:.1f}s", flush=True)
+        solver_pass1.parameters.max_time_in_seconds = pass1_budget + retry_budget
+        status_pass1 = solver_pass1.Solve(model)
+        pass1_budget += retry_budget
+        pass2_budget = max(0.0, total_budget - pass1_budget)
+
     if status_pass1 == cp_model.OPTIMAL:
         safe_print(f"  PASS 1: OPTIMAL", flush=True)
         pass1_is_optimal = True
@@ -2016,6 +2000,32 @@ def _solve_capacity_single_cap(
     else:
         safe_print(f"  PASS 1 FAILED: {status_str(status_pass1)} (NO SOLUTION AVAILABLE)", flush=True)
         return None  # Only return None if we have NO solution at all
+
+    # Pass 2 stage budgets (split among 5 lexicographic stages)
+    # Split: 25% stage1, 40% stage2, 15% stage3, 20% stage4, 0% stage5 (min budget applies)
+    stage_weights = {1: 0.25, 2: 0.40, 3: 0.15, 4: 0.20, 5: 0.0}
+    stage_budgets = {stage: pass2_budget * weight for stage, weight in stage_weights.items()}
+    min_stage_budget = min(1.5, pass2_budget * 0.05) if pass2_budget > 0 else 0.0
+    for stage, budget in stage_budgets.items():
+        if budget < min_stage_budget:
+            stage_budgets[stage] = min_stage_budget
+    budget_over = sum(stage_budgets.values()) - pass2_budget
+    if budget_over > 0:
+        for stage in sorted(stage_budgets, key=stage_budgets.get, reverse=True):
+            if budget_over <= 0:
+                break
+            available = stage_budgets[stage] - min_stage_budget
+            if available <= 0:
+                continue
+            reduce_by = min(available, budget_over)
+            stage_budgets[stage] -= reduce_by
+            budget_over -= reduce_by
+
+    safe_print(f"  TWO-PASS BUDGET (total={total_budget:.1f}s):", flush=True)
+    safe_print(f"    Pass 1 (Capacity): {pass1_budget:.1f}s", flush=True)
+    safe_print(f"    Pass 2 (Quality):  {pass2_budget:.1f}s", flush=True)
+    for st, bud in stage_budgets.items():
+        safe_print(f"      Stage {st}: {bud:.1f}s", flush=True)
     
     headcount_pass1 = int(solver_pass1.Value(max_day))
     safe_print(f"  PASS 1 RESULT: headcount = {headcount_pass1} blocks/peak-day", flush=True)
@@ -2041,6 +2051,9 @@ def _solve_capacity_single_cap(
         model.AddHint(use[b_idx], int(solver_pass1.Value(use[b_idx])))
     safe_print(f"  HINTS: Cleared and reset from Pass 1 solution", flush=True)
     
+    # Track pass2 time for retries
+    pass2_start_time = perf_counter()
+
     # =========================================================================
     # v5 PASS 2: QUALITY OPTIMIZATION (LEXICOGRAPHIC STAGES)
     # =========================================================================
@@ -2064,6 +2077,14 @@ def _solve_capacity_single_cap(
     solver_s1.parameters.random_seed = config.seed
     
     status_s1 = solver_s1.Solve(model)
+    if status_s1 == cp_model.UNKNOWN:
+        elapsed_pass2 = perf_counter() - pass2_start_time
+        remaining_pass2 = max(0.0, pass2_budget - elapsed_pass2)
+        retry_budget = min(stage_budgets[1], remaining_pass2 * 0.5)
+        if retry_budget >= 1.0:
+            safe_print(f"  STAGE 1 RETRY: UNKNOWN -> retrying with +{retry_budget:.1f}s", flush=True)
+            solver_s1.parameters.max_time_in_seconds = stage_budgets[1] + retry_budget
+            status_s1 = solver_s1.Solve(model)
     
     # K2: Status handling - distinguish OPTIMAL vs FEASIBLE (Edit 1: use status_str)
     # PHASE-1 STATUS CONTRACT: Stage failures use fallback, UNKNOWN never escapes
@@ -2119,6 +2140,14 @@ def _solve_capacity_single_cap(
     solver_s2.parameters.random_seed = config.seed
     
     status_s2 = solver_s2.Solve(model)
+    if status_s2 == cp_model.UNKNOWN:
+        elapsed_pass2 = perf_counter() - pass2_start_time
+        remaining_pass2 = max(0.0, pass2_budget - elapsed_pass2)
+        retry_budget = min(stage_budgets[2], remaining_pass2 * 0.5)
+        if retry_budget >= 1.0:
+            safe_print(f"  STAGE 2 RETRY: UNKNOWN -> retrying with +{retry_budget:.1f}s", flush=True)
+            solver_s2.parameters.max_time_in_seconds = stage_budgets[2] + retry_budget
+            status_s2 = solver_s2.Solve(model)
     
     # PHASE-1 STATUS CONTRACT: Stage 2 failures use fallback
     if status_s2 == cp_model.OPTIMAL:
@@ -2233,6 +2262,14 @@ def _solve_capacity_single_cap(
     solver_s3.parameters.random_seed = config.seed
     
     status_s3 = solver_s3.Solve(model)
+    if status_s3 == cp_model.UNKNOWN:
+        elapsed_pass2 = perf_counter() - pass2_start_time
+        remaining_pass2 = max(0.0, pass2_budget - elapsed_pass2)
+        retry_budget = min(stage_budgets[3], remaining_pass2 * 0.5)
+        if retry_budget >= 1.0:
+            safe_print(f"  STAGE 3 RETRY: UNKNOWN -> retrying with +{retry_budget:.1f}s", flush=True)
+            solver_s3.parameters.max_time_in_seconds = stage_budgets[3] + retry_budget
+            status_s3 = solver_s3.Solve(model)
     
     # PHASE-1 STATUS CONTRACT: Stage 3 failures use fallback
     if status_s3 == cp_model.OPTIMAL:
@@ -2248,27 +2285,21 @@ def _solve_capacity_single_cap(
     else:
         safe_print(f"  STAGE 3 FAILED: {status_str(status_s3)} (using Stage 2 fallback)", flush=True)
         lexiko_stage_status[3] = status_str(status_s3)
-        # PHASE-1 STATUS CONTRACT: Use best_so_far instead of returning None
-        if best_so_far_solver is not None:
-            selected = [blocks[b] for b in range(len(blocks)) if best_so_far_solver.Value(use[b]) == 1]
-            safe_print(f"  FALLBACK: Using Stage 2 solution ({len(selected)} blocks)", flush=True)
-            return _build_phase1_result_from_solution(
-                selected, blocks, tours, block_index, block_props, block_scores, t0,
-                avail_1er, avail_2er_reg, avail_2er_split, avail_3er, tour_has_multi,
-                fallback_stage="Stage 2",
-                lexiko_stage_status=lexiko_stage_status,
-                lexiko_completed_stages=lexiko_completed_stages,
-            )
-        return None  # Only if no solution at all
+        if best_so_far_solver is None:
+            return None  # Only if no solution at all
+        best_count_2er_split = best_so_far_solver.Value(count_2er_split)
+        safe_print(f"  FALLBACK: Locking count_2er_split >= {int(best_count_2er_split)}", flush=True)
+        model.Add(count_2er_split >= int(best_count_2er_split))
+        reset_hints_from_solver(model, use, best_so_far_solver)
+        stage3_solution = [best_so_far_solver.Value(use[b]) for b in range(len(blocks))]
+    if status_s3 in (cp_model.OPTIMAL, cp_model.FEASIBLE):
+        best_count_2er_split = solver_s3.Value(count_2er_split)
+        safe_print(f"  STAGE 3 RESULT: count_2er_split = {int(best_count_2er_split)}", flush=True)
+        model.Add(count_2er_split == int(best_count_2er_split))
+        reset_hints_from_solver(model, use, solver_s3)
+        stage3_solution = [solver_s3.Value(use[b]) for b in range(len(blocks))]
     
-    best_count_2er_split = solver_s3.Value(count_2er_split)
-    safe_print(f"  STAGE 3 RESULT: count_2er_split = {int(best_count_2er_split)}", flush=True)
-    
-    # Fix count_2er_split
-    model.Add(count_2er_split == int(best_count_2er_split))
-    
-    # K3: Hints for Stage 4 (using helper to prevent duplicates)
-    reset_hints_from_solver(model, use, solver_s3)
+    # stage3_solution used for fallback when Stage 4 fails
     
     # =========================================================================
     # STAGE 4: MINIMIZE count_1er (with all multi-counts fixed)
@@ -2277,11 +2308,22 @@ def _solve_capacity_single_cap(
     model.Minimize(count_1er * W_PRIO_STAGE + total_chain_penalty)
     
     solver_s4 = cp_model.CpSolver()
-    solver_s4.parameters.max_time_in_seconds = stage_budgets[4]
+    stage4_budget = stage_budgets[4]
+    if status_s3 not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
+        stage4_budget += stage_budgets[3]
+    solver_s4.parameters.max_time_in_seconds = stage4_budget
     solver_s4.parameters.num_search_workers = 1
     solver_s4.parameters.random_seed = config.seed
     
     status_s4 = solver_s4.Solve(model)
+    if status_s4 == cp_model.UNKNOWN:
+        elapsed_pass2 = perf_counter() - pass2_start_time
+        remaining_pass2 = max(0.0, pass2_budget - elapsed_pass2)
+        retry_budget = min(stage_budgets[4], remaining_pass2 * 0.5)
+        if retry_budget >= 1.0:
+            safe_print(f"  STAGE 4 RETRY: UNKNOWN -> retrying with +{retry_budget:.1f}s", flush=True)
+            solver_s4.parameters.max_time_in_seconds = stage4_budget + retry_budget
+            status_s4 = solver_s4.Solve(model)
     
     if status_s4 == cp_model.OPTIMAL:
         safe_print(f"  STAGE 4: OPTIMAL", flush=True)
@@ -2293,7 +2335,16 @@ def _solve_capacity_single_cap(
         lexiko_completed_stages = max(lexiko_completed_stages, 4)
     elif status_s4 == cp_model.UNKNOWN:
         safe_print(f"  STAGE 4: UNKNOWN (using Stage 3 fallback)", flush=True)
-        lexiko_stage_status[4] = status_str(status_s4)
+        lexiko_stage_status[4] = "FEASIBLE_FALLBACK"
+        lexiko_completed_stages = max(lexiko_completed_stages, 4)
+        selected = [blocks[b] for b in range(len(blocks)) if stage3_solution[b] == 1]
+        return _build_phase1_result_from_solution(
+            selected, blocks, tours, block_index, block_props, block_scores, t0,
+            avail_1er, avail_2er_reg, avail_2er_split, avail_3er, tour_has_multi,
+            fallback_stage="Stage 4",
+            lexiko_stage_status=lexiko_stage_status,
+            lexiko_completed_stages=lexiko_completed_stages,
+        )
     else:
         safe_print(f"  STAGE 4 FAILED: {status_str(status_s4)}", flush=True)
         lexiko_stage_status[4] = status_str(status_s4)
@@ -2318,17 +2369,27 @@ def _solve_capacity_single_cap(
         # K3: Hints for Stage 5 (using helper to prevent duplicates)
         reset_hints_from_solver(model, use, solver_s4)
     else:
-        best_count_1er = solver_s3.Value(count_1er)
+        fallback_solver = best_so_far_solver if best_so_far_solver is not None else solver_s3
+        best_count_1er = fallback_solver.Value(count_1er)
         safe_print(f"  STAGE 4 FALLBACK RESULT: count_1er = {int(best_count_1er)}", flush=True)
 
-        # Fix count_1er for stage 5 using Stage 3 value
+        # Fix count_1er for stage 5 using fallback value
         model.Add(count_1er <= int(best_count_1er))
 
         # Use Stage 3 solution as fallback
-        stage4_solution = [solver_s3.Value(use[b]) for b in range(len(blocks))]
+        stage4_solution = stage3_solution
 
-        # Hints for Stage 5 based on Stage 3 solution
-        reset_hints_from_solver(model, use, solver_s3)
+        # Hints for Stage 5 based on fallback solution
+        reset_hints_from_solver(model, use, fallback_solver)
+        # Stage 4 did not reach FEASIBLE/OPTIMAL; skip Stage 5 to preserve fallback
+        selected = [blocks[b] for b in range(len(blocks)) if stage4_solution[b] == 1]
+        return _build_phase1_result_from_solution(
+            selected, blocks, tours, block_index, block_props, block_scores, t0,
+            avail_1er, avail_2er_reg, avail_2er_split, avail_3er, tour_has_multi,
+            fallback_stage="Stage 4",
+            lexiko_stage_status=lexiko_stage_status,
+            lexiko_completed_stages=lexiko_completed_stages,
+        )
     
     # =========================================================================
     # STAGE 5: SECONDARY OPTIMIZATION under fixed packing
@@ -3490,6 +3551,8 @@ def solve_forecast_v4(
         "block_mix": block_mix,
         "template_match_count": phase1_stats.get("template_match_count", 0),
         "split_2er_count": split_2er_count,
+        "lexiko_completed_stages": phase1_stats.get("lexiko_completed_stages", 0),
+        "lexiko_stage_status": phase1_stats.get("lexiko_stage_status", {}),
     }
 
     # Fleet Counter (mandatory)
@@ -3507,6 +3570,9 @@ def solve_forecast_v4(
             f"Fleet Counter: Peak {fleet_summary.global_peak_count} vehicles "
             f"@ {fleet_summary.global_peak_day.value} {fleet_summary.global_peak_time.strftime('%H:%M')}"
         )
+        logger.info("Fleet Counter: Per-day peaks")
+        for day, peak in fleet_summary.day_peaks.items():
+            logger.info(f"  {day.value}: {peak.peak_count} @ {peak.peak_time.strftime('%H:%M')}")
     except Exception as fleet_err:
         logger.warning(f"Fleet counter error: {fleet_err}")
         kpi["fleet_peak_count"] = 0

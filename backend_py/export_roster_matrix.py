@@ -240,10 +240,12 @@ def main():
                     tour_coverage[tour.id] += 1
     uncovered = [tid for tid, count in tour_coverage.items() if count == 0]
     overcovered = [tid for tid, count in tour_coverage.items() if count > 1]
+    covered_once = [tid for tid, count in tour_coverage.items() if count == 1]
     coverage_exact_once = len(uncovered) == 0 and len(overcovered) == 0
     kpi["coverage_exact_once"] = coverage_exact_once
     kpi["coverage_zero_count"] = len(uncovered)
     kpi["coverage_multi_count"] = len(overcovered)
+    kpi["tours_covered_once"] = len(covered_once)
 
     # ======================================================================
     # RUN MANIFEST (Single-Source KPIs)
@@ -256,8 +258,9 @@ def main():
         "seed": args.seed,
         "coverage": {
             "exact_once": coverage_exact_once,
-            "zero_count": len(uncovered),
-            "multi_count": len(overcovered),
+            "tours_covered_once": len(covered_once),
+            "tours_uncovered": len(uncovered),
+            "tours_overcovered": len(overcovered),
         },
         "kpis": kpi,
     }
