@@ -3,6 +3,7 @@ Run KW51 Forecast (Mon, Tue, Wed, Fri only - Thu is Feiertag, Sat no data)
 With Contract-Based FTE/PT Classification (v7.3.0)
 """
 import sys
+import hashlib
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
@@ -16,6 +17,13 @@ parser = argparse.ArgumentParser(description="Run KW51 Forecast")
 parser.add_argument("--time-budget", type=float, default=120, help="Solver time budget")
 parser.add_argument("--fte-pool-size", type=int, default=176, help="Contract FTE pool size")
 args = parser.parse_args()
+
+
+def build_coverage_hash(tour_coverage: dict) -> str:
+    digest = hashlib.sha256()
+    for tour_id in sorted(tour_coverage.keys()):
+        digest.update(f"{tour_id}:{tour_coverage[tour_id]}|".encode("utf-8"))
+    return digest.hexdigest()
 
 # Use the filtered forecast
 csv_path = Path(__file__).parent.parent / "forecast_kw51_filtered.csv"
@@ -62,6 +70,17 @@ result = run_portfolio(tours, time_budget=args.time_budget, seed=42)
 solution = result.solution
 kpi = solution.kpi
 assignments = solution.assignments
+
+fleet_peak_by_day = {
+    day.value: {"peak": peak.peak_count, "at": peak.peak_time.strftime("%H:%M")}
+    for day, peak in fleet.day_peaks.items()
+}
+kpi.setdefault("fleet_peak_count", fleet.global_peak_count)
+kpi.setdefault("fleet_peak_day", fleet.global_peak_day.value)
+kpi.setdefault("fleet_peak_time", fleet.global_peak_time.strftime("%H:%M"))
+kpi.setdefault("fleet_peak_global", fleet.global_peak_count)
+kpi.setdefault("fleet_peak_by_day", fleet_peak_by_day)
+kpi.setdefault("fleet_peak_computed_from", "tour_interval_concurrency")
 
 # ==========================================================================
 # CONTRACT-BASED FTE/PT CLASSIFICATION (v7.3.0)
@@ -147,10 +166,22 @@ uncovered = [tid for tid, count in tour_coverage.items() if count == 0]
 overcovered = [tid for tid, count in tour_coverage.items() if count > 1]
 covered_once = [tid for tid, count in tour_coverage.items() if count == 1]
 coverage_exact_once = len(uncovered) == 0 and len(overcovered) == 0
+coverage_hash = build_coverage_hash(tour_coverage)
+tours_total = len(tours)
 kpi["coverage_exact_once"] = coverage_exact_once
 kpi["coverage_zero_count"] = len(uncovered)
 kpi["coverage_multi_count"] = len(overcovered)
 kpi["tours_covered_once"] = len(covered_once)
+kpi["tours_total"] = tours_total
+kpi["tours_uncovered"] = len(uncovered)
+kpi["tours_overcovered"] = len(overcovered)
+kpi["coverage_hash"] = coverage_hash
+
+print("\nCoverage Audit (Tour-Level Exact-Once):")
+print(f"  tours_total={tours_total}")
+print(f"  tours_uncovered={len(uncovered)}")
+print(f"  tours_overcovered={len(overcovered)}")
+print(f"  coverage_hash={coverage_hash}")
 
 # Run manifest
 import json
@@ -163,9 +194,11 @@ manifest = {
     "seed": 42,
     "coverage": {
         "exact_once": coverage_exact_once,
+        "tours_total": tours_total,
         "tours_covered_once": len(covered_once),
         "tours_uncovered": len(uncovered),
         "tours_overcovered": len(overcovered),
+        "coverage_hash": coverage_hash,
     },
     "kpis": kpi,
 }

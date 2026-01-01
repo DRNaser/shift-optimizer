@@ -1,5 +1,6 @@
 import csv
 import json
+import hashlib
 from datetime import datetime
 import sys
 from pathlib import Path
@@ -21,6 +22,13 @@ except ImportError:
 
 def format_time(t):
     return f"{t.hour:02d}:{t.minute:02d}"
+
+
+def build_coverage_hash(tour_coverage: dict) -> str:
+    digest = hashlib.sha256()
+    for tour_id in sorted(tour_coverage.keys()):
+        digest.update(f"{tour_id}:{tour_coverage[tour_id]}|".encode("utf-8"))
+    return digest.hexdigest()
 
 def main():
     import argparse
@@ -242,10 +250,16 @@ def main():
     overcovered = [tid for tid, count in tour_coverage.items() if count > 1]
     covered_once = [tid for tid, count in tour_coverage.items() if count == 1]
     coverage_exact_once = len(uncovered) == 0 and len(overcovered) == 0
+    coverage_hash = build_coverage_hash(tour_coverage)
+    tours_total = len(tours)
     kpi["coverage_exact_once"] = coverage_exact_once
     kpi["coverage_zero_count"] = len(uncovered)
     kpi["coverage_multi_count"] = len(overcovered)
     kpi["tours_covered_once"] = len(covered_once)
+    kpi["tours_total"] = tours_total
+    kpi["tours_uncovered"] = len(uncovered)
+    kpi["tours_overcovered"] = len(overcovered)
+    kpi["coverage_hash"] = coverage_hash
 
     # ======================================================================
     # RUN MANIFEST (Single-Source KPIs)
@@ -258,9 +272,11 @@ def main():
         "seed": args.seed,
         "coverage": {
             "exact_once": coverage_exact_once,
+            "tours_total": tours_total,
             "tours_covered_once": len(covered_once),
             "tours_uncovered": len(uncovered),
             "tours_overcovered": len(overcovered),
+            "coverage_hash": coverage_hash,
         },
         "kpis": kpi,
     }
