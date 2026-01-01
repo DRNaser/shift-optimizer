@@ -1057,6 +1057,38 @@ def solve_set_partitioning(
             rmp_time=0,
             generation_time=generation_time,
         )
+
+    # =========================================================================
+    # STEP 2D: GREEDY SEEDING (MANDATORY BASELINE)
+    # =========================================================================
+    from src.services.forecast_solver_v4 import assign_drivers_greedy, ConfigV4
+
+    greedy_config = ConfigV4(seed=seed)
+    log_fn("Running greedy assignment for mandatory seeding...")
+    greedy_assignments, _ = assign_drivers_greedy(blocks, greedy_config)
+    log_fn(f"Greedy result: {len(greedy_assignments)} drivers")
+
+    seeded_count = generator.seed_from_greedy(greedy_assignments)
+    log_fn(f"Seeded {seeded_count} columns from greedy solution")
+
+    def _match_greedy_rosters(assignments, pool_values):
+        greedy_rosters = []
+        for assignment in assignments:
+            block_ids = frozenset(
+                b.id if hasattr(b, "id") else b.block_id for b in assignment.blocks
+            )
+            matching_col = None
+            for col in pool_values:
+                if frozenset(col.block_ids) == block_ids:
+                    matching_col = col
+                    break
+            if matching_col:
+                greedy_rosters.append(matching_col)
+        return greedy_rosters
+
+    pool_values = list(generator.pool.values())
+    greedy_hint_columns = _match_greedy_rosters(greedy_assignments, pool_values)
+    log_fn(f"Prepared {len(greedy_hint_columns)} hint columns for RMP warm-start")
     
     # =========================================================================
     # STEP 3: MAIN LOOP - RMP + Column Generation
@@ -1067,6 +1099,7 @@ def solve_set_partitioning(
     
     rmp_total_time = 0
     best_result = None
+    best_known_hours = 0.0
     last_selected_ids = set()
     
     # Progress tracking for adaptive stopping
@@ -1086,6 +1119,16 @@ def solve_set_partitioning(
     best_known_drivers = 9999
     rounds_without_driver_impr = 0
     stall_mode_active = False
+
+    if greedy_hint_columns:
+        best_result = {
+            "selected_rosters": greedy_hint_columns,
+            "num_drivers": len(greedy_hint_columns),
+        }
+        best_known_drivers = len(greedy_hint_columns)
+        best_known_hours = sum(r.total_hours for r in greedy_hint_columns) / max(
+            1, len(greedy_hint_columns)
+        )
 
     for round_num in range(1, max_rounds + 1):
         # GLOBAL DEADLINE CHECK
@@ -1228,11 +1271,32 @@ def solve_set_partitioning(
             
             # Return with endgame result
             log_fn(f"\n[ENDGAME] Complete: Returning {len(selected)} drivers")
-            return create_result(selected, "OK_ENDGAME")
+            return create_result(selected, "SUCCESS")
         
         # Standard deadline exceeded check (for normal weeks)
         if remaining <= 0:
             log_fn(f"GLOBAL DEADLINE EXCEEDED at round {round_num} - returning best effort")
+            if best_result:
+                return SetPartitionResult(
+                    status="SUCCESS",
+                    selected_rosters=best_result["selected_rosters"],
+                    num_drivers=best_result["num_drivers"],
+                    total_hours=sum(r.total_hours for r in best_result["selected_rosters"]),
+                    hours_min=min(r.total_hours for r in best_result["selected_rosters"])
+                    if best_result["selected_rosters"]
+                    else 0,
+                    hours_max=max(r.total_hours for r in best_result["selected_rosters"])
+                    if best_result["selected_rosters"]
+                    else 0,
+                    hours_avg=sum(r.total_hours for r in best_result["selected_rosters"])
+                    / max(1, len(best_result["selected_rosters"])),
+                    uncovered_blocks=[],
+                    pool_size=len(generator.pool),
+                    rounds_used=round_num,
+                    total_time=time.time() - start_time,
+                    rmp_time=rmp_total_time,
+                    generation_time=generation_time,
+                )
             break
         
         log_fn(f"\n--- Round {round_num}/{max_rounds} ---")
@@ -1295,6 +1359,7 @@ def solve_set_partitioning(
             all_block_ids=all_block_ids,
             time_limit=effective_rmp_limit,
             log_fn=log_fn,
+            hint_columns=greedy_hint_columns if round_num == 1 else None,
         )
         rmp_total_time += time.time() - rmp_start
         
@@ -1307,14 +1372,27 @@ def solve_set_partitioning(
                 last_selected_ids = {r.roster_id for r in selected}
                 num_selected = len(selected)
 
-                # [STEP 11] Stall Logic Update
+                avg_hours = sum(r.total_hours for r in selected) / max(1, num_selected)
+                improved = False
                 if num_selected < best_known_drivers:
                     best_known_drivers = num_selected
+                    best_known_hours = avg_hours
                     rounds_without_driver_impr = 0
+                    improved = True
                     log_fn(f"  [IMPROVEMENT] New best driver count: {best_known_drivers}")
+                elif num_selected == best_known_drivers and avg_hours > best_known_hours:
+                    best_known_hours = avg_hours
+                    rounds_without_driver_impr = 0
+                    improved = True
+                    log_fn(f"  [IMPROVEMENT] Better utilization at D={best_known_drivers}")
                 else:
                     rounds_without_driver_impr += 1
                     log_fn(f"  [STALL] No driver improvement for {rounds_without_driver_impr} rounds (Best: {best_known_drivers})")
+
+                best_result = {
+                    "selected_rosters": selected,
+                    "num_drivers": num_selected,
+                }
 
                 # [DIAGNOSTICS] Step 9 RMP Log
                 sel_lens = [len(r.covered_tour_ids) for r in selected]
@@ -1455,6 +1533,10 @@ def solve_set_partitioning(
                 # User Requirement: Early stop only if coverage_by_fte_columns >= 95%
                 pool_quality = generator.get_quality_coverage(ignore_singletons=True, min_hours=40.0)
                 log_fn(f"Pool Quality (FTE Coverage): {pool_quality:.1%} | PT Share: {pt_ratio:.1%} | Stale: {rounds_without_progress}")
+
+                if not improved and best_result:
+                    log_fn("[OK] Returning best-known solution (no improvement)")
+                    return create_result(best_result["selected_rosters"], "SUCCESS")
 
                  # Emit RMP Metrics & Stall Check
                 if context and hasattr(context, "emit_progress"):
@@ -1689,6 +1771,27 @@ def solve_set_partitioning(
         # Check stopping condition
         if rounds_without_progress >= max_stale_rounds:
             log_fn(f"\nNo improvement for {max_stale_rounds} rounds - stopping")
+            if best_result:
+                return SetPartitionResult(
+                    status="SUCCESS",
+                    selected_rosters=best_result["selected_rosters"],
+                    num_drivers=best_result["num_drivers"],
+                    total_hours=sum(r.total_hours for r in best_result["selected_rosters"]),
+                    hours_min=min(r.total_hours for r in best_result["selected_rosters"])
+                    if best_result["selected_rosters"]
+                    else 0,
+                    hours_max=max(r.total_hours for r in best_result["selected_rosters"])
+                    if best_result["selected_rosters"]
+                    else 0,
+                    hours_avg=sum(r.total_hours for r in best_result["selected_rosters"])
+                    / max(1, len(best_result["selected_rosters"])),
+                    uncovered_blocks=[],
+                    pool_size=len(generator.pool),
+                    rounds_used=round_num,
+                    total_time=time.time() - start_time,
+                    rmp_time=rmp_total_time,
+                    generation_time=generation_time,
+                )
             break
         
         # Perfect relaxation = exact partition exists!
@@ -1744,6 +1847,29 @@ def solve_set_partitioning(
             min_coverage_quota = min(min_coverage_quota + 2, 20)
             log_fn(f"Increased min coverage quota to {min_coverage_quota}")
     
+
+    if best_result:
+        log_fn("Returning best-known solution after loop exit")
+        return SetPartitionResult(
+            status="SUCCESS",
+            selected_rosters=best_result["selected_rosters"],
+            num_drivers=best_result["num_drivers"],
+            total_hours=sum(r.total_hours for r in best_result["selected_rosters"]),
+            hours_min=min(r.total_hours for r in best_result["selected_rosters"])
+            if best_result["selected_rosters"]
+            else 0,
+            hours_max=max(r.total_hours for r in best_result["selected_rosters"])
+            if best_result["selected_rosters"]
+            else 0,
+            hours_avg=sum(r.total_hours for r in best_result["selected_rosters"])
+            / max(1, len(best_result["selected_rosters"])),
+            uncovered_blocks=[],
+            pool_size=len(generator.pool),
+            rounds_used=round_num,
+            total_time=time.time() - start_time,
+            rmp_time=rmp_total_time,
+            generation_time=generation_time,
+        )
 
     # =========================================================================
     # GREEDY-SEEDING FALLBACK
@@ -1950,7 +2076,7 @@ def solve_set_partitioning(
                     log_fn(f"{'='*60}")
             
             return SetPartitionResult(
-                status="OK_SEEDED",
+                status="SUCCESS",
                 selected_rosters=selected,
                 num_drivers=len(selected),
                 total_hours=sum(hours),

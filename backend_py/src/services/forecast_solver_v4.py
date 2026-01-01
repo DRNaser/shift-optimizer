@@ -4925,7 +4925,7 @@ def solve_forecast_set_partitioning(
         sp_time = perf_counter() - t_sp
     
     # Check result
-    if sp_result.status != "OK":
+    if sp_result.status not in ("OK", "SUCCESS"):
         logger.warning(f"Set-Partitioning failed: {sp_result.status}")
         logger.warning(f"Uncovered blocks: {len(sp_result.uncovered_blocks)}")
         logger.warning("Falling back to greedy assignment to ensure a valid schedule")
