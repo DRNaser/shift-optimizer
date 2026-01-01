@@ -264,29 +264,6 @@ class RosterColumnGenerator:
         return True
 
     
-    def get_pool_stats(self) -> dict:
-        """Get statistics about the column pool."""
-        if not self.pool:
-            return {"size": 0}
-        
-        hours = [c.total_hours for c in self.pool.values()]
-        blocks_per_roster = [c.num_blocks for c in self.pool.values()]
-        
-        # Coverage frequency
-        coverage = {block_id: len(sigs) for block_id, sigs in self.block_to_rosters.items()}
-        uncovered = [bid for bid in self.block_by_id if bid not in coverage or coverage[bid] == 0]
-        rare_covered = [bid for bid, cnt in coverage.items() if cnt <= 2]
-        
-        return {
-            "size": len(self.pool),
-            "hours_min": min(hours),
-            "hours_max": max(hours),
-            "hours_avg": sum(hours) / len(hours),
-            "blocks_per_roster_avg": sum(blocks_per_roster) / len(blocks_per_roster),
-            "uncovered_blocks": len(uncovered),
-            "rare_covered_blocks": len(rare_covered),
-        }
-    
     def get_uncovered_blocks(self) -> list[str]:
         """Get block IDs that are not in any column."""
         coverage = {block_id: len(sigs) for block_id, sigs in self.block_to_rosters.items()}
@@ -576,25 +553,51 @@ class RosterColumnGenerator:
         - pool_near_fte: columns with 38-42h (near FTE, consolidation candidates)
         - pool_pt_low: columns with <38h (PT quality)
         - pool_singletons: columns with only 1 block
+        - hours_min/max/avg, blocks_per_roster_avg, uncovered_blocks, rare_covered_blocks
         """
         pool_total = len(self.pool)
+        if pool_total == 0:
+            return {
+                "pool_total": 0,
+                "pool_fte_band": 0,
+                "pool_near_fte": 0,
+                "pool_pt_low": 0,
+                "pool_singletons": 0,
+                "hours_min": 0,
+                "hours_max": 0,
+                "hours_avg": 0,
+                "blocks_per_roster_avg": 0,
+                "uncovered_blocks": len(self.block_by_id),
+                "rare_covered_blocks": 0,
+                "size": 0,
+                "fte_columns": 0,
+                "singletons": 0,
+            }
+        
+        hours = [c.total_hours for c in self.pool.values()]
+        blocks_per_roster = [c.num_blocks for c in self.pool.values()]
+        
         pool_fte_band = 0
         pool_near_fte = 0
         pool_pt_low = 0
         pool_singletons = 0
         
         for col in self.pool.values():
-            hours = col.total_hours
+            col_hours = col.total_hours
             
             if col.num_blocks == 1:
                 pool_singletons += 1
             
-            if 42.0 <= hours <= 53.0:
+            if 42.0 <= col_hours <= 53.0:
                 pool_fte_band += 1
-            elif 38.0 <= hours < 42.0:
+            elif 38.0 <= col_hours < 42.0:
                 pool_near_fte += 1
-            elif hours < 38.0:
+            elif col_hours < 38.0:
                 pool_pt_low += 1
+        
+        coverage = {block_id: len(sigs) for block_id, sigs in self.block_to_rosters.items()}
+        uncovered = [bid for bid in self.block_by_id if bid not in coverage or coverage[bid] == 0]
+        rare_covered = [bid for bid, cnt in coverage.items() if cnt <= 2]
         
         return {
             "pool_total": pool_total,
@@ -602,6 +605,15 @@ class RosterColumnGenerator:
             "pool_near_fte": pool_near_fte,
             "pool_pt_low": pool_pt_low,
             "pool_singletons": pool_singletons,
+            "hours_min": min(hours),
+            "hours_max": max(hours),
+            "hours_avg": sum(hours) / len(hours),
+            "blocks_per_roster_avg": sum(blocks_per_roster) / len(blocks_per_roster),
+            "uncovered_blocks": len(uncovered),
+            "rare_covered_blocks": len(rare_covered),
+            "size": pool_total,
+            "fte_columns": pool_fte_band,
+            "singletons": pool_singletons,
         }
     
     def get_rare_blocks(self, min_coverage: int = 5) -> list[str]:

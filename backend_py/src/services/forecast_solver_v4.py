@@ -291,7 +291,7 @@ def compute_packability_metrics(
     
     Metrics:
     - forced_1er_rate: Tours with ONLY 1er options in pool (no 2er/3er)
-    - missed_3er_opps: Tours covered by 1er in solution, despite having 3er option in pool
+    - missed_3er_opps: Tours covered by 1er in solution, despite having a compatible 3er option
     - missed_2er_opps: Tours covered by 1er despite having 2er option (but no 3er)
     - missed_multi_opps: Total tours covered by 1er that had ANY multi option
     
@@ -314,9 +314,22 @@ def compute_packability_metrics(
     
     # Build solution coverage: tour_id -> block_size in solution
     tour_solution_size: dict[str, int] = {}
+    tours_in_singletons = set()
     for block in selected_blocks:
         for tour in block.tours:
             tour_solution_size[tour.id] = len(block.tours)
+            if len(block.tours) == 1:
+                tours_in_singletons.add(tour.id)
+
+    # Identify compatible 3er opportunities:
+    # A 3er block is "compatible" if all its tours are currently covered by 1er blocks.
+    compatible_3er_tours = set()
+    for block in all_blocks:
+        if len(block.tours) != 3:
+            continue
+        block_tours = [t.id for t in block.tours]
+        if all(tid in tours_in_singletons for tid in block_tours):
+            compatible_3er_tours.update(block_tours)
     
     # Compute missed opportunities
     missed_3er_opps = []
@@ -330,7 +343,8 @@ def compute_packability_metrics(
         if solution_size == 1:
             # Check if multi-tour options existed
             if 3 in available_sizes:
-                missed_3er_opps.append(tour_id)
+                if tour_id in compatible_3er_tours:
+                    missed_3er_opps.append(tour_id)
                 missed_multi_opps.append(tour_id)
             elif 2 in available_sizes:
                 missed_2er_opps.append(tour_id)
@@ -340,6 +354,10 @@ def compute_packability_metrics(
         "forced_1er_rate": round(forced_1er_rate, 4),
         "forced_1er_count": len(forced_1er_tours),
         "missed_3er_opps_count": len(missed_3er_opps),
+        "missed_3er_pool_opps_count": sum(
+            1 for tour_id in sorted(tour_solution_size.keys())
+            if tour_solution_size.get(tour_id, 0) == 1 and 3 in tour_available_sizes.get(tour_id, set())
+        ),
         "missed_2er_opps_count": len(missed_2er_opps),
         "missed_multi_opps_count": len(missed_multi_opps),
         "total_tours": len(tours),
@@ -1414,12 +1432,15 @@ def _run_phase1_diagnostics(selected: list[Block], tours: list[Tour], block_inde
     # 2. Forced 1ers & Missed Opportunities
     forced_1er_tours = []
     missed_3er_tours = []
+    tours_in_singletons = set()
     
     tour_assignment = {} 
     for b in selected:
         n = len(b.tours)
         for t in b.tours:
             tour_assignment[t.id] = n
+            if n == 1:
+                tours_in_singletons.add(t.id)
             
     for tour in tours:
         tid = tour.id
@@ -1433,7 +1454,15 @@ def _run_phase1_diagnostics(selected: list[Block], tours: list[Tour], block_inde
             if not has_multi:
                 forced_1er_tours.append(tid)
             elif has_3er:
-                missed_3er_tours.append(tid)
+                compatible = False
+                for block in pool_blocks:
+                    if len(block.tours) != 3:
+                        continue
+                    if all(t.id in tours_in_singletons for t in block.tours):
+                        compatible = True
+                        break
+                if compatible:
+                    missed_3er_tours.append(tid)
 
     safe_print(f"FORCED 1er TOURS: {len(forced_1er_tours)} (No multi-block option)", flush=True)
     safe_print(f"MISSED 3er OPPS: {len(missed_3er_tours)} (Chose 1er despite 3er existing)", flush=True)
@@ -2543,7 +2572,8 @@ def _solve_capacity_single_cap(
     # 2. Forced 1ers (Tours that had NO non-1er option in the *input* pool)
     # We need to check 'block_index' for this.
     forced_1er_tours = []
-    missed_3er_tours = [] # Tours assigned 1er, but efficient 3er option existed
+    missed_3er_tours = [] # Tours assigned 1er, but compatible 3er option existed
+    tours_in_singletons = set()
     
     # Selected tour IDs map to the block type they ended up in
     tour_assignment = {} 
@@ -2551,6 +2581,8 @@ def _solve_capacity_single_cap(
         n = len(b.tours)
         for t in b.tours:
             tour_assignment[t.id] = n
+            if n == 1:
+                tours_in_singletons.add(t.id)
             
     # Check pool for every tour
     for tour in tours:
@@ -2569,13 +2601,19 @@ def _solve_capacity_single_cap(
         if picked_n == 1:
             if not has_multi:
                 forced_1er_tours.append(tid)
-            elif has_multi:
-                # We CHOSE 1er despite multi option
-                if has_3er:
+            elif has_multi and has_3er:
+                compatible = False
+                for block in pool_blocks:
+                    if len(block.tours) != 3:
+                        continue
+                    if all(t.id in tours_in_singletons for t in block.tours):
+                        compatible = True
+                        break
+                if compatible:
                     missed_3er_tours.append(tid)
 
     safe_print(f"FORCED 1er TOURS: {len(forced_1er_tours)} (No multi-block option available in pool)", flush=True)
-    safe_print(f"MISSED 3er OPPS: {len(missed_3er_tours)} (Assigned 1er, but 3er option existed)", flush=True)
+    safe_print(f"MISSED 3er OPPS: {len(missed_3er_tours)} (Assigned 1er, compatible 3er option existed)", flush=True)
     if missed_3er_tours:
         safe_print(f"  Example missed opps: {missed_3er_tours[:10]}...", flush=True)
 

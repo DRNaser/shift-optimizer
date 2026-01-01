@@ -27,6 +27,19 @@ from src.services.set_partition_master import solve_rmp, solve_relaxed_rmp, anal
 from src.services.lower_bound_calc import compute_lower_bounds_wrapper
 
 logger = logging.getLogger("SetPartitionSolver")
+MIN_ROUNDS_BEFORE_STOP = 3
+
+
+def _extract_unique_tours(blocks: list) -> list:
+    tours_by_id = {}
+    for block in blocks:
+        for tour in getattr(block, "tours", []):
+            if tour is None:
+                continue
+            tour_id = getattr(tour, "id", None)
+            if tour_id:
+                tours_by_id.setdefault(tour_id, tour)
+    return list(tours_by_id.values())
 
 # >>> STEP8: SUPPORT_HELPERS (TOP-LEVEL)
 def _compute_tour_support(columns, target_ids, coverage_attr):
@@ -955,7 +968,21 @@ def solve_set_partitioning(
     # =========================================================================
     # STEP 0: PRE-CALCULATE LOWER BOUNDS (Step 15A)
     # =========================================================================
-    feature_fleet = features.fleet_peak if features and hasattr(features, 'fleet_peak') else 0
+    feature_fleet = features.fleet_peak if features and hasattr(features, "fleet_peak") else 0
+    if feature_fleet <= 0:
+        try:
+            from fleet_counter import compute_fleet_peaks
+            tours_for_fleet = _extract_unique_tours(blocks)
+            if tours_for_fleet:
+                fleet_summary = compute_fleet_peaks(tours_for_fleet, turnaround_minutes=5)
+                feature_fleet = fleet_summary.global_peak_count
+                if features is not None and hasattr(features, "fleet_peak"):
+                    features.fleet_peak = feature_fleet
+                log_fn(f"[LB] Fleet peak recomputed from blocks: {feature_fleet}")
+        except Exception as fleet_err:
+            log_fn(f"[LB] Fleet peak recompute failed: {fleet_err}")
+            if features and hasattr(features, "lower_bound_drivers") and feature_fleet <= 0:
+                feature_fleet = features.lower_bound_drivers
     lb_stats = compute_lower_bounds_wrapper(block_infos, log_fn, fleet_peak=feature_fleet, total_hours=total_work_hours)
     
     lb_final = lb_stats.get("final_lb", 0)  # Use Unified Final LB
@@ -1483,7 +1510,9 @@ def solve_set_partitioning(
                 pt_ok = num_pt <= len(selected) * 0.02
                 stalling = rounds_without_progress > 20  # Increased from 15
                 
-                if (pt_ok and quality_ok) or (stalling and quality_ok):
+                if round_num < MIN_ROUNDS_BEFORE_STOP:
+                     log_fn(f"[EARLY-STOP GUARD] Round {round_num} < {MIN_ROUNDS_BEFORE_STOP}, continuing.")
+                elif (pt_ok and quality_ok) or (stalling and quality_ok):
                      log_fn(f"\n[OK] Stopping with {num_pt} PT drivers ({pt_ratio:.1%} share) and {pool_quality:.1%} FTE coverage")
                      
                      # =========================================================
@@ -1781,7 +1810,7 @@ def solve_set_partitioning(
         log_fn(f"  Added {added} incumbent variants")
     # <<< STEP8: INCUMBENT_NEIGHBORHOOD_CALL
 
-    log_fn(f"Seeded {seeded_count} columns from greedy solution")
+    log_fn(f"Greedy seeding complete: {seeded_count} columns available for warm-start")
     
     # FAILURE RECOVERY: Collect the greedy columns to pass as HINTS
     # This guarantees RMP starts with a feasible solution

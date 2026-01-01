@@ -652,8 +652,13 @@ def run_portfolio(
             all_blocks=blocks,
             tours=tours,
         )
-        log(f"Packability: forced_1er_rate={packability_metrics['forced_1er_rate']:.2%}, "
-            f"missed_3er_opps={packability_metrics['missed_3er_opps_count']}")
+        log(
+            "Packability: forced_1er_rate={:.2%}, missed_3er_opps={} (pool={})".format(
+                packability_metrics["forced_1er_rate"],
+                packability_metrics["missed_3er_opps_count"],
+                packability_metrics.get("missed_3er_pool_opps_count", 0),
+            )
+        )
         
         # Build final KPI
         fte_drivers = [a for a in assignments if a.driver_type == "FTE"]
@@ -683,6 +688,7 @@ def run_portfolio(
             "forced_1er_rate": packability_metrics["forced_1er_rate"],
             "forced_1er_count": packability_metrics["forced_1er_count"],
             "missed_3er_opps_count": packability_metrics["missed_3er_opps_count"],
+            "missed_3er_pool_opps_count": packability_metrics.get("missed_3er_pool_opps_count", 0),
             "missed_2er_opps_count": packability_metrics["missed_2er_opps_count"],
             "missed_multi_opps_count": packability_metrics["missed_multi_opps_count"],
             # Output Profile Info (from config)

@@ -1,4 +1,6 @@
 import csv
+import json
+from datetime import datetime
 import sys
 from pathlib import Path
 
@@ -6,6 +8,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 from src.services.portfolio_controller import run_portfolio
+from src.services.kpi_recompute import recompute_kpis_from_roster
 from test_forecast_csv import parse_forecast_csv
 from src.domain.models import Weekday
 
@@ -179,6 +182,12 @@ def main():
     print(f"\n[SUCCESS] Roster Matrix exported to: {roster_file}")
     print(f"Total Rows: {len(rows)}")
 
+    # ======================================================================
+    # KPI RECOMPUTE (Single Source of Truth from roster CSV)
+    # ======================================================================
+    recomputed_kpis = recompute_kpis_from_roster(roster_file, active_days=kpi.get("active_days", []))
+    kpi.update(recomputed_kpis)
+
     # ==========================================================================
     # KPI CSV (Enhanced with Fleet Metrics)
     # ==========================================================================
@@ -188,13 +197,15 @@ def main():
     kpi_rows = []
     
     # Core metrics
-    kpi_rows.append({"Metric": "Total Drivers", "Value": len(assignments)})
+    kpi_rows.append({"Metric": "Total Drivers", "Value": kpi.get("drivers_total", len(assignments))})
     kpi_rows.append({"Metric": "FTE Drivers", "Value": kpi.get("drivers_fte", 0)})
     kpi_rows.append({"Metric": "PT Drivers", "Value": kpi.get("drivers_pt", 0)})
     kpi_rows.append({"Metric": "Total Hours", "Value": kpi.get("total_hours", 0)})
     kpi_rows.append({"Metric": "FTE Hours Avg", "Value": kpi.get("fte_hours_avg", 0)})
     kpi_rows.append({"Metric": "FTE Hours Min", "Value": kpi.get("fte_hours_min", 0)})
     kpi_rows.append({"Metric": "FTE Hours Max", "Value": kpi.get("fte_hours_max", 0)})
+    kpi_rows.append({"Metric": "Low Util Hours Threshold", "Value": kpi.get("low_util_hours_threshold", 0)})
+    kpi_rows.append({"Metric": "Low Util Share (Hours %)", "Value": kpi.get("low_util_share_hours_pct", 0)})
     
     # Block stats
     kpi_rows.append({"Metric": "Blocks Selected", "Value": kpi.get("blocks_selected", 0)})
@@ -218,6 +229,21 @@ def main():
     
     print(f"[SUCCESS] KPI Summary exported to: {kpi_file}")
 
+    # ======================================================================
+    # RUN MANIFEST (Single-Source KPIs)
+    # ======================================================================
+    manifest_file = output_dir / "run_manifest.json"
+    manifest = {
+        "timestamp": datetime.now().isoformat(),
+        "status": solution.status,
+        "time_budget_s": args.time_budget,
+        "seed": args.seed,
+        "kpis": kpi,
+    }
+    with open(manifest_file, "w", encoding="utf-8") as f:
+        json.dump(manifest, f, indent=2, ensure_ascii=False)
+    print(f"[SUCCESS] Run manifest exported to: {manifest_file}")
+
     # ==========================================================================
     # FLEET SUMMARY CSV
     # ==========================================================================
@@ -232,7 +258,7 @@ def main():
     print("\n" + "=" * 70)
     print("EXPORT SUMMARY")
     print("=" * 70)
-    print(f"  Drivers: {kpi.get('drivers_fte', 0)} FTE + {kpi.get('drivers_pt', 0)} PT = {len(assignments)} Total")
+    print(f"  Drivers: {kpi.get('drivers_fte', 0)} FTE + {kpi.get('drivers_pt', 0)} PT = {kpi.get('drivers_total', len(assignments))} Total")
     print(f"  Hours:   {kpi.get('total_hours', 0):.1f}h total, {kpi.get('fte_hours_avg', 0):.1f}h avg FTE")
     if fleet_peak > 0:
         print(f"  Fleet:   {fleet_peak} vehicles peak @ {fleet_day} {fleet_time}")
@@ -251,4 +277,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

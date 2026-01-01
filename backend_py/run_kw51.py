@@ -8,6 +8,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from test_forecast_csv import parse_forecast_csv
 from src.services.portfolio_controller import run_portfolio
+from src.services.kpi_recompute import recompute_kpis_from_roster
 from fleet_counter import compute_fleet_peaks
 
 import argparse
@@ -81,24 +82,6 @@ for idx, a in enumerate(assignments):
         a.driver_type = "PT"
         a.driver_id = f"PT{idx - fte_used + 1:03d}"
 
-print(f"\n" + "=" * 70)
-print("RESULT (Contract-Based Classification)")
-print("=" * 70)
-print(f"Status: {solution.status}")
-print(f"Drivers: {fte_used} FTE + {pt_used} PT = {drivers_total} Total")
-print(f"  (FTE Pool: {fte_pool_size}, PT if drivers > pool)")
-print(f"Active Days: {kpi.get('active_days', [])} (k={kpi.get('active_days_count', 0)})")
-print(f"Fleet Peak: {kpi.get('fleet_peak_count', 0)} vehicles")
-print(f"Drivers vs Peak: {kpi.get('drivers_vs_peak', 0)}")
-print(f"Tours per Driver: {kpi.get('tours_per_driver', 0)}")
-
-# FTE Hours Stats
-fte_drivers = [a for a in assignments if a.driver_type == "FTE"]
-if fte_drivers:
-    fte_hours = [a.total_hours for a in fte_drivers]
-    print(f"\nFTE Hours (top {len(fte_drivers)} by hours):")
-    print(f"  Min: {min(fte_hours):.1f}h, Max: {max(fte_hours):.1f}h, Avg: {sum(fte_hours)/len(fte_hours):.1f}h")
-
 # Export
 import csv
 from src.domain.models import Weekday
@@ -149,3 +132,22 @@ with open(roster_file, "w", newline="", encoding="utf-8-sig") as f:
 
 print(f"\n[SUCCESS] Roster exported to: {roster_file}")
 print(f"Total Drivers: {len(rows)}")
+
+recomputed_kpis = recompute_kpis_from_roster(roster_file, active_days=kpi.get("active_days", []))
+kpi.update(recomputed_kpis)
+
+print(f"\n" + "=" * 70)
+print("RESULT (Contract-Based Classification)")
+print("=" * 70)
+print(f"Status: {solution.status}")
+print(f"Drivers: {kpi.get('drivers_fte', 0)} FTE + {kpi.get('drivers_pt', 0)} PT = {kpi.get('drivers_total', drivers_total)} Total")
+print(f"  (FTE Pool: {fte_pool_size}, PT if drivers > pool)")
+print(f"Active Days: {kpi.get('active_days', [])} (k={kpi.get('active_days_count', 0)})")
+print(f"Fleet Peak: {kpi.get('fleet_peak_count', 0)} vehicles")
+print(f"Drivers vs Peak: {kpi.get('drivers_vs_peak', 0)}")
+print(f"Tours per Driver: {kpi.get('tours_per_driver', 0)}")
+
+# FTE Hours Stats
+if kpi.get("drivers_fte", 0) > 0:
+    print(f"\nFTE Hours:")
+    print(f"  Min: {kpi.get('fte_hours_min', 0):.1f}h, Max: {kpi.get('fte_hours_max', 0):.1f}h, Avg: {kpi.get('fte_hours_avg', 0):.1f}h")
