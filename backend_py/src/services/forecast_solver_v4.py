@@ -1176,7 +1176,7 @@ def solve_capacity_phase(
         return [], {"status": "FAILED", "time": total_elapsed}
     
     # Run final diagnostics on the best solution
-    _run_phase1_diagnostics(best_solution, tours, block_index, config, best_stats, total_elapsed)
+    _run_phase1_diagnostics(best_solution, blocks, tours, block_index, config, best_stats, total_elapsed)
     
     # === PHASE 1B: LNS REOPTIMIZATION (Friday) ===
     try:
@@ -1405,7 +1405,15 @@ def _lns_reopt_friday(
     return None
 
 
-def _run_phase1_diagnostics(selected: list[Block], tours: list[Tour], block_index: dict, config: ConfigV4, stats: dict, elapsed: float):
+def _run_phase1_diagnostics(
+    selected: list[Block],
+    all_blocks: list[Block],
+    tours: list[Tour],
+    block_index: dict,
+    config: ConfigV4,
+    stats: dict,
+    elapsed: float,
+):
     """Run and print Phase 1 diagnostics."""
     import math
     
@@ -1429,43 +1437,12 @@ def _run_phase1_diagnostics(selected: list[Block], tours: list[Tour], block_inde
             avg_tours = s["tours"] / s["total"] if s["total"] else 0
             safe_print(f"  {d}: {s['total']} blocks ({s['1er']} 1er, {s['2er']} 2er, {s['3er']} 3er) | avg={avg_tours:.2f} tours/block", flush=True)
 
-    # 2. Forced 1ers & Missed Opportunities
-    forced_1er_tours = []
-    missed_3er_tours = []
-    tours_in_singletons = set()
-    
-    tour_assignment = {} 
-    for b in selected:
-        n = len(b.tours)
-        for t in b.tours:
-            tour_assignment[t.id] = n
-            if n == 1:
-                tours_in_singletons.add(t.id)
-            
-    for tour in tours:
-        tid = tour.id
-        pool_blocks = block_index.get(tid, [])
-        pool_options = {len(b.tours) for b in pool_blocks}
-        has_multi = any(n > 1 for n in pool_options)
-        has_3er = (3 in pool_options)
-        picked_n = tour_assignment.get(tid, 0)
-        
-        if picked_n == 1:
-            if not has_multi:
-                forced_1er_tours.append(tid)
-            elif has_3er:
-                compatible = False
-                for block in pool_blocks:
-                    if len(block.tours) != 3:
-                        continue
-                    if all(t.id in tours_in_singletons for t in block.tours):
-                        compatible = True
-                        break
-                if compatible:
-                    missed_3er_tours.append(tid)
-
-    safe_print(f"FORCED 1er TOURS: {len(forced_1er_tours)} (No multi-block option)", flush=True)
-    safe_print(f"MISSED 3er OPPS: {len(missed_3er_tours)} (Chose 1er despite 3er existing)", flush=True)
+    # 2. Forced 1ers & Missed Opportunities (use shared packability metrics)
+    pack_metrics = compute_packability_metrics(selected, all_blocks, tours)
+    forced_1er_count = pack_metrics.get("forced_1er_count", 0)
+    missed_3er_count = pack_metrics.get("missed_3er_opps_count", 0)
+    safe_print(f"FORCED 1er TOURS: {forced_1er_count} (No multi-block option)", flush=True)
+    safe_print(f"MISSED 3er OPPS: {missed_3er_count} (Assigned 1er, compatible 3er option existed)", flush=True)
 
     # 3. Day Min Lower Bound + Gap
     safe_print("GAP TO THEORETICAL MINIMUM:", flush=True)
@@ -1488,8 +1465,8 @@ def _run_phase1_diagnostics(selected: list[Block], tours: list[Tour], block_inde
     
     # Update stats with diagnostics
     stats["time"] = round(elapsed, 2)
-    stats["forced_1er_count"] = len(forced_1er_tours)
-    stats["missed_3er_count"] = len(missed_3er_tours)
+    stats["forced_1er_count"] = forced_1er_count
+    stats["missed_3er_count"] = missed_3er_count
 
 
 def _build_phase1_result_from_solution(
@@ -1505,6 +1482,9 @@ def _build_phase1_result_from_solution(
     avail_2er_split: int,
     avail_3er: int,
     tour_has_multi: set,
+    fallback_stage: str,
+    lexiko_stage_status: dict | None = None,
+    lexiko_completed_stages: int = 0,
 ) -> tuple:
     """
     Build Phase 1 result from a solution (selected blocks).
@@ -1543,6 +1523,14 @@ def _build_phase1_result_from_solution(
         "2er": round(by_type["2er"] / total_selected, 3) if total_selected else 0,
         "3er": round(by_type["3er"] / total_selected, 3) if total_selected else 0,
     }
+    split_2er_count = 0
+    template_match_count = 0
+    for block in selected:
+        if len(block.tours) == 2 and block.pause_zone.value == "SPLIT":
+            split_2er_count += 1
+        if block_props and block.id in block_props:
+            if block_props[block.id].get("is_template", False):
+                template_match_count += 1
     
     # Build stats dictionary matching downstream expectations
     stats = {
@@ -1557,7 +1545,11 @@ def _build_phase1_result_from_solution(
         "total_hours": round(total_hours, 2),
         "time": round(elapsed, 2),
         "block_mix": block_mix,
-        "fallback_stage": "Stage 1",  # Indicates this came from early fallback
+        "split_2er_count": split_2er_count,
+        "template_match_count": template_match_count,
+        "fallback_stage": fallback_stage,
+        "lexiko_completed_stages": lexiko_completed_stages,
+        "lexiko_stage_status": lexiko_stage_status or {},
         # Candidate counts for telemetry
         "candidate_count_1er": avail_1er,
         "candidate_count_2er_regular": avail_2er_reg,
@@ -1963,14 +1955,24 @@ def _solve_capacity_single_cap(
     pass2_budget = total_budget * 0.60
     
     # Pass 2 stage budgets (split among 5 lexicographic stages)
-    # Split: 35% stage1 (3er most important), 25% stage2, 15% stage3, 10% stage4, 15% stage5
-    stage_budgets = {
-        1: pass2_budget * 0.35,
-        2: pass2_budget * 0.25,
-        3: pass2_budget * 0.15,
-        4: pass2_budget * 0.10,
-        5: pass2_budget * 0.15,
-    }
+    # Split: 30% stage1, 30% stage2, 20% stage3, 10% stage4, 10% stage5
+    stage_weights = {1: 0.30, 2: 0.30, 3: 0.20, 4: 0.10, 5: 0.10}
+    stage_budgets = {stage: pass2_budget * weight for stage, weight in stage_weights.items()}
+    min_stage_budget = min(3.0, pass2_budget * 0.2)
+    for stage, budget in stage_budgets.items():
+        if budget < min_stage_budget:
+            stage_budgets[stage] = min_stage_budget
+    budget_over = sum(stage_budgets.values()) - pass2_budget
+    if budget_over > 0:
+        for stage in sorted(stage_budgets, key=stage_budgets.get, reverse=True):
+            if budget_over <= 0:
+                break
+            available = stage_budgets[stage] - min_stage_budget
+            if available <= 0:
+                continue
+            reduce_by = min(available, budget_over)
+            stage_budgets[stage] -= reduce_by
+            budget_over -= reduce_by
     
     safe_print(f"  TWO-PASS BUDGET (total={total_budget:.1f}s):", flush=True)
     safe_print(f"    Pass 1 (Capacity): {pass1_budget:.1f}s", flush=True)
@@ -1978,6 +1980,10 @@ def _solve_capacity_single_cap(
     for st, bud in stage_budgets.items():
         safe_print(f"      Stage {st}: {bud:.1f}s", flush=True)
     
+    # Lexicographic status tracking
+    lexiko_stage_status = {}
+    lexiko_completed_stages = 0
+
     # =========================================================================
     # v5 PASS 1: CAPACITY/HEADCOUNT MINIMIZATION
     # =========================================================================
@@ -2064,11 +2070,16 @@ def _solve_capacity_single_cap(
     if status_s1 == cp_model.OPTIMAL:
         safe_print(f"  STAGE 1: {status_str(status_s1)}", flush=True)
         best_so_far_solver = solver_s1  # Update best
+        lexiko_stage_status[1] = status_str(status_s1)
+        lexiko_completed_stages = max(lexiko_completed_stages, 1)
     elif status_s1 == cp_model.FEASIBLE:
         safe_print(f"  STAGE 1: {status_str(status_s1)} (not proven optimal)", flush=True)
         best_so_far_solver = solver_s1  # Update best
+        lexiko_stage_status[1] = status_str(status_s1)
+        lexiko_completed_stages = max(lexiko_completed_stages, 1)
     else:
         safe_print(f"  STAGE 1 FAILED: {status_str(status_s1)} (using Pass 1 fallback)", flush=True)
+        lexiko_stage_status[1] = status_str(status_s1)
         if status_s1 == cp_model.MODEL_INVALID:
             safe_print(f"  ERROR: Model is invalid. Check count expressions.", flush=True)
         # PHASE-1 STATUS CONTRACT: Use best_so_far instead of returning None
@@ -2077,7 +2088,13 @@ def _solve_capacity_single_cap(
             selected = [blocks[b] for b in range(len(blocks)) if best_so_far_solver.Value(use[b]) == 1]
             safe_print(f"  FALLBACK: Using Pass 1 solution ({len(selected)} blocks)", flush=True)
             # Return with OK status since we have a valid solution
-            return _build_phase1_result_from_solution(selected, blocks, tours, block_index, block_props, block_scores, t0, avail_1er, avail_2er_reg, avail_2er_split, avail_3er, tour_has_multi)
+            return _build_phase1_result_from_solution(
+                selected, blocks, tours, block_index, block_props, block_scores, t0,
+                avail_1er, avail_2er_reg, avail_2er_split, avail_3er, tour_has_multi,
+                fallback_stage="Pass 1",
+                lexiko_stage_status=lexiko_stage_status,
+                lexiko_completed_stages=lexiko_completed_stages,
+            )
         return None  # Only if no solution at all
     
     # K1: Use solver.Value(expr) instead of ObjectiveValue() for robustness
@@ -2107,28 +2124,27 @@ def _solve_capacity_single_cap(
     if status_s2 == cp_model.OPTIMAL:
         safe_print(f"  STAGE 2: OPTIMAL", flush=True)
         best_so_far_solver = solver_s2  # Update best
+        lexiko_stage_status[2] = status_str(status_s2)
+        lexiko_completed_stages = max(lexiko_completed_stages, 2)
     elif status_s2 == cp_model.FEASIBLE:
         safe_print(f"  STAGE 2: FEASIBLE (not proven optimal)", flush=True)
         best_so_far_solver = solver_s2  # Update best
+        lexiko_stage_status[2] = status_str(status_s2)
+        lexiko_completed_stages = max(lexiko_completed_stages, 2)
     else:
         safe_print(f"  STAGE 2 FAILED: {status_str(status_s2)} (using Stage 1 fallback)", flush=True)
+        lexiko_stage_status[2] = status_str(status_s2)
         # PHASE-1 STATUS CONTRACT: Use best_so_far instead of returning None
         if best_so_far_solver is not None:
             selected = [blocks[b] for b in range(len(blocks)) if best_so_far_solver.Value(use[b]) == 1]
             safe_print(f"  FALLBACK: Using Stage 1 solution ({len(selected)} blocks)", flush=True)
-            # Build minimal stats for fallback
-            elapsed = perf_counter() - t0
-            by_type = {"1er": sum(1 for b in selected if len(b.tours) == 1),
-                       "2er": sum(1 for b in selected if len(b.tours) == 2),
-                       "3er": sum(1 for b in selected if len(b.tours) == 3)}
-            by_day = defaultdict(int)
-            for block in selected:
-                by_day[block.day.value] += 1
-            total_hours = sum(b.total_work_hours for b in selected)
-            return selected, {"status": "OK", "selected_blocks": len(selected), "blocks_1er": by_type["1er"],
-                             "blocks_2er": by_type["2er"], "blocks_3er": by_type["3er"],
-                             "blocks_by_day": dict(by_day), "total_hours": round(total_hours, 2),
-                             "time": round(elapsed, 2), "fallback_stage": "Stage 1"}
+            return _build_phase1_result_from_solution(
+                selected, blocks, tours, block_index, block_props, block_scores, t0,
+                avail_1er, avail_2er_reg, avail_2er_split, avail_3er, tour_has_multi,
+                fallback_stage="Stage 1",
+                lexiko_stage_status=lexiko_stage_status,
+                lexiko_completed_stages=lexiko_completed_stages,
+            )
         return None  # Only if no solution at all
     
     best_count_2er_regular = solver_s2.Value(count_2er_regular)
@@ -2194,18 +2210,13 @@ def _solve_capacity_single_cap(
         if best_so_far_solver is not None:
             selected = [blocks[b] for b in range(len(blocks)) if best_so_far_solver.Value(use[b]) == 1]
             safe_print(f"  FALLBACK: Using Stage 2 solution ({len(selected)} blocks)", flush=True)
-            elapsed = perf_counter() - t0
-            by_type = {"1er": sum(1 for b in selected if len(b.tours) == 1),
-                       "2er": sum(1 for b in selected if len(b.tours) == 2),
-                       "3er": sum(1 for b in selected if len(b.tours) == 3)}
-            by_day = defaultdict(int)
-            for block in selected:
-                by_day[block.day.value] += 1
-            total_hours = sum(b.total_work_hours for b in selected)
-            return selected, {"status": "OK", "selected_blocks": len(selected), "blocks_1er": by_type["1er"],
-                             "blocks_2er": by_type["2er"], "blocks_3er": by_type["3er"],
-                             "blocks_by_day": dict(by_day), "total_hours": round(total_hours, 2),
-                             "time": round(elapsed, 2), "fallback_stage": "Stage 2"}
+            return _build_phase1_result_from_solution(
+                selected, blocks, tours, block_index, block_props, block_scores, t0,
+                avail_1er, avail_2er_reg, avail_2er_split, avail_3er, tour_has_multi,
+                fallback_stage="Stage 2",
+                lexiko_stage_status=lexiko_stage_status,
+                lexiko_completed_stages=lexiko_completed_stages,
+            )
         return None  # Only if no solution at all
     
     safe_print(f"  PRE-FLIGHT PASSED (model valid)", flush=True)
@@ -2227,27 +2238,27 @@ def _solve_capacity_single_cap(
     if status_s3 == cp_model.OPTIMAL:
         safe_print(f"  STAGE 3: OPTIMAL", flush=True)
         best_so_far_solver = solver_s3  # Update best
+        lexiko_stage_status[3] = status_str(status_s3)
+        lexiko_completed_stages = max(lexiko_completed_stages, 3)
     elif status_s3 == cp_model.FEASIBLE:
         safe_print(f"  STAGE 3: FEASIBLE (not proven optimal)", flush=True)
         best_so_far_solver = solver_s3  # Update best
+        lexiko_stage_status[3] = status_str(status_s3)
+        lexiko_completed_stages = max(lexiko_completed_stages, 3)
     else:
         safe_print(f"  STAGE 3 FAILED: {status_str(status_s3)} (using Stage 2 fallback)", flush=True)
+        lexiko_stage_status[3] = status_str(status_s3)
         # PHASE-1 STATUS CONTRACT: Use best_so_far instead of returning None
         if best_so_far_solver is not None:
             selected = [blocks[b] for b in range(len(blocks)) if best_so_far_solver.Value(use[b]) == 1]
             safe_print(f"  FALLBACK: Using Stage 2 solution ({len(selected)} blocks)", flush=True)
-            elapsed = perf_counter() - t0
-            by_type = {"1er": sum(1 for b in selected if len(b.tours) == 1),
-                       "2er": sum(1 for b in selected if len(b.tours) == 2),
-                       "3er": sum(1 for b in selected if len(b.tours) == 3)}
-            by_day = defaultdict(int)
-            for block in selected:
-                by_day[block.day.value] += 1
-            total_hours = sum(b.total_work_hours for b in selected)
-            return selected, {"status": "OK", "selected_blocks": len(selected), "blocks_1er": by_type["1er"],
-                             "blocks_2er": by_type["2er"], "blocks_3er": by_type["3er"],
-                             "blocks_by_day": dict(by_day), "total_hours": round(total_hours, 2),
-                             "time": round(elapsed, 2), "fallback_stage": "Stage 2"}
+            return _build_phase1_result_from_solution(
+                selected, blocks, tours, block_index, block_props, block_scores, t0,
+                avail_1er, avail_2er_reg, avail_2er_split, avail_3er, tour_has_multi,
+                fallback_stage="Stage 2",
+                lexiko_stage_status=lexiko_stage_status,
+                lexiko_completed_stages=lexiko_completed_stages,
+            )
         return None  # Only if no solution at all
     
     best_count_2er_split = solver_s3.Value(count_2er_split)
@@ -2274,12 +2285,18 @@ def _solve_capacity_single_cap(
     
     if status_s4 == cp_model.OPTIMAL:
         safe_print(f"  STAGE 4: OPTIMAL", flush=True)
+        lexiko_stage_status[4] = status_str(status_s4)
+        lexiko_completed_stages = max(lexiko_completed_stages, 4)
     elif status_s4 == cp_model.FEASIBLE:
         safe_print(f"  STAGE 4: FEASIBLE (not proven optimal)", flush=True)
+        lexiko_stage_status[4] = status_str(status_s4)
+        lexiko_completed_stages = max(lexiko_completed_stages, 4)
     elif status_s4 == cp_model.UNKNOWN:
         safe_print(f"  STAGE 4: UNKNOWN (using Stage 3 fallback)", flush=True)
+        lexiko_stage_status[4] = status_str(status_s4)
     else:
         safe_print(f"  STAGE 4 FAILED: {status_str(status_s4)}", flush=True)
+        lexiko_stage_status[4] = status_str(status_s4)
         return None
     if status_s4 in (cp_model.OPTIMAL, cp_model.FEASIBLE):
         best_count_1er = solver_s4.Value(count_1er)
@@ -2383,11 +2400,16 @@ def _solve_capacity_single_cap(
     if status_s5 == cp_model.OPTIMAL:
         safe_print(f"  STAGE 5: OPTIMAL", flush=True)
         best_so_far_solver = solver_s5
+        lexiko_stage_status[5] = status_str(status_s5)
+        lexiko_completed_stages = max(lexiko_completed_stages, 5)
     elif status_s5 == cp_model.FEASIBLE:
         safe_print(f"  STAGE 5: FEASIBLE (not proven optimal)", flush=True)
         best_so_far_solver = solver_s5
+        lexiko_stage_status[5] = status_str(status_s5)
+        lexiko_completed_stages = max(lexiko_completed_stages, 5)
     else:
         safe_print(f"  STAGE 5 FAILED: {status_str(status_s5)} (using Stage 4 fallback)", flush=True)
+        lexiko_stage_status[5] = status_str(status_s5)
         # Use Stage 4 explicit solution
         selected = [blocks[b] for b in range(len(blocks)) if stage4_solution[b] == 1]
         safe_print(f"  FALLBACK: Using Stage 4 solution ({len(selected)} blocks)", flush=True)
@@ -2419,10 +2441,13 @@ def _solve_capacity_single_cap(
             # Or if strict equality constraint was flawed.
             pass
 
-        return selected, {"status": "OK", "selected_blocks": len(selected), "blocks_1er": actual_1er,
-                         "blocks_2er": actual_2R + actual_2S, "blocks_3er": actual_3er,
-                         "blocks_by_day": dict(by_day), "total_hours": round(total_hours, 2),
-                         "time": round(elapsed, 2), "fallback_stage": "Stage 4"}
+        return _build_phase1_result_from_solution(
+            selected, blocks, tours, block_index, block_props, block_scores, t0,
+            avail_1er, avail_2er_reg, avail_2er_split, avail_3er, tour_has_multi,
+            fallback_stage="Stage 4",
+            lexiko_stage_status=lexiko_stage_status,
+            lexiko_completed_stages=lexiko_completed_stages,
+        )
 
     # Extract FINAL solution (if Stage 5 succeeded)
     selected = [blocks[b] for b in range(len(blocks)) if best_so_far_solver.Value(use[b]) == 1]
@@ -2539,6 +2564,8 @@ def _solve_capacity_single_cap(
         "block_mix": block_mix,
         "split_2er_count": split_2er_count,
         "template_match_count": template_match_count,
+        "lexiko_completed_stages": lexiko_completed_stages,
+        "lexiko_stage_status": lexiko_stage_status,
     }
     
     # RC1: Merge pack_telemetry into stats
@@ -2569,53 +2596,18 @@ def _solve_capacity_single_cap(
             s = day_stats[d]
             safe_print(f"  {d}: {s['total']} blocks ({s['1er']} 1er, {s['2er']} 2er, {s['3er']} 3er)", flush=True)
 
-    # 2. Forced 1ers (Tours that had NO non-1er option in the *input* pool)
-    # We need to check 'block_index' for this.
-    forced_1er_tours = []
-    missed_3er_tours = [] # Tours assigned 1er, but compatible 3er option existed
-    tours_in_singletons = set()
-    
-    # Selected tour IDs map to the block type they ended up in
-    tour_assignment = {} 
-    for b in selected:
-        n = len(b.tours)
-        for t in b.tours:
-            tour_assignment[t.id] = n
-            if n == 1:
-                tours_in_singletons.add(t.id)
-            
-    # Check pool for every tour
-    for tour in tours:
-        tid = tour.id
-        # What options did we have in the POOL?
-        pool_blocks = block_index.get(tid, [])
-        pool_options = {len(b.tours) for b in pool_blocks}
-        
-        # Did we have >1 options?
-        has_multi = any(n > 1 for n in pool_options)
-        has_3er = (3 in pool_options)
-        
-        # What did we pick?
-        picked_n = tour_assignment.get(tid, 0)
-        
-        if picked_n == 1:
-            if not has_multi:
-                forced_1er_tours.append(tid)
-            elif has_multi and has_3er:
-                compatible = False
-                for block in pool_blocks:
-                    if len(block.tours) != 3:
-                        continue
-                    if all(t.id in tours_in_singletons for t in block.tours):
-                        compatible = True
-                        break
-                if compatible:
-                    missed_3er_tours.append(tid)
-
-    safe_print(f"FORCED 1er TOURS: {len(forced_1er_tours)} (No multi-block option available in pool)", flush=True)
-    safe_print(f"MISSED 3er OPPS: {len(missed_3er_tours)} (Assigned 1er, compatible 3er option existed)", flush=True)
-    if missed_3er_tours:
-        safe_print(f"  Example missed opps: {missed_3er_tours[:10]}...", flush=True)
+    # 2. Forced 1ers & Missed Opportunities (consistent with packability metrics)
+    pack_metrics = compute_packability_metrics(selected, blocks, tours)
+    safe_print(
+        f"FORCED 1er TOURS: {pack_metrics.get('forced_1er_count', 0)} "
+        f"(No multi-block option available in pool)",
+        flush=True,
+    )
+    safe_print(
+        f"MISSED 3er OPPS: {pack_metrics.get('missed_3er_opps_count', 0)} "
+        f"(Assigned 1er, compatible 3er option existed)",
+        flush=True,
+    )
 
     # 3. Day Min Lower Bound
     safe_print("DAY MIN LOWER BOUND (Max Concurrent Tours):", flush=True)
@@ -3474,6 +3466,12 @@ def solve_forecast_v4(
     fte_count = fte_after
 
     # KPIs
+    block_mix = phase1_stats.get("block_mix") or compute_block_mix_ratios(selected_blocks)
+    split_2er_count = phase1_stats.get("split_2er_count")
+    if split_2er_count is None:
+        split_2er_count = sum(
+            1 for b in selected_blocks if len(b.tours) == 2 and b.pause_zone.value == "SPLIT"
+        )
     kpi = {
         "status": status,
         "total_hours": round(total_hours, 2),
@@ -3489,10 +3487,31 @@ def solve_forecast_v4(
         "blocks_1er": phase1_stats["blocks_1er"],
         "blocks_2er": phase1_stats["blocks_2er"],
         "blocks_3er": phase1_stats["blocks_3er"],
-        "block_mix": phase1_stats.get("block_mix", {}),
+        "block_mix": block_mix,
         "template_match_count": phase1_stats.get("template_match_count", 0),
-        "split_2er_count": phase1_stats.get("split_2er_count", 0),
+        "split_2er_count": split_2er_count,
     }
+
+    # Fleet Counter (mandatory)
+    try:
+        from fleet_counter import compute_fleet_peaks
+        fleet_summary = compute_fleet_peaks(tours, turnaround_minutes=5)
+        kpi["fleet_peak_count"] = fleet_summary.global_peak_count
+        kpi["fleet_peak_day"] = fleet_summary.global_peak_day.value
+        kpi["fleet_peak_time"] = fleet_summary.global_peak_time.strftime("%H:%M")
+        kpi["fleet_day_peaks"] = {
+            day.value: {"count": peak.peak_count, "time": peak.peak_time.strftime("%H:%M")}
+            for day, peak in fleet_summary.day_peaks.items()
+        }
+        logger.info(
+            f"Fleet Counter: Peak {fleet_summary.global_peak_count} vehicles "
+            f"@ {fleet_summary.global_peak_day.value} {fleet_summary.global_peak_time.strftime('%H:%M')}"
+        )
+    except Exception as fleet_err:
+        logger.warning(f"Fleet counter error: {fleet_err}")
+        kpi["fleet_peak_count"] = 0
+        kpi["fleet_peak_day"] = "N/A"
+        kpi["fleet_peak_time"] = "N/A"
     
     solve_times = {
         "block_building": round(block_time, 2),

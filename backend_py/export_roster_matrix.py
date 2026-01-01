@@ -230,6 +230,22 @@ def main():
     print(f"[SUCCESS] KPI Summary exported to: {kpi_file}")
 
     # ======================================================================
+    # COVERAGE AUDIT (Exact-once)
+    # ======================================================================
+    tour_coverage = {t.id: 0 for t in tours}
+    for assignment in assignments:
+        for block in assignment.blocks:
+            for tour in block.tours:
+                if tour.id in tour_coverage:
+                    tour_coverage[tour.id] += 1
+    uncovered = [tid for tid, count in tour_coverage.items() if count == 0]
+    overcovered = [tid for tid, count in tour_coverage.items() if count > 1]
+    coverage_exact_once = len(uncovered) == 0 and len(overcovered) == 0
+    kpi["coverage_exact_once"] = coverage_exact_once
+    kpi["coverage_zero_count"] = len(uncovered)
+    kpi["coverage_multi_count"] = len(overcovered)
+
+    # ======================================================================
     # RUN MANIFEST (Single-Source KPIs)
     # ======================================================================
     manifest_file = output_dir / "run_manifest.json"
@@ -238,6 +254,11 @@ def main():
         "status": solution.status,
         "time_budget_s": args.time_budget,
         "seed": args.seed,
+        "coverage": {
+            "exact_once": coverage_exact_once,
+            "zero_count": len(uncovered),
+            "multi_count": len(overcovered),
+        },
         "kpis": kpi,
     }
     with open(manifest_file, "w", encoding="utf-8") as f:

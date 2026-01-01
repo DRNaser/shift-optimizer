@@ -136,6 +136,41 @@ print(f"Total Drivers: {len(rows)}")
 recomputed_kpis = recompute_kpis_from_roster(roster_file, active_days=kpi.get("active_days", []))
 kpi.update(recomputed_kpis)
 
+# Coverage audit (exact-once)
+tour_coverage = {t.id: 0 for t in tours}
+for assignment in assignments:
+    for block in assignment.blocks:
+        for tour in block.tours:
+            if tour.id in tour_coverage:
+                tour_coverage[tour.id] += 1
+uncovered = [tid for tid, count in tour_coverage.items() if count == 0]
+overcovered = [tid for tid, count in tour_coverage.items() if count > 1]
+coverage_exact_once = len(uncovered) == 0 and len(overcovered) == 0
+kpi["coverage_exact_once"] = coverage_exact_once
+kpi["coverage_zero_count"] = len(uncovered)
+kpi["coverage_multi_count"] = len(overcovered)
+
+# Run manifest
+import json
+from datetime import datetime
+
+manifest = {
+    "timestamp": datetime.now().isoformat(),
+    "status": solution.status,
+    "time_budget_s": args.time_budget,
+    "seed": 42,
+    "coverage": {
+        "exact_once": coverage_exact_once,
+        "zero_count": len(uncovered),
+        "multi_count": len(overcovered),
+    },
+    "kpis": kpi,
+}
+manifest_path = output_dir / "run_manifest.json"
+with open(manifest_path, "w", encoding="utf-8") as f:
+    json.dump(manifest, f, indent=2, ensure_ascii=False)
+print(f"[SUCCESS] Run manifest exported to: {manifest_path}")
+
 print(f"\n" + "=" * 70)
 print("RESULT (Contract-Based Classification)")
 print("=" * 70)
