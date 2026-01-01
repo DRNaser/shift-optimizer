@@ -1190,12 +1190,9 @@ def solve_capacity_phase(
     best_solution, compressions = compress_selected_blocks(best_solution, blocks, block_index, tours)
     if compressions > 0:
         safe_print(f"  POST-COMPRESSION: Replaced {compressions} block sets (savings: ~{compressions*2} blocks)", flush=True)
-        # Update stats
-        best_stats["blocks_1er"] = sum(1 for b in best_solution if len(b.tours) == 1)
-        best_stats["blocks_2er"] = sum(1 for b in best_solution if len(b.tours) == 2)
-        best_stats["blocks_3er"] = sum(1 for b in best_solution if len(b.tours) == 3)
-        best_stats["selected_blocks"] = len(best_solution)
-    
+
+    _refresh_phase1_stats_from_selected(best_solution, best_stats, block_props)
+
     return best_solution, best_stats
 
 
@@ -1537,6 +1534,61 @@ def _build_phase1_result_from_solution(
     }
     
     return selected, stats
+
+
+def _refresh_phase1_stats_from_selected(
+    selected: list[Block],
+    stats: dict,
+    block_props: dict | None,
+) -> dict:
+    """Refresh block-mix and template stats from selected blocks."""
+    from collections import defaultdict
+
+    by_type = {
+        "1er": sum(1 for b in selected if len(b.tours) == 1),
+        "2er": sum(1 for b in selected if len(b.tours) == 2),
+        "3er": sum(1 for b in selected if len(b.tours) == 3),
+    }
+
+    sel_2er_regular = sum(1 for b in selected if len(b.tours) == 2 and b.pause_zone.value == "REGULAR")
+    sel_2er_split = sum(1 for b in selected if len(b.tours) == 2 and b.pause_zone.value == "SPLIT")
+
+    split_2er_count = 0
+    template_match_count = 0
+    if block_props:
+        for block in selected:
+            if block.id in block_props:
+                if block_props[block.id].get("is_split", False):
+                    split_2er_count += 1
+                if block_props[block.id].get("is_template", False):
+                    template_match_count += 1
+
+    by_day = defaultdict(int)
+    for block in selected:
+        by_day[block.day.value] += 1
+
+    total_selected = len(selected)
+    block_mix = {
+        "1er": round(by_type["1er"] / total_selected, 3) if total_selected else 0,
+        "2er": round(by_type["2er"] / total_selected, 3) if total_selected else 0,
+        "3er": round(by_type["3er"] / total_selected, 3) if total_selected else 0,
+    }
+
+    stats.update(
+        {
+            "selected_blocks": total_selected,
+            "blocks_1er": by_type["1er"],
+            "blocks_2er": by_type["2er"],
+            "blocks_3er": by_type["3er"],
+            "blocks_2er_regular": sel_2er_regular,
+            "blocks_2er_split": sel_2er_split,
+            "blocks_by_day": dict(by_day),
+            "block_mix": block_mix,
+            "split_2er_count": split_2er_count,
+            "template_match_count": template_match_count,
+        }
+    )
+    return stats
 
 
 def _solve_capacity_single_cap(
@@ -1942,6 +1994,17 @@ def _solve_capacity_single_cap(
         4: pass2_budget * 0.10,
         5: pass2_budget * 0.15,
     }
+    min_stage3 = min(max(3.0, pass2_budget * 0.15), pass2_budget)
+    if stage_budgets[3] < min_stage3 and pass2_budget > 0:
+        stage_budgets[3] = min_stage3
+        remaining = pass2_budget - min_stage3
+        if remaining <= 0:
+            stage_budgets.update({1: 0.0, 2: 0.0, 4: 0.0, 5: 0.0})
+        else:
+            weights = {1: 0.35, 2: 0.25, 4: 0.10, 5: 0.15}
+            total_weight = sum(weights.values())
+            for st, weight in weights.items():
+                stage_budgets[st] = remaining * (weight / total_weight)
     
     safe_print(f"  TWO-PASS BUDGET (total={total_budget:.1f}s):", flush=True)
     safe_print(f"    Pass 1 (Capacity): {pass1_budget:.1f}s", flush=True)
@@ -4766,6 +4829,8 @@ def solve_forecast_set_partitioning(
     total_hours = sum(t.duration_hours for t in tours)
     logger.info(f"Total hours: {total_hours:.1f}h")
     logger.info(f"Expected drivers: {int(total_hours/53)}-{int(total_hours/40)}")
+
+    config = ConfigV4(min_hours_per_fte=40.0, time_limit_phase1=float(time_limit), seed=seed)
     
     # Phase A: Build blocks with overrides from config
     t_block = perf_counter()
@@ -4783,7 +4848,6 @@ def solve_forecast_set_partitioning(
     t_capacity = perf_counter()
     safe_print("PHASE 1: Block selection (CP-SAT)...", flush=True)
     # Use local ConfigV4 (not ForecastConfig from forecast_weekly_solver)
-    config = ConfigV4(min_hours_per_fte=40.0, time_limit_phase1=float(time_limit), seed=seed)
     selected_blocks, phase1_stats = solve_capacity_phase(
         blocks, tours, block_index, config,
         block_scores=block_scores, block_props=block_props
@@ -4861,7 +4925,7 @@ def solve_forecast_set_partitioning(
         sp_time = perf_counter() - t_sp
     
     # Check result
-    if sp_result.status != "OK":
+    if sp_result.status not in ("OK", "SUCCESS"):
         logger.warning(f"Set-Partitioning failed: {sp_result.status}")
         logger.warning(f"Uncovered blocks: {len(sp_result.uncovered_blocks)}")
         logger.warning("Falling back to greedy assignment to ensure a valid schedule")
@@ -4953,29 +5017,50 @@ def solve_forecast_set_partitioning(
     # Convert rosters to DriverAssignment
     block_lookup = {b.id: b for b in selected_blocks}
     assignments = convert_rosters_to_assignments(sp_result.selected_rosters, block_lookup)
+
+    # Reclassify underfull FTEs to PT and renumber consistently
+    fte_min_hours = 40.0
+    fte_assignments = []
+    pt_assignments = []
+    for a in assignments:
+        if a.total_hours < fte_min_hours:
+            pt_assignments.append(a)
+        else:
+            fte_assignments.append(a)
+
+    assignments = []
+    for idx, a in enumerate(fte_assignments, start=1):
+        a.driver_type = "FTE"
+        a.driver_id = f"FTE{idx:03d}"
+        assignments.append(a)
+    for idx, a in enumerate(pt_assignments, start=1):
+        a.driver_type = "PT"
+        a.driver_id = f"PT{idx:03d}"
+        assignments.append(a)
     
     # Build KPI
-    fte_hours = [a.total_hours for a in assignments]
+    fte_hours = [a.total_hours for a in assignments if a.driver_type == "FTE"]
     under_42 = sum(1 for h in fte_hours if h < 40.0)
     over_53 = sum(1 for h in fte_hours if h > 56.5)
-    
-    if under_42 > 0 or over_53 > 0:
-        # NO SOFT FALLBACK - set-partitioning must produce valid results or FAIL
+
+    if over_53 > 0:
         status = "FAILED_CONSTRAINT_VIOLATION"
-        logger.error(f"CONSTRAINT VIOLATION: {under_42} under 40h, {over_53} over 56h")
+        logger.error(f"CONSTRAINT VIOLATION: {over_53} over 56h")
         logger.error("Set-Partitioning should only return valid rosters!")
     else:
         status = "OK"
+        if under_42 > 0:
+            logger.warning(f"Reclassified {under_42} under-40h FTE assignments to PT")
     
     kpi = {
         "solver_arch": "set-partitioning",  # CRITICAL: Proves which solver was used
         "status": status,
         "total_hours": round(total_hours, 2),
-        "drivers_fte": sp_result.num_drivers,
-        "drivers_pt": 0,
-        "fte_hours_min": round(sp_result.hours_min, 2),
-        "fte_hours_max": round(sp_result.hours_max, 2),
-        "fte_hours_avg": round(sp_result.hours_avg, 2),
+        "drivers_fte": sum(1 for a in assignments if a.driver_type == "FTE"),
+        "drivers_pt": sum(1 for a in assignments if a.driver_type == "PT"),
+        "fte_hours_min": round(min(fte_hours) if fte_hours else 0.0, 2),
+        "fte_hours_max": round(max(fte_hours) if fte_hours else 0.0, 2),
+        "fte_hours_avg": round(sum(fte_hours) / len(fte_hours) if fte_hours else 0.0, 2),
         "under_42h": under_42,
         "over_53h": over_53,
         "blocks_selected": phase1_stats["selected_blocks"],

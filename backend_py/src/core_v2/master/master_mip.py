@@ -47,10 +47,10 @@ class MasterMIP:
         Solve Lexicographically (Multi-Stage):
         
         Stage 1: Min Drivers (D)
-        Stage 2: Min Count(<30h) (Fix D)
-        Stage 3: Min Count(<35h) (Fix D, Fix <30h)
-        Stage 4: Min Sum Underutil (Fix D, Fix <30h, Fix <35h)
-        Stage 5: Max Count(>=40h) (Optional, Fix all above)
+        Stage 2: Min Count(1-day) (Fix D)
+        Stage 3: Min Count(<30h) (Fix D, Fix 1-day)
+        Stage 4: Min Count(<35h) (Fix D, Fix 1-day, Fix <30h)
+        Stage 5: Min Sum Underutil (Fix D, Fix 1-day, Fix <30h, Fix <35h)
         """
         self.highs = highspy.Highs()
         
@@ -157,8 +157,27 @@ class MasterMIP:
         val_list = [1.0] * num_cols
         self.highs.addRow(d_star_int, d_star_int, num_cols, idx_list, val_list)
         
-        # --- STAGE 2: Min Count(<30h) ---
-        logger.info("[MIP] Stage 2: Min Count <30h...")
+        # --- STAGE 2: Min Count(1-day columns) ---
+        logger.info("[MIP] Stage 2: Min Count 1-day columns...")
+        costs_s2 = []
+        for col in self.columns:
+            costs_s2.append(1.0 if col.days_worked == 1 else 0.0)
+
+        self.highs.changeColsCost(num_cols, list(range(num_cols)), costs_s2)
+        self.highs.setOptionValue("time_limit", stage_time_limit)
+        self.highs.run()
+
+        if check_status(2):
+            val_s2 = self.highs.getInfo().objective_function_value
+            logger.info(f"[MIP] Stage 2 Obj = {val_s2}")
+            idx_s2 = [i for i, c in enumerate(self.columns) if c.days_worked == 1]
+            if idx_s2:
+                val_s2_int = round(val_s2)
+                vals_s2 = [1.0] * len(idx_s2)
+                self.highs.addRow(0.0, val_s2_int, len(idx_s2), idx_s2, vals_s2)
+
+        # --- STAGE 3: Min Count(<30h) ---
+        logger.info("[MIP] Stage 3: Min Count <30h...")
         costs_s2 = []
         for col in self.columns:
             costs_s2.append(1.0 if col.hours < 30.0 else 0.0)
@@ -167,19 +186,17 @@ class MasterMIP:
         self.highs.setOptionValue("time_limit", stage_time_limit)
         self.highs.run()
         
-        if check_status(2):
+        if check_status(3):
             val_s2 = self.highs.getInfo().objective_function_value
-            logger.info(f"[MIP] Stage 2 Obj = {val_s2}")
-            # Fix Stage 2 result: Sum (x_short) <= val_s2
-            # Add row for <30h columns
+            logger.info(f"[MIP] Stage 3 Obj = {val_s2}")
             idx_s2 = [i for i, c in enumerate(self.columns) if c.hours < 30.0]
             if idx_s2:
                 val_s2_int = round(val_s2)
                 vals_s2 = [1.0] * len(idx_s2)
                 self.highs.addRow(0.0, val_s2_int, len(idx_s2), idx_s2, vals_s2)
                 
-        # --- STAGE 3: Min Count(<35h) ---
-        logger.info("[MIP] Stage 3: Min Count <35h...")
+        # --- STAGE 4: Min Count(<35h) ---
+        logger.info("[MIP] Stage 4: Min Count <35h...")
         costs_s3 = []
         for col in self.columns:
             costs_s3.append(1.0 if col.hours < 35.0 else 0.0)
@@ -187,23 +204,22 @@ class MasterMIP:
         self.highs.changeColsCost(num_cols, list(range(num_cols)), costs_s3)
         self.highs.run()
         
-        if check_status(3):
+        if check_status(4):
             val_s3 = self.highs.getInfo().objective_function_value
-            logger.info(f"[MIP] Stage 3 Obj = {val_s3}")
-            # Fix Stage 3
+            logger.info(f"[MIP] Stage 4 Obj = {val_s3}")
             idx_s3 = [i for i, c in enumerate(self.columns) if c.hours < 35.0]
             if idx_s3:
                 val_s3_int = round(val_s3)
                 vals_s3 = [1.0] * len(idx_s3)
                 self.highs.addRow(0.0, val_s3_int, len(idx_s3), idx_s3, vals_s3)
                 
-        # --- STAGE 4: Min Sum Underutil ---
+        # --- STAGE 5: Min Sum Underutil ---
         # Objective: Σ max(0, T - hours_col) * x_col
         # T defined as 33h for compressed, 38h for normal?
         # User spec: "Stage4: min sum_underutil = Σ max(0, T - hours_col) * x_col (T: compressed ~33h)"
         target_hours = 33.0 if week_category == WeekCategory.COMPRESSED else 38.0
         
-        logger.info(f"[MIP] Stage 4: Min Sum Underutil (T={target_hours})...")
+        logger.info(f"[MIP] Stage 5: Min Sum Underutil (T={target_hours})...")
         costs_s4 = []
         for col in self.columns:
             under = max(0.0, target_hours - col.hours)
@@ -211,7 +227,7 @@ class MasterMIP:
             
         self.highs.changeColsCost(num_cols, list(range(num_cols)), costs_s4)
         self.highs.run()
-        check_status(4) # Don't need to fix this one, it's the final major stage
+        check_status(5) # Don't need to fix this one, it's the final major stage
         
         # --- Extract Result ---
         sols = self.highs.getSolution().col_value

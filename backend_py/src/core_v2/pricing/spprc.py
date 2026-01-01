@@ -8,6 +8,7 @@ Nodes: Duties (generated lazily per iteration).
 
 import logging
 import time
+from dataclasses import dataclass
 from typing import Optional, Any
 
 from ..model.duty import DutyV2
@@ -18,6 +19,14 @@ from ..duty_factory import DutyFactoryTopK, DutyFactoryCaps
 from .label import Label
 
 logger = logging.getLogger("SPPRC")
+
+
+@dataclass
+class RCTelemetry:
+    """Best reduced cost stats from the last pricing run."""
+
+    best_rc_total: float = float("inf")
+    candidates_considered: int = 0
 
 
 class SPPRCPricer:
@@ -47,6 +56,7 @@ class SPPRCPricer:
         
         # Telemetry
         self.last_duty_counts: dict[int, int] = {}
+        self.rc_telemetry = RCTelemetry()
 
     def price(
         self, 
@@ -196,6 +206,11 @@ class SPPRCPricer:
                     
                     if final_rc < -1e-5:  # Negative Reduced Cost
                         candidates.append((final_rc, lab))
+
+        self.rc_telemetry.candidates_considered = len(candidates)
+        self.rc_telemetry.best_rc_total = (
+            min((rc for rc, _ in candidates), default=float("inf"))
+        )
         
         # 4. Sort and Select Top-K
         candidates.sort(key=lambda x: x[0])  # Lowest RC first
@@ -265,4 +280,3 @@ class SPPRCPricer:
             "duty_counts_by_day": self.last_duty_counts,
             "factory_telemetry": self.duty_factory.get_telemetry_summary(),
         }
-
