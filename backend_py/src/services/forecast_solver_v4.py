@@ -4804,6 +4804,7 @@ def solve_forecast_set_partitioning(
     total_hours = sum(t.duration_hours for t in tours)
     logger.info(f"Total hours: {total_hours:.1f}h")
     logger.info(f"Expected drivers: {int(total_hours/53)}-{int(total_hours/40)}")
+    config = ConfigV4(seed=seed)
     
     # Phase A: Build blocks with overrides from config
     t_block = perf_counter()

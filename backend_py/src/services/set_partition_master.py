@@ -448,7 +448,10 @@ def solve_rmp(
     has_complex_coverage = {}
     for block_id in all_block_ids:
         col_indices = coverage_index[block_id]
-        has_complex_coverage[block_id] = any(columns[idx].num_blocks > 1 for idx in col_indices)
+        has_complex_coverage[block_id] = any(
+            getattr(columns[idx], "num_blocks", len(columns[idx].block_ids)) > 1
+            for idx in col_indices
+        )
     
     # =========================================================================
     # BUILD OBJECTIVE: Min(D * M_DRIVER + secondary + under * W_UNDER)
@@ -460,9 +463,15 @@ def solve_rmp(
     # Secondary costs (bounded per driver)
     secondary_costs = []
     for i, col in enumerate(columns):
-        total_hours = col.total_minutes / 60.0
+        if hasattr(col, "total_minutes"):
+            total_hours = col.total_minutes / 60.0
+        else:
+            total_hours = getattr(col, "total_hours", 0.0)
         sec = 0
-        tours_count = sum(t for _, t, _, _ in col.day_stats)
+        if hasattr(col, "day_stats"):
+            tours_count = sum(t for _, t, _, _ in col.day_stats)
+        else:
+            tours_count = len(getattr(col, "block_ids", []))
         
         # 1. Hours Deviation Penalty (bounded)
         # Target is 47.5h for optimal utilization, but any hours are accepted
@@ -477,7 +486,7 @@ def solve_rmp(
             sec += short_pen
         
         # 3. Singleton Penalty (bounded)
-        if col.num_blocks == 1:
+        if getattr(col, "num_blocks", len(getattr(col, "block_ids", []))) == 1:
             block_id = list(col.block_ids)[0]
             if has_complex_coverage.get(block_id, False):
                 # Avoidable singleton
@@ -555,8 +564,9 @@ def solve_rmp(
     selected = [columns[i] for i in range(C) if solver.Value(y[i]) == 1]
     num_drivers = len(selected)
     
-    # Calculate U Sum
+    # Calculate slack totals
     u_sum = sum(solver.Value(under[block_id]) for block_id in all_block_ids)
+    o_sum = sum(solver.Value(over[block_id]) for block_id in all_block_ids)
     
     log_fn(f"Selected {num_drivers} rosters (drivers)")
     
@@ -570,8 +580,11 @@ def solve_rmp(
     
     coverage_element_name = "tours" if coverage_attr == "covered_tour_ids" else "blocks"
     
-    if uncovered:
-        log_fn(f"WARNING: {len(uncovered)} {coverage_element_name} still uncovered after solve! (u_sum={u_sum})")
+    if uncovered or u_sum > 0 or o_sum > 0:
+        log_fn(
+            f"WARNING: Coverage slack detected for {coverage_element_name} "
+            f"(uncovered={len(uncovered)}, u_sum={u_sum}, o_sum={o_sum})"
+        )
     else:
         log_fn(f"[OK] All {len(all_block_ids)} {coverage_element_name} covered exactly once (u_sum={u_sum})")
     
@@ -581,7 +594,9 @@ def solve_rmp(
     hours = [r.total_hours for r in selected] if selected else [0]
     
     # 1. Selected Singletons
-    selected_singletons = [r for r in selected if r.num_blocks == 1]
+    selected_singletons = [
+        r for r in selected if getattr(r, "num_blocks", len(getattr(r, "block_ids", []))) == 1
+    ]
     selected_singletons_count = len(selected_singletons)
     
     # 2. Hours Statistics (for utilization reporting, NOT classification)
@@ -612,10 +627,10 @@ def solve_rmp(
     log_fn(f"  Selected Singletons: {selected_singletons_count}")
     log_fn(f"  Hours: {hours_stats}")
     log_fn(f"  Low Utilization Share (<40h): {low_util_share:.1f}%")
-    log_fn(f"  u_sum: {u_sum}")
+    log_fn(f"  u_sum: {u_sum}, o_sum: {o_sum}")
 
     return {
-        "status": status_name,
+        "status": "INFEASIBLE" if (u_sum > 0 or o_sum > 0) else status_name,
         "selected_rosters": selected,
         "uncovered_blocks": uncovered,
         "num_drivers": num_drivers,
@@ -626,6 +641,7 @@ def solve_rmp(
         "pt_share_hours": low_util_share,
         "selected_singletons_count": selected_singletons_count,
         "u_sum": u_sum,
+        "o_sum": o_sum,
         "solve_time": solve_time,
         "coverage_freq": coverage_freq,
     }

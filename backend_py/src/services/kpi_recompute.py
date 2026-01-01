@@ -48,8 +48,6 @@ def _aggregate_matrix_rows(rows: list[dict]) -> dict:
     active_day_set: set[str] = set()
     fte_hours = []
     driver_hours = []
-    low_util_hours_total = 0.0
-    low_util_drivers = 0
 
     for row in rows:
         drivers_raw += 1
@@ -85,8 +83,6 @@ def _aggregate_matrix_rows(rows: list[dict]) -> dict:
         "fte_hours": fte_hours,
         "driver_hours": driver_hours,
         "active_days": sorted(active_day_set, key=lambda d: DAY_ORDER.index(d)),
-        "low_util_hours_total": low_util_hours_total,
-        "low_util_drivers": low_util_drivers,
     }
 
 
@@ -122,8 +118,6 @@ def _aggregate_duty_rows(rows: list[dict]) -> dict:
     pt_hours_total = 0.0
     fte_hours = []
     driver_hours = []
-    low_util_hours_total = 0.0
-    low_util_drivers = 0
 
     for info in drivers.values():
         hours = info["hours"]
@@ -149,8 +143,6 @@ def _aggregate_duty_rows(rows: list[dict]) -> dict:
         "fte_hours": fte_hours,
         "driver_hours": driver_hours,
         "active_days": sorted(active_day_set, key=lambda d: DAY_ORDER.index(d) if d in DAY_ORDER else 999),
-        "low_util_hours_total": low_util_hours_total,
-        "low_util_drivers": low_util_drivers,
     }
 
 

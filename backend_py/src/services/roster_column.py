@@ -274,16 +274,17 @@ def validate_roster_constraints(
                     )
     
     # =========================================================================
-    # 5. WEEK HOURS: enforce max hours only (min handled in objective)
+    # 5. WEEK HOURS: enforce min/max (min optional for PT)
     # =========================================================================
     total_hours = total_minutes / 60.0
-    
-    # Note: Minimum hours are now a soft cost, not a hard constraint
-    # This allows the solver to use slightly under-filled FTEs when optimal
     
     if total_hours > MAX_WEEK_HOURS:
         violations.append(
             f"Week hours {total_hours:.1f}h > max {MAX_WEEK_HOURS}h"
+        )
+    if not allow_pt and total_hours < MIN_WEEK_HOURS:
+        violations.append(
+            f"Week hours {total_hours:.1f}h < min {MIN_WEEK_HOURS}h"
         )
     
     return violations
