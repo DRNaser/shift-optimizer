@@ -44,9 +44,9 @@ class AtomicCoverageGuard:
     """Ensure every tour has at least one covering column in the pool."""
 
     @staticmethod
-    def validate(pool_columns: list, all_tour_ids: set[str]) -> None:
+    def validate(model_columns: list, all_tour_ids: set[str]) -> None:
         support = {tid: 0 for tid in all_tour_ids}
-        for col in pool_columns:
+        for col in model_columns:
             for tid in col.covered_tour_ids:
                 if tid in support:
                     support[tid] += 1
@@ -61,7 +61,7 @@ class AtomicCoverageGuard:
                 "AtomicCoverageGuard failed: "
                 f"missing {len(missing)} tours: {_format_sample(sorted(missing))}; "
                 f"support_hist(min/median/p10)={min_support}/{median_support}/{p10_support}; "
-                f"pool_size={len(pool_columns)}"
+                f"model_size={len(model_columns)}"
             )
 
 
@@ -200,18 +200,23 @@ class OutputContractGuard:
                     )
 
                 counts = {tid: 0 for tid in expected_tour_ids}
+                unknown = set()
                 for row in rows:
                     for tid in row.get("tour_ids", "").split("|"):
                         tid = tid.strip()
+                        if not tid:
+                            continue
                         if tid in counts:
                             counts[tid] += 1
+                        else:
+                            unknown.add(tid)
 
                 missing = [tid for tid, count in counts.items() if count == 0]
                 dupes = [tid for tid, count in counts.items() if count > 1]
-                if missing or dupes:
+                if missing or dupes or unknown:
                     raise AssertionError(
                         "OutputContractGuard failed: coverage exact-once violated. "
-                        f"missing={len(missing)} dupes={len(dupes)}"
+                        f"missing={len(missing)} dupes={len(dupes)} unknown={len(unknown)}"
                     )
                 if strict and manifest.get("kpis", {}).get("coverage_exact_once") is False:
                     raise AssertionError(

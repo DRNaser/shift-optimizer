@@ -112,6 +112,7 @@ class OptimizerCoreV2:
             "unique_ratio_hist": [],
             "best_rc_hist": [],
             "duals_stale_hist": [],
+            "lp_hit_time_limit_hist": [],
             "lp_time_limit_hist": [],
             "profile_hist": [],
             "lp_runtime_hist": [],
@@ -235,6 +236,7 @@ class OptimizerCoreV2:
                 lp_res = master_lp.solve(time_limit=lp_time_limit)
                 cg_telemetry["lp_time_limit_hist"].append(lp_time_limit)
                 cg_telemetry["lp_runtime_hist"].append(lp_res.get("runtime", 0.0))
+                cg_telemetry["lp_hit_time_limit_hist"].append(lp_res.get("hit_time_limit", False))
 
                 if lp_res.get("duals_stale"):
                     if lp_time_limit < lp_time_limit_max:
@@ -242,6 +244,7 @@ class OptimizerCoreV2:
                         lp_res = master_lp.solve(time_limit=lp_time_limit)
                         cg_telemetry["lp_time_limit_hist"].append(lp_time_limit)
                         cg_telemetry["lp_runtime_hist"].append(lp_res.get("runtime", 0.0))
+                        cg_telemetry["lp_hit_time_limit_hist"].append(lp_res.get("hit_time_limit", False))
                 
                 lp_status = lp_res["status"]
                 lp_obj = lp_res.get("objective", 0.0)
@@ -595,6 +598,8 @@ class OptimizerCoreV2:
                 )
 
                 coverage_exact_once = self._check_exact_once(selected_columns, all_tour_ids)
+                selected_day_mix = self._day_mix(selected_columns)
+                pool_day_mix = self._day_mix(pool.columns)
                 avg_days_per_driver = (
                     sum(c.days_worked for c in selected_columns) / len(selected_columns)
                     if selected_columns
@@ -629,9 +634,12 @@ class OptimizerCoreV2:
                     pool_size_after_seed=pool_size_after_seed,
                     pool_size_final=pool.size,
                     added_cols_hist=cg_telemetry["kept_cols_hist"],
+                    pool_day_mix=pool_day_mix,
+                    selected_day_mix=selected_day_mix,
                     profile_hist=cg_telemetry["profile_hist"],
                     best_rc_hist=cg_telemetry["best_rc_hist"],
                     duals_stale_hist=cg_telemetry["duals_stale_hist"],
+                    lp_hit_time_limit_hist=cg_telemetry["lp_hit_time_limit_hist"],
                     dedupe_hist={
                         "generated_cols": cg_telemetry["generated_cols_hist"],
                         "deduped_cols": cg_telemetry["deduped_cols_hist"],
@@ -682,9 +690,12 @@ class OptimizerCoreV2:
                     pool_size_after_seed=pool_size_after_seed,
                     pool_size_final=pool.size,
                     added_cols_hist=cg_telemetry["kept_cols_hist"],
+                    pool_day_mix=self._day_mix(pool.columns),
+                    selected_day_mix={},
                     profile_hist=cg_telemetry["profile_hist"],
                     best_rc_hist=cg_telemetry["best_rc_hist"],
                     duals_stale_hist=cg_telemetry["duals_stale_hist"],
+                    lp_hit_time_limit_hist=cg_telemetry["lp_hit_time_limit_hist"],
                     dedupe_hist={
                         "generated_cols": cg_telemetry["generated_cols_hist"],
                         "deduped_cols": cg_telemetry["deduped_cols_hist"],
@@ -718,9 +729,12 @@ class OptimizerCoreV2:
                 pool_size_after_seed=pool_size_after_seed if "pool_size_after_seed" in locals() else 0,
                 pool_size_final=pool.size if "pool" in locals() else 0,
                 added_cols_hist=cg_telemetry["kept_cols_hist"],
+                pool_day_mix=self._day_mix(pool.columns) if "pool" in locals() else {},
+                selected_day_mix={},
                 profile_hist=cg_telemetry["profile_hist"],
                 best_rc_hist=cg_telemetry["best_rc_hist"],
                 duals_stale_hist=cg_telemetry["duals_stale_hist"],
+                lp_hit_time_limit_hist=cg_telemetry["lp_hit_time_limit_hist"],
                 dedupe_hist={
                     "generated_cols": cg_telemetry["generated_cols_hist"],
                     "deduped_cols": cg_telemetry["deduped_cols_hist"],
@@ -843,6 +857,14 @@ class OptimizerCoreV2:
         idx = int(round((len(values_sorted) - 1) * percentile))
         return values_sorted[min(max(idx, 0), len(values_sorted) - 1)]
 
+    @staticmethod
+    def _day_mix(columns: list) -> dict:
+        mix = {}
+        for col in columns:
+            days = getattr(col, "days_worked", 1)
+            mix[days] = mix.get(days, 0) + 1
+        return dict(sorted(mix.items()))
+
     def _write_run_manifest(
         self,
         ctx: RunContext,
@@ -863,9 +885,12 @@ class OptimizerCoreV2:
         pool_size_after_seed: int,
         pool_size_final: int,
         added_cols_hist: list[int],
+        pool_day_mix: dict,
+        selected_day_mix: dict,
         profile_hist: list[str],
         best_rc_hist: list[float],
         duals_stale_hist: list[bool],
+        lp_hit_time_limit_hist: list[bool],
         dedupe_hist: dict,
         repairs_applied: list,
     ) -> None:
@@ -895,11 +920,14 @@ class OptimizerCoreV2:
                 "pool_size_after_seed": pool_size_after_seed,
                 "pool_size_final": pool_size_final,
                 "added_cols_hist": added_cols_hist,
+                "pool_day_mix": pool_day_mix,
+                "selected_day_mix": selected_day_mix,
             },
             "pricing": {
                 "profile_hist": profile_hist,
                 "best_rc_hist": best_rc_hist,
                 "duals_stale_hist": duals_stale_hist,
+                "lp_hit_time_limit_hist": lp_hit_time_limit_hist,
             },
             "telemetry": {
                 "dedupe": dedupe_hist,
