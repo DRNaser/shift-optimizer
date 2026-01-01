@@ -1190,12 +1190,9 @@ def solve_capacity_phase(
     best_solution, compressions = compress_selected_blocks(best_solution, blocks, block_index, tours)
     if compressions > 0:
         safe_print(f"  POST-COMPRESSION: Replaced {compressions} block sets (savings: ~{compressions*2} blocks)", flush=True)
-        # Update stats
-        best_stats["blocks_1er"] = sum(1 for b in best_solution if len(b.tours) == 1)
-        best_stats["blocks_2er"] = sum(1 for b in best_solution if len(b.tours) == 2)
-        best_stats["blocks_3er"] = sum(1 for b in best_solution if len(b.tours) == 3)
-        best_stats["selected_blocks"] = len(best_solution)
-    
+
+    _refresh_phase1_stats_from_selected(best_solution, best_stats, block_props)
+
     return best_solution, best_stats
 
 
@@ -1537,6 +1534,61 @@ def _build_phase1_result_from_solution(
     }
     
     return selected, stats
+
+
+def _refresh_phase1_stats_from_selected(
+    selected: list[Block],
+    stats: dict,
+    block_props: dict | None,
+) -> dict:
+    """Refresh block-mix and template stats from selected blocks."""
+    from collections import defaultdict
+
+    by_type = {
+        "1er": sum(1 for b in selected if len(b.tours) == 1),
+        "2er": sum(1 for b in selected if len(b.tours) == 2),
+        "3er": sum(1 for b in selected if len(b.tours) == 3),
+    }
+
+    sel_2er_regular = sum(1 for b in selected if len(b.tours) == 2 and b.pause_zone.value == "REGULAR")
+    sel_2er_split = sum(1 for b in selected if len(b.tours) == 2 and b.pause_zone.value == "SPLIT")
+
+    split_2er_count = 0
+    template_match_count = 0
+    if block_props:
+        for block in selected:
+            if block.id in block_props:
+                if block_props[block.id].get("is_split", False):
+                    split_2er_count += 1
+                if block_props[block.id].get("is_template", False):
+                    template_match_count += 1
+
+    by_day = defaultdict(int)
+    for block in selected:
+        by_day[block.day.value] += 1
+
+    total_selected = len(selected)
+    block_mix = {
+        "1er": round(by_type["1er"] / total_selected, 3) if total_selected else 0,
+        "2er": round(by_type["2er"] / total_selected, 3) if total_selected else 0,
+        "3er": round(by_type["3er"] / total_selected, 3) if total_selected else 0,
+    }
+
+    stats.update(
+        {
+            "selected_blocks": total_selected,
+            "blocks_1er": by_type["1er"],
+            "blocks_2er": by_type["2er"],
+            "blocks_3er": by_type["3er"],
+            "blocks_2er_regular": sel_2er_regular,
+            "blocks_2er_split": sel_2er_split,
+            "blocks_by_day": dict(by_day),
+            "block_mix": block_mix,
+            "split_2er_count": split_2er_count,
+            "template_match_count": template_match_count,
+        }
+    )
+    return stats
 
 
 def _solve_capacity_single_cap(
@@ -1942,6 +1994,17 @@ def _solve_capacity_single_cap(
         4: pass2_budget * 0.10,
         5: pass2_budget * 0.15,
     }
+    min_stage3 = min(max(3.0, pass2_budget * 0.15), pass2_budget)
+    if stage_budgets[3] < min_stage3 and pass2_budget > 0:
+        stage_budgets[3] = min_stage3
+        remaining = pass2_budget - min_stage3
+        if remaining <= 0:
+            stage_budgets.update({1: 0.0, 2: 0.0, 4: 0.0, 5: 0.0})
+        else:
+            weights = {1: 0.35, 2: 0.25, 4: 0.10, 5: 0.15}
+            total_weight = sum(weights.values())
+            for st, weight in weights.items():
+                stage_budgets[st] = remaining * (weight / total_weight)
     
     safe_print(f"  TWO-PASS BUDGET (total={total_budget:.1f}s):", flush=True)
     safe_print(f"    Pass 1 (Capacity): {pass1_budget:.1f}s", flush=True)
@@ -4766,6 +4829,8 @@ def solve_forecast_set_partitioning(
     total_hours = sum(t.duration_hours for t in tours)
     logger.info(f"Total hours: {total_hours:.1f}h")
     logger.info(f"Expected drivers: {int(total_hours/53)}-{int(total_hours/40)}")
+
+    config = ConfigV4(min_hours_per_fte=40.0, time_limit_phase1=float(time_limit), seed=seed)
     
     # Phase A: Build blocks with overrides from config
     t_block = perf_counter()
@@ -4783,7 +4848,6 @@ def solve_forecast_set_partitioning(
     t_capacity = perf_counter()
     safe_print("PHASE 1: Block selection (CP-SAT)...", flush=True)
     # Use local ConfigV4 (not ForecastConfig from forecast_weekly_solver)
-    config = ConfigV4(min_hours_per_fte=40.0, time_limit_phase1=float(time_limit), seed=seed)
     selected_blocks, phase1_stats = solve_capacity_phase(
         blocks, tours, block_index, config,
         block_scores=block_scores, block_props=block_props
