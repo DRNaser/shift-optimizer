@@ -111,6 +111,7 @@ class OptimizerCoreV2:
             "kept_cols_hist": [],
             "unique_ratio_hist": [],
             "best_rc_hist": [],
+            "lp_obj_hist": [],
             "duals_stale_hist": [],
             "lp_hit_time_limit_hist": [],
             "lp_time_limit_hist": [],
@@ -382,6 +383,7 @@ class OptimizerCoreV2:
                 cg_telemetry["unique_ratio_hist"].append(unique_ratio)
                 cg_telemetry["best_rc_hist"].append(pricer.rc_telemetry.best_rc_total)
                 cg_telemetry["duals_stale_hist"].append(lp_res.get("duals_stale", False))
+                cg_telemetry["lp_obj_hist"].append(lp_obj)
 
                 if unique_ratio < 0.6 and len(new_cols) > 0:
                     log(
@@ -640,6 +642,8 @@ class OptimizerCoreV2:
                     best_rc_hist=cg_telemetry["best_rc_hist"],
                     duals_stale_hist=cg_telemetry["duals_stale_hist"],
                     lp_hit_time_limit_hist=cg_telemetry["lp_hit_time_limit_hist"],
+                    lp_obj_hist=cg_telemetry["lp_obj_hist"],
+                    lp_time_limit_hist=cg_telemetry["lp_time_limit_hist"],
                     dedupe_hist={
                         "generated_cols": cg_telemetry["generated_cols_hist"],
                         "deduped_cols": cg_telemetry["deduped_cols_hist"],
@@ -696,6 +700,8 @@ class OptimizerCoreV2:
                     best_rc_hist=cg_telemetry["best_rc_hist"],
                     duals_stale_hist=cg_telemetry["duals_stale_hist"],
                     lp_hit_time_limit_hist=cg_telemetry["lp_hit_time_limit_hist"],
+                    lp_obj_hist=cg_telemetry["lp_obj_hist"],
+                    lp_time_limit_hist=cg_telemetry["lp_time_limit_hist"],
                     dedupe_hist={
                         "generated_cols": cg_telemetry["generated_cols_hist"],
                         "deduped_cols": cg_telemetry["deduped_cols_hist"],
@@ -735,6 +741,8 @@ class OptimizerCoreV2:
                 best_rc_hist=cg_telemetry["best_rc_hist"],
                 duals_stale_hist=cg_telemetry["duals_stale_hist"],
                 lp_hit_time_limit_hist=cg_telemetry["lp_hit_time_limit_hist"],
+                lp_obj_hist=cg_telemetry["lp_obj_hist"],
+                lp_time_limit_hist=cg_telemetry["lp_time_limit_hist"],
                 dedupe_hist={
                     "generated_cols": cg_telemetry["generated_cols_hist"],
                     "deduped_cols": cg_telemetry["deduped_cols_hist"],
@@ -891,6 +899,8 @@ class OptimizerCoreV2:
         best_rc_hist: list[float],
         duals_stale_hist: list[bool],
         lp_hit_time_limit_hist: list[bool],
+        lp_obj_hist: list[float],
+        lp_time_limit_hist: list[float],
         dedupe_hist: dict,
         repairs_applied: list,
     ) -> None:
@@ -903,7 +913,7 @@ class OptimizerCoreV2:
             "stop_reason": stop_reason,
             "config_snapshot": config_snapshot,
             "kpis": {
-                "coverage_exact_once": coverage_exact_once,
+                "coverage_exact_once": 1.0 if coverage_exact_once else 0.0,
                 "drivers_total": drivers_total,
                 "avg_days_per_driver": round(avg_days_per_driver, 3),
                 "tours_per_driver": round(tours_per_driver, 3),
@@ -914,6 +924,7 @@ class OptimizerCoreV2:
                 "lp_time_sec_p50": round(self._percentile(lp_times, 0.5), 3),
                 "lp_time_sec_p95": round(self._percentile(lp_times, 0.95), 3),
                 "mip_time_sec": round(mip_time, 3),
+                "lp_time_limit_sec": lp_time_limit_hist[-1] if lp_time_limit_hist else 0.0,
             },
             "cg": {
                 "iters_done": cg_iters,
@@ -921,13 +932,17 @@ class OptimizerCoreV2:
                 "pool_size_final": pool_size_final,
                 "added_cols_hist": added_cols_hist,
                 "pool_day_mix": pool_day_mix,
-                "selected_day_mix": selected_day_mix,
             },
             "pricing": {
                 "profile_hist": profile_hist,
                 "best_rc_hist": best_rc_hist,
                 "duals_stale_hist": duals_stale_hist,
                 "lp_hit_time_limit_hist": lp_hit_time_limit_hist,
+                "lp_obj_hist": lp_obj_hist,
+                "lp_time_limit_hist": lp_time_limit_hist,
+            },
+            "selection": {
+                "selected_day_mix": selected_day_mix,
             },
             "telemetry": {
                 "dedupe": dedupe_hist,

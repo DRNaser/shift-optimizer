@@ -58,7 +58,7 @@ class AtomicCoverageGuard:
             median_support = counts[len(counts) // 2] if counts else 0
             p10_support = counts[max(0, int(len(counts) * 0.1))] if counts else 0
             raise AssertionError(
-                "AtomicCoverageGuard failed: "
+                "AtomicCoverageGuard failed (model coverage support): "
                 f"missing {len(missing)} tours: {_format_sample(sorted(missing))}; "
                 f"support_hist(min/median/p10)={min_support}/{median_support}/{p10_support}; "
                 f"model_size={len(model_columns)}"
@@ -133,6 +133,7 @@ class OutputContractGuard:
         "timing",
         "cg",
         "pricing",
+        "selection",
     }
     REQUIRED_KPI_FIELDS = {
         "coverage_exact_once",
@@ -140,6 +141,13 @@ class OutputContractGuard:
         "avg_days_per_driver",
         "tours_per_driver",
         "fleet_peak",
+    }
+    REQUIRED_ROSTER_FIELDS = {
+        "driver_id",
+        "day",
+        "duty_start",
+        "duty_end",
+        "tour_ids",
     }
 
     @staticmethod
@@ -188,17 +196,51 @@ class OutputContractGuard:
                     f"{sorted(missing_kpis)}"
                 )
 
+        if roster_path is None and strict:
+            raise AssertionError("OutputContractGuard failed: roster_path not provided")
+
         if roster_path:
             if not os.path.exists(roster_path):
                 raise AssertionError(f"OutputContractGuard failed: missing roster {roster_path}")
 
-            if expected_tour_ids:
-                rows = OutputContractGuard._read_csv_rows(roster_path)
-                if not rows or "tour_ids" not in rows[0]:
+            rows = OutputContractGuard._read_csv_rows(roster_path)
+            if not rows:
+                raise AssertionError("OutputContractGuard failed: roster has no rows")
+
+            header_fields = set(rows[0].keys())
+            missing_fields = OutputContractGuard.REQUIRED_ROSTER_FIELDS - header_fields
+            if missing_fields:
+                raise AssertionError(
+                    "OutputContractGuard failed: roster missing required columns: "
+                    f"{sorted(missing_fields)}"
+                )
+
+            for row in rows:
+                for field in OutputContractGuard.REQUIRED_ROSTER_FIELDS:
+                    if not row.get(field):
+                        raise AssertionError(
+                            f"OutputContractGuard failed: roster field '{field}' empty"
+                        )
+                try:
+                    day = int(row["day"])
+                except ValueError as exc:
+                    raise AssertionError("OutputContractGuard failed: invalid day value") from exc
+                if day < 0 or day > 6:
+                    raise AssertionError("OutputContractGuard failed: day out of range")
+
+                try:
+                    duty_start = int(row["duty_start"])
+                    duty_end = int(row["duty_end"])
+                except ValueError as exc:
                     raise AssertionError(
-                        "OutputContractGuard failed: roster missing tour_ids column"
+                        "OutputContractGuard failed: duty_start/duty_end not parseable"
+                    ) from exc
+                if duty_end <= duty_start:
+                    raise AssertionError(
+                        "OutputContractGuard failed: duty_end must be after duty_start"
                     )
 
+            if expected_tour_ids:
                 counts = {tid: 0 for tid in expected_tour_ids}
                 unknown = set()
                 for row in rows:
@@ -213,12 +255,15 @@ class OutputContractGuard:
 
                 missing = [tid for tid, count in counts.items() if count == 0]
                 dupes = [tid for tid, count in counts.items() if count > 1]
-                if missing or dupes or unknown:
+                covered = {tid for tid, count in counts.items() if count > 0}
+                count_mismatch = len(covered) != len(expected_tour_ids)
+                if missing or dupes or unknown or count_mismatch:
                     raise AssertionError(
                         "OutputContractGuard failed: coverage exact-once violated. "
-                        f"missing={len(missing)} dupes={len(dupes)} unknown={len(unknown)}"
+                        f"missing={len(missing)} dupes={len(dupes)} "
+                        f"unknown={len(unknown)} count_mismatch={count_mismatch}"
                     )
-                if strict and manifest.get("kpis", {}).get("coverage_exact_once") is False:
+                if strict and manifest.get("kpis", {}).get("coverage_exact_once") in (0, 0.0, False):
                     raise AssertionError(
                         "OutputContractGuard failed: manifest coverage_exact_once is false"
                     )
