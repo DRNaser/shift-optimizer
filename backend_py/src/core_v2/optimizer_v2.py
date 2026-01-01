@@ -375,6 +375,23 @@ class OptimizerCoreV2:
                 if artificial_final > 0:
                     return self._fail_result(ctx, "ARTIFICIAL_USED", f"{artificial_final} artificials in final", logs, proof, telemetry)
                 
+                # Duplicate tour coverage guard (should be impossible under exact cover)
+                tour_counts: dict[str, int] = {}
+                for col in selected_columns:
+                    for tour_id in col.covered_tour_ids:
+                        tour_counts[tour_id] = tour_counts.get(tour_id, 0) + 1
+                duplicate_tours = [t for t, count in tour_counts.items() if count > 1]
+                if duplicate_tours:
+                    sample = ", ".join(sorted(duplicate_tours)[:5])
+                    return self._fail_result(
+                        ctx,
+                        "DUPLICATE_TOUR_COVERAGE",
+                        f"{len(duplicate_tours)} tours duplicated in final solution (sample: {sample})",
+                        logs,
+                        proof,
+                        telemetry,
+                    )
+
                 # Coverage check
                 covered_tours = set()
                 for col in selected_columns:

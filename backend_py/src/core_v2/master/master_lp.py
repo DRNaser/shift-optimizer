@@ -84,23 +84,28 @@ class MasterLP:
         valid_lb = []
         valid_ub = []
         
-        # Track row coverage for validation
+        # Track row coverage for validation (real columns only)
         row_coverage = [0] * num_rows
+        unknown_tour_ids: set[str] = set()
         
         # 1. Real Columns
         curr_nz = 0
+        real_nz = 0
         for col_idx, col in enumerate(self.columns):
             valid_cost_list.append(self._compute_cost(col, week_category))
             valid_lb.append(0.0)
             valid_ub.append(highspy.kHighsInf)
             
             for tour_id in col.covered_tour_ids:
-                if tour_id in self.tour_map:
-                    row_idx = self.tour_map[tour_id]
-                    row_indices.append(row_idx)
-                    values.append(1.0)
-                    curr_nz += 1
-                    row_coverage[row_idx] += 1
+                row_idx = self.tour_map.get(tour_id)
+                if row_idx is None:
+                    unknown_tour_ids.add(tour_id)
+                    continue
+                row_indices.append(row_idx)
+                values.append(1.0)
+                curr_nz += 1
+                real_nz += 1
+                row_coverage[row_idx] += 1
             start_indices.append(curr_nz)
             
             # Timeout check during build
@@ -121,12 +126,21 @@ class MasterLP:
             values.append(1.0)
             curr_nz += 1
             start_indices.append(curr_nz)
-            row_coverage[i] += 1  # Artificial covers this row
+
+        if unknown_tour_ids:
+            unknown_count = len(unknown_tour_ids)
+            sample = ", ".join(sorted(unknown_tour_ids)[:5])
+            logger.error(
+                "LP_BUILD_ERROR: %s tour_ids in columns missing from all_tour_ids (sample: %s)",
+                unknown_count,
+                sample,
+            )
+            raise ValueError("LP build failed: unknown tour_ids in columns")
             
         total_cols = num_cols + num_artificial
         
         # Compute stats
-        avg_degree = curr_nz / max(1, num_rows)
+        avg_degree = real_nz / max(1, num_rows)
         max_degree = max(row_coverage) if row_coverage else 0
         min_degree = min(row_coverage) if row_coverage else 0
         zero_coverage_rows = sum(1 for c in row_coverage if c == 0)
@@ -137,6 +151,7 @@ class MasterLP:
             "num_artificial": num_artificial,
             "total_cols": total_cols,
             "nnz": curr_nz,
+            "nnz_real": real_nz,
             "avg_degree": avg_degree,
             "max_degree": max_degree,
             "min_degree": min_degree,

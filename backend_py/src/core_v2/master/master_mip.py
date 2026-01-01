@@ -81,13 +81,27 @@ class MasterMIP:
         values = []
         curr_nz = 0
         
+        unknown_tour_ids: set[str] = set()
         for col in self.columns:
             for tour_id in col.covered_tour_ids:
-                if tour_id in self.tour_map:
-                    row_indices.append(self.tour_map[tour_id])
-                    values.append(1.0)
-                    curr_nz += 1
+                row_idx = self.tour_map.get(tour_id)
+                if row_idx is None:
+                    unknown_tour_ids.add(tour_id)
+                    continue
+                row_indices.append(row_idx)
+                values.append(1.0)
+                curr_nz += 1
             start_indices.append(curr_nz)
+
+        if unknown_tour_ids:
+            unknown_count = len(unknown_tour_ids)
+            sample = ", ".join(sorted(unknown_tour_ids)[:5])
+            logger.error(
+                "[MIP] Build failed: %s tour_ids in columns missing from all_tour_ids (sample: %s)",
+                unknown_count,
+                sample,
+            )
+            return {"status": "FAILED_BUILD_UNKNOWN_TOURS", "objective": None, "selected_columns": []}
         
         logger.info(f"[MIP] Matrix NNZ={curr_nz}")
         
