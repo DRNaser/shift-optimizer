@@ -1,0 +1,48 @@
+{
+  "run_id": "smoke_synthetic_20260101_091923",
+  "mode": "synthetic",
+  "status": "SUCCESS",
+  "seed": 42,
+  "wall_time_sec": 0.11,
+  "iterations_done": 2,
+  "stop_reason": "CONVERGED",
+  "kpis": {
+    "total_time": 0.10811567306518555,
+    "drivers_total": 13,
+    "drivers_fte": 0,
+    "drivers_pt": 13,
+    "pt_share_pct": 100.0,
+    "avg_hours": 7.606410256410256,
+    "pct_under_30": 100.0,
+    "pct_under_20": 84.61538461538461,
+    "selected_days_worked_hist": {
+      "1": 8,
+      "2": 3,
+      "4": 1,
+      "5": 1
+    },
+    "pool_final_size": 212,
+    "cg_iterations": 2,
+    "new_cols_added_total": 144,
+    "coverage_pct": 100.0,
+    "avg_days_per_driver": 1.77,
+    "fleet_peak": 5
+  },
+  "pool_diagnostics": {
+    "pool_size_after_seed": 0,
+    "pool_size_final": 0,
+    "selected_columns": 13,
+    "block_mix": {
+      "1": 8,
+      "2": 3,
+      "3": 0,
+      "4": 1,
+      "5": 1
+    }
+  },
+  "proof": {
+    "coverage_pct": 100.0,
+    "total_tours": 30,
+    "covered_tours": 30
+  }
+}

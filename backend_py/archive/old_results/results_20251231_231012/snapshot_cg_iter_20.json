@@ -1,0 +1,34 @@
+{
+  "iteration": 20,
+  "mip_status": "OPTIMAL",
+  "mip_time": 31.032979011535645,
+  "incumbent_drivers": 824,
+  "avg_hours": 6.946338996763755,
+  "pct_under_30": 96.96601941747572,
+  "pct_under_20": 91.50485436893204,
+  "selected_days_worked_hist": {
+    "1": 736,
+    "2": 51,
+    "3": 22,
+    "4": 15
+  },
+  "lp_obj": 478.92372300078944,
+  "lp_status": "Time limit reached",
+  "duals_source": "stale",
+  "dual_stats": {
+    "count": 0,
+    "nnz": 0,
+    "min": 0.0,
+    "max": 0.0,
+    "mean": 0.0
+  },
+  "new_cols": 1500,
+  "added_count": 0,
+  "pool_size": 28840,
+  "stale_age": 1,
+  "stop_counters": {
+    "no_new_cols": 0,
+    "pool_stagnation": 0,
+    "incumbent_stagnation": 0
+  }
+}

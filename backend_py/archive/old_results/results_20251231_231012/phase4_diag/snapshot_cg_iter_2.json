@@ -1,0 +1,22 @@
+{
+  "iteration": 2,
+  "lp_obj": 765.2161320077503,
+  "lp_status": "Optimal",
+  "duals_source": "fresh",
+  "dual_stats": {
+    "count": 1385,
+    "nnz": 1384,
+    "min": -4.478555068042365,
+    "max": 1.0,
+    "mean": 0.5525026223882651
+  },
+  "new_cols": 1500,
+  "added_count": 1500,
+  "pool_size": 6000,
+  "stale_age": 0,
+  "stop_counters": {
+    "no_new_cols": 0,
+    "pool_stagnation": 0,
+    "incumbent_stagnation": 0
+  }
+}

@@ -1,0 +1,22 @@
+{
+  "iteration": 11,
+  "lp_obj": 515.5656525295822,
+  "lp_status": "Time limit reached",
+  "duals_source": "stale",
+  "dual_stats": {
+    "count": 0,
+    "nnz": 0,
+    "min": 0.0,
+    "max": 0.0,
+    "mean": 0.0
+  },
+  "new_cols": 1500,
+  "added_count": 600,
+  "pool_size": 17100,
+  "stale_age": 2,
+  "stop_counters": {
+    "no_new_cols": 0,
+    "pool_stagnation": 1,
+    "incumbent_stagnation": 0
+  }
+}

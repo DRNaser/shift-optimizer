@@ -1,0 +1,12 @@
+{
+  "run_id": "pivot_forecast_test_1767307663",
+  "timestamp": "2026-01-01T23:47:43.822315",
+  "dataset_hash": "0268a90035d8ba08",
+  "config_hash": "29e0d804bcbdf568",
+  "git_sha": "unknown",
+  "num_workers": 1,
+  "active_days_count": 6,
+  "week_category": "NORMAL",
+  "backend": "highspy",
+  "use_duals": true
+}

@@ -1,0 +1,12 @@
+{
+  "run_id": "kw51_moderate_split",
+  "timestamp": "2026-01-02T10:13:23.621901",
+  "dataset_hash": "1574118e0401f47c",
+  "config_hash": "812c33ef58fabb92",
+  "git_sha": "unknown",
+  "num_workers": 1,
+  "active_days_count": 4,
+  "week_category": "COMPRESSED",
+  "backend": "highspy",
+  "use_duals": true
+}

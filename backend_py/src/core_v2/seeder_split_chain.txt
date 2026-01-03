@@ -1,0 +1,124 @@
+
+
+    def _generate_split_chain_seeds(self) -> list[ColumnV2]:
+        """
+        O1+O3 UNIFIED: Split-Chain Seeder (Pattern-Based)
+        
+        Based on manual planning analysis (traindata.xlsx):
+        - 72% of days use 2-tour patterns
+        - 26.5% are split shifts with ~6h gaps
+        - Early morning + evening pairing creates 45h/week (vs 22.5h single-tour)
+        
+        Strategy:
+        1. Identify culprit early tours (04:00-09:00 starts)
+        2. Pair with evening tour from same day (17:00-22:00)
+        3. Generate 5-day chains of this split pattern
+        4. Constraints: 11.5h max span, 3-6h gap (from manual patterns)
+        """
+        cols = []
+        
+        # Constants from manual analysis
+        MAX_SPAN_HOURS = 11.5  # Conservative buffer
+        MIN_GAP_HOURS = 3.0
+        MAX_GAP_HOURS = 8.0
+        EARLY_END_MIN = 540  # 09:00 (expanded from 07:00)
+        EVENING_START_MIN = 1020  # 17:00
+        EVENING_END_MIN = 1320  # 22:00
+        
+        # Helper: Find evening tour on specific day
+        def find_evening_tour(day):
+            if day not in self.tours_by_day:
+                return None
+            candidates = [t for t in self.tours_by_day[day]
+                         if EVENING_START_MIN <= t.start_min <= EVENING_END_MIN]
+            if not candidates:
+                return None
+            # Prefer earlier evening starts (to minimize span)
+            candidates.sort(key=lambda t: t.start_min)
+            return candidates[0]
+        
+        # Helper: Find similar early tour on another day
+        def find_similar_early_tour(day, ref_start_min):
+            if day not in self.tours_by_day:
+                return None
+            candidates = [t for t in self.tours_by_day[day]
+                         if abs(t.start_min - ref_start_min) <= 45  # +/- 45 min
+                         and t.start_min < EARLY_END_MIN]
+            if not candidates:
+                return None
+            candidates.sort(key=lambda t: abs(t.start_min - ref_start_min))
+            return candidates[0]
+        
+        # Find all early tours on Monday (day 0)
+        early_tours_mon = []
+        if 0 in self.tours_by_day:
+            early_tours_mon = [t for t in self.tours_by_day[0]
+                              if t.start_min < EARLY_END_MIN]
+        
+        if not early_tours_mon:
+            return []
+        
+        # Build split-chains
+        for early_mon in early_tours_mon:
+            # Find evening tour on Monday
+            evening_mon = find_evening_tour(0)
+            if not evening_mon:
+                continue
+            
+            # Check span and gap constraints
+            span_min = evening_mon.end_min - early_mon.start_min
+            gap_min = evening_mon.start_min - early_mon.end_min
+            
+            if span_min > MAX_SPAN_HOURS * 60:
+                continue
+            if gap_min < MIN_GAP_HOURS * 60 or gap_min > MAX_GAP_HOURS * 60:
+                continue
+            
+            # Create Monday duty (early + evening)
+            duty_mon = self.duty_factory.create_duty_from_tours(
+                day=0,
+                tour_ids=[early_mon.tour_id, evening_mon.tour_id]
+            )
+            if not duty_mon:
+                continue
+            
+            # Build chain for Tue-Fri (days 1-4)
+            duties = {0: duty_mon}
+            
+            for day in range(1, 5):
+                early_day = find_similar_early_tour(day, early_mon.start_min)
+                evening_day = find_evening_tour(day)
+                
+                if not early_day or not evening_day:
+                    break
+                
+                # Create split duty for this day
+                duty_day = self.duty_factory.create_duty_from_tours(
+                    day=day,
+                    tour_ids=[early_day.tour_id, evening_day.tour_id]
+                )
+                if not duty_day:
+                    break
+                
+                duties[day] = duty_day
+            
+            # Require at least 4 days
+            if len(duties) < 4:
+                continue
+            
+            # Validate chainability
+            day_seq = sorted(duties.keys())
+            duty_list = [duties[d] for d in day_seq]
+            
+            if not self._can_chain_days(duty_list):
+                continue
+            
+            # Create column
+            col = ColumnV2(
+                duties=duty_list,
+                days_worked=len(duty_list),
+                total_hours=sum(d.total_hours for d in duty_list)
+            )
+            cols.append(col)
+        
+        return cols

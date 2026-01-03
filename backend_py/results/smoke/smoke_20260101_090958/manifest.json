@@ -1,0 +1,32 @@
+{
+  "run_id": "smoke_20260101_090958",
+  "status": "SUCCESS",
+  "seed": 42,
+  "wall_time_sec": 0.11,
+  "iterations_done": 2,
+  "stop_reason": "CONVERGED",
+  "kpis": {
+    "total_time": 0.1055142879486084,
+    "drivers_total": 13,
+    "drivers_fte": 0,
+    "drivers_pt": 13,
+    "pt_share_pct": 100.0,
+    "avg_hours": 7.606410256410256,
+    "pct_under_30": 100.0,
+    "pct_under_20": 84.61538461538461,
+    "selected_days_worked_hist": {
+      "1": 8,
+      "2": 3,
+      "4": 1,
+      "5": 1
+    },
+    "pool_final_size": 212,
+    "cg_iterations": 2,
+    "new_cols_added_total": 144
+  },
+  "proof": {
+    "coverage_pct": 100.0,
+    "total_tours": 30,
+    "covered_tours": 30
+  }
+}

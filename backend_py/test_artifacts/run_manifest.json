@@ -1,0 +1,12 @@
+{
+  "run_id": "test_hard_logging",
+  "timestamp": "2026-01-01T21:24:23.388929",
+  "dataset_hash": "0268a90035d8ba08",
+  "config_hash": "ecdb987ac2f17533",
+  "git_sha": "unknown",
+  "num_workers": 1,
+  "active_days_count": 6,
+  "week_category": "NORMAL",
+  "backend": "highspy",
+  "use_duals": true
+}

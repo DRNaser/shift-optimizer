@@ -1,241 +1,194 @@
 """
-Core v2 - Greedy Weekly Seeder
+Core v2 - Greedy Weekly Seeder (BLOCK-FIRST STRATEGY!)
 
-Generates 2k-10k seed columns for iteration 0 WITHOUT full duty enumeration.
-Uses local successor search to build small chains, then combines across days.
+Matches Manual Planning Approach:
+1. GREEDY block formation per day (Template Priority: Late > Early > Wide)
+2. Build multi-day rosters from BLOCKS (Generous Greedy Search)
+3. LP chooses best combinations
 """
 
 import logging
-from typing import Optional
+from typing import Dict, List, Set
+from collections import defaultdict
 
 from .model.tour import TourV2
 from .model.duty import DutyV2
 from .model.column import ColumnV2
-from .validator.rules import ValidatorV2, RULES
 from .duty_factory import DutyFactoryTopK, DutyFactoryCaps
+from .validator.rules import ValidatorV2
 
-logger = logging.getLogger("GreedySeeder")
+logger = logging.getLogger("Seeder")
 
 
 class GreedyWeeklySeeder:
-    """
-    Generates initial seed columns without full duty enumeration.
+    """Greedy block-based seeder matching manual planning."""
     
-    Strategy:
-    1. For each day: generate small duty chains (1er, 2er, 3er) via local search
-    2. Combine duties across days respecting 11h rest
-    3. Prioritize diverse coverage
-    """
-    
-    def __init__(
-        self, 
-        tours_by_day: dict[int, list[TourV2]],
-        target_seeds: int = 5000,
-        validator=ValidatorV2
-    ):
+    def __init__(self, tours_by_day: Dict[int, List[TourV2]], factory: DutyFactoryTopK, validator: ValidatorV2, target_seeds: int = 5000):
         self.tours_by_day = tours_by_day
-        self.target_seeds = target_seeds
+        self.factory = factory
         self.validator = validator
-        self.sorted_days = sorted(tours_by_day.keys())
-        
-        # Use duty factory for day-level generation
-        self._factory = DutyFactoryTopK(tours_by_day, validator)
+        self.target_seeds = target_seeds
     
-    def generate_seeds(self) -> list[ColumnV2]:
+    def generate_seeds(self) -> List[ColumnV2]:
         """
-        Generate seed columns for CG initialization.
-        
-        Returns list of ColumnV2 objects (target 2k-10k).
+        BLOCK-FIRST GREEDY STRATEGY.
+        Step 1: Form daily blocks (Late > Early > Wide)
+        Step 2: Build multi-day rosters from blocks (Depth 50)
+        Step 3: Return columns
         """
-        logger.info(f"Generating seeds (target={self.target_seeds})...")
+        logger.info("="*60)
+        logger.info("BLOCK-FIRST GREEDY SEEDING (Template Priority)")
+        logger.info("="*60)
         
-        # 1. Generate singleton columns (all tours, guaranteed coverage)
-        singleton_cols = self._generate_singleton_columns()
-        logger.info(f"  Singleton columns: {len(singleton_cols)}")
+        # Step 1: Form daily blocks
+        blocks_by_day = self._form_daily_blocks_greedy()
         
-        # 2. Generate multi-day columns via greedy combination
-        multi_cols = self._generate_multi_day_columns()
-        logger.info(f"  Multi-day columns: {len(multi_cols)}")
+        # Step 2: Build multi-day from blocks
+        multi_day = self._build_multi_day_from_blocks(blocks_by_day)
         
-        # 3. Combine and dedupe
-        all_cols = singleton_cols + multi_cols
+        # Step 3: Singleton fallback
+        singletons = self._singleton_fallback(blocks_by_day)
         
-        # Dedupe by signature
-        seen = set()
-        unique_cols = []
-        for col in all_cols:
-            if col.signature not in seen:
-                seen.add(col.signature)
-                unique_cols.append(col)
+        all_cols = multi_day + singletons
+        logger.info(f"TOTAL: {len(multi_day)} multi-day + {len(singletons)} singletons = {len(all_cols)}")
         
-        # Cap to target if needed
-        if len(unique_cols) > self.target_seeds:
-            # Keep all singletons, sample multis
-            singletons = [c for c in unique_cols if len(c.duties) == 1 and len(c.duties[0].tour_ids) == 1]
-            multis = [c for c in unique_cols if c not in singletons]
+        # Cap
+        if len(all_cols) > self.target_seeds:
+            all_cols = all_cols[:self.target_seeds]
+        
+        return all_cols
+    
+    def _form_daily_blocks_greedy(self) -> Dict[int, List[DutyV2]]:
+        """
+        GREEDY block formation with TEMPLATE PRIORITY.
+        
+        Priority:
+        1. LATE Blocks (Start >= 11:00) - Critical sinks
+        2. EARLY Blocks (End <= 17:00) - Good sources
+        3. WIDE Blocks (Remainder) - Hard to chain
+        """
+        blocks_by_day = {}
+        zero_duals = {}
+        for day_tours in self.tours_by_day.values():
+            for t in day_tours:
+                zero_duals[t.tour_id] = 0.0
+        
+        caps = DutyFactoryCaps()
+        
+        for day in sorted(self.tours_by_day.keys()):
+            all_duties = self.factory.get_day_duties(day, zero_duals, caps)
             
-            remaining_budget = self.target_seeds - len(singletons)
-            if remaining_budget > 0 and multis:
-                # Sort by hours descending (prefer fuller schedules)
-                multis.sort(key=lambda c: -c.hours)
-                unique_cols = singletons + multis[:remaining_budget]
+            # Filter to 2er/3er only
+            candidates = [d for d in all_duties if d.num_tours >= 2]
+            
+            # Categorize
+            late = []
+            early = []
+            wide = []
+            
+            for d in candidates:
+                start_h = d.start_min / 60.0
+                end_h = d.end_min / 60.0
+                
+                if start_h >= 11.0:
+                    late.append(d)
+                elif end_h <= 17.0:
+                    early.append(d)
+                else:
+                    wide.append(d)
+            
+            # Sort greedy by work
+            late.sort(key=lambda x: x.work_min, reverse=True)
+            early.sort(key=lambda x: x.work_min, reverse=True)
+            wide.sort(key=lambda x: x.work_min, reverse=True)
+            
+            selected = []
+            covered: Set[str] = set()
+            
+            def add_blocks(block_list):
+                for d in block_list:
+                    if not any(tid in covered for tid in d.tour_ids):
+                        selected.append(d)
+                        covered.update(d.tour_ids)
+            
+            # PRIORITY ORDER
+            add_blocks(late)
+            add_blocks(early)
+            add_blocks(wide)
+            
+            # Fallback 1er
+            d1 = [d for d in all_duties if d.num_tours == 1]
+            for duty in d1:
+                if duty.tour_ids[0] not in covered:
+                    selected.append(duty)
+                    covered.add(duty.tour_ids[0])
+            
+            blocks_by_day[day] = selected
+            
+            cnt_l = len([x for x in selected if x in late])
+            cnt_e = len([x for x in selected if x in early])
+            cnt_w = len([x for x in selected if x in wide])
+            logger.info(f"Day {day}: {cnt_l} Late, {cnt_e} Early, {cnt_w} Wide")
         
-        logger.info(f"Total seed columns: {len(unique_cols)}")
-        return unique_cols
+        return blocks_by_day
     
-    def _generate_singleton_columns(self) -> list[ColumnV2]:
-        """Generate one column per tour (singleton duty)."""
+    def _build_multi_day_from_blocks(self, blocks_by_day: Dict[int, List[DutyV2]]) -> List[ColumnV2]:
+        """Build 2-5 day chains using Generous Greedy Search (Depth 50)."""
         cols = []
-        for day in self.sorted_days:
-            for tour in self.tours_by_day[day]:
-                duty = DutyV2.from_tours(duty_id=f"seed_s_{tour.tour_id}", tours=[tour])
-                col = ColumnV2.from_duties(
-                    col_id=f"seed_{duty.duty_id}",
-                    duties=[duty],
-                    origin="seed_singleton"
-                )
-                cols.append(col)
+        cid = [0]
+        
+        # Use ALL selected blocks for chaining (including 1er)
+        # This is critical for Wide -> Late(1er) transitions!
+        good_blocks = blocks_by_day
+        
+        days = sorted(self.tours_by_day.keys())
+        
+        # 5-day chains
+        for i in range(len(days) - 4):
+            for d0 in good_blocks[days[i]][:50]:
+                for d1 in good_blocks[days[i+1]][:50]:
+                    if not self.validator.can_chain_days(d0, d1): continue
+                    for d2 in good_blocks[days[i+2]][:50]:
+                        if not self.validator.can_chain_days(d1, d2): continue
+                        for d3 in good_blocks[days[i+3]][:50]:
+                            if not self.validator.can_chain_days(d2, d3): continue
+                            for d4 in good_blocks[days[i+4]][:50]:
+                                if not self.validator.can_chain_days(d3, d4): continue
+                                col = ColumnV2.from_duties(f"B5_{cid[0]}", [d0,d1,d2,d3,d4], "block5")
+                                cols.append(col)
+                                cid[0] += 1
+        logger.info(f"Built {len(cols)} 5-day block chains")
+        
+        # 3-day chains
+        for i in range(len(days) - 2):
+            for d0 in good_blocks[days[i]][:50]:
+                for d1 in good_blocks[days[i+1]][:50]:
+                    if not self.validator.can_chain_days(d0, d1): continue
+                    for d2 in good_blocks[days[i+2]][:50]:
+                        if not self.validator.can_chain_days(d1, d2): continue
+                        col = ColumnV2.from_duties(f"B3_{cid[0]}", [d0,d1,d2], "block3")
+                        cols.append(col)
+                        cid[0] += 1
+        logger.info(f"Built {len(cols) - len([c for c in cols if 'B5' in c.col_id])} 3-day block chains")
+        
+        # 2-day
+        for i in range(len(days) - 1):
+            for d0 in good_blocks[days[i]][:50]:
+                for d1 in good_blocks[days[i+1]][:50]:
+                    if not self.validator.can_chain_days(d0, d1): continue
+                    col = ColumnV2.from_duties(f"B2_{cid[0]}", [d0,d1], "block2")
+                    cols.append(col)
+                    cid[0] += 1
+        
         return cols
     
-    def _generate_multi_day_columns(self) -> list[ColumnV2]:
-        """
-        Generate columns spanning multiple days.
-        
-        Strategy:
-        1. Build duties per day using local search.
-        2. Combine duties across days via Tour-Centric greedy.
-           Ensures EVERY tour is covered by at least K multi-day columns.
-        """
-        # Use uniform duals
-        uniform_duals = {}
-        for day, tours in self.tours_by_day.items():
-            for t in tours:
-                uniform_duals[t.tour_id] = 1.0
-        
-        # Get duties per day
-        seed_caps = DutyFactoryCaps(
-            max_multi_duties_per_day=5000,
-            top_m_start_tours=500,
-            max_succ_per_tour=15,
-            max_triples_per_tour=5,
-        )
-        
-        duties_by_day: dict[int, list[DutyV2]] = {}
-        # Map tour_id -> list[DutyV2]
-        tour_to_duties: dict[str, list[DutyV2]] = {}
-        
-        for day in self.sorted_days:
-            try:
-                self._factory.reset_telemetry()
-                duties = self._factory.get_day_duties(day, uniform_duals, seed_caps)
-                duties_by_day[day] = duties
-                
-                # Index duties by tour
-                for d in duties:
-                    for tid in d.tour_ids:
-                        tour_to_duties.setdefault(tid, []).append(d)
-                        
-            except RuntimeError:
-                duties_by_day[day] = self._factory._generate_singletons(
-                    self._factory._sorted_tours[day]
-                )
-        
-        multi_cols = []
-        # Keep track of generated signatures to avoid duplicates
-        seen_signatures = set()
-        
-        # Target: ensure each tour is covered by at least K multi-day columns
-        MIN_SEEDS_PER_TOUR = 5
-        
-        # Get all tours sorted
-        all_tours = []
-        for day in self.sorted_days:
-            all_tours.extend(self.tours_by_day.get(day, []))
-            
-        import random
-        
-        # Helper to add column
-        def add_col(duties: list[DutyV2], origin: str):
-            # Create column
-            col_id = f"seed_{len(multi_cols)}"
-            col = ColumnV2.from_duties(col_id, duties, origin)
-            
-            if col.signature not in seen_signatures:
-                seen_signatures.add(col.signature)
-                multi_cols.append(col)
-                return True
-            return False
-
-        logger.info(f"Seeding multi-day columns for {len(all_tours)} tours (target {MIN_SEEDS_PER_TOUR}/tour)...")
-        
-        for tour in all_tours:
-            # Find duties containing this tour
-            candidate_duties = tour_to_duties.get(tour.tour_id, [])
-            if not candidate_duties:
-                continue
-                
-            # Shuffle to get variety
-            random.shuffle(candidate_duties)
-            
-            seeds_found = 0
-            
-            # Try to extend these duties
-            for d1 in candidate_duties[:10]: # Try first 10 duties for this tour
-                if seeds_found >= MIN_SEEDS_PER_TOUR:
-                    break
-                    
-                # d1 is the "anchor" duty. It could be Day 0, 1, 2, or 4.
-                # We need to extend it backward or forward to make a multi-day column.
-                # For simplicity in seeding, let's just look FORWARD from d1.
-                # If d1 is on last day (Day 4), we can't extend forward. 
-                # (TODO: Backward extension would be better, but let's stick to forward for now 
-                # and rely on Day 0/1 tours getting covered by forward expansion)
-                
-                # Wait, if 'tour' is on Day 4, forward extension impossible.
-                # But 'tour' on Day 4 might be covered by a column starting on Day 0!
-                # BUT here we are iterating tours. If we are at a Day 4 tour, we want to ensure it's covered.
-                # We need to find a chain ending in d1? Or starting in d1?
-                
-                # Let's try FORWARD first.
-                current_chain = [d1]
-                
-                # Find next day duty
-                start_day_idx = self.sorted_days.index(d1.day)
-                
-                # Try to extend to next available day
-                extended = False
-                for next_day_idx in range(start_day_idx + 1, len(self.sorted_days)):
-                    next_day = self.sorted_days[next_day_idx]
-                    duties_next = duties_by_day.get(next_day, [])
-                    
-                    found_next = False
-                    # Try to find ONE compatible duty
-                    # Heuristic: pick one that covers 'uncovered' tours? Random for now.
-                    sample_next = list(duties_next)
-                    # Optimization: Limit sample
-                    if len(sample_next) > 50:
-                        sample_next = random.sample(sample_next, 50)
-                        
-                    for d2 in sample_next:
-                        if self.validator.can_chain_days(current_chain[-1], d2):
-                            current_chain.append(d2)
-                            found_next = True
-                            extended = True
-                            break # Found one extension step
-                    
-                    if not found_next:
-                        # Could not bridge to this day, try next day? 
-                        # Or stop? Gaps allowed? Yes, gaps allowed.
-                        pass
-                
-                if extended:
-                    if add_col(current_chain, f"seed_tour_{tour.tour_id}"):
-                        seeds_found += 1
-                        
-            # If we are on Day 4 and couldn't extend forward (obviously), 
-            # we rely on Day 0/1 loops to have covered us.
-            # But what if Day 4 tour is only compatible with specific Day 0 duties that weren't picked?
-            # Ideally we need bidirectional search, but let's see if this forward pass is enough.
-            # Most Day 4 tours should be reachable from Day 0/1/2.
-            
-        return multi_cols
+    def _singleton_fallback(self, blocks_by_day: Dict[int, List[DutyV2]]) -> List[ColumnV2]:
+        cols = []
+        cid = 0
+        for day, duties in blocks_by_day.items():
+            for d in duties:
+                if d.num_tours >= 2:
+                    col = ColumnV2.from_duties(f"BS_{cid}", [d], "blocksing")
+                    cols.append(col)
+                    cid += 1
+        return cols

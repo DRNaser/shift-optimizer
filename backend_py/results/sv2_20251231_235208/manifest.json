@@ -1,0 +1,38 @@
+{
+  "run_id": "sv2_20251231_235208",
+  "timestamp": "2026-01-01T00:04:53.016371",
+  "input_file": "data/forecast_kw51_converted.csv",
+  "status": "SUCCESS",
+  "is_valid": true,
+  "config": {
+    "max_cg_iterations": 20,
+    "lp_time_limit": 10.0,
+    "mip_time_limit": 120.0,
+    "target_seed_columns": 5000
+  },
+  "kpis": {
+    "total_time": 764.7219972610474,
+    "drivers_total": 609,
+    "drivers_fte": 8,
+    "drivers_pt": 601,
+    "pt_share_pct": 98.68637110016421,
+    "avg_hours": 9.398659003831419,
+    "pct_under_30": 94.90968801313629,
+    "pct_under_20": 88.17733990147784,
+    "selected_days_worked_hist": {
+      "1": 495,
+      "2": 61,
+      "3": 31,
+      "4": 22
+    },
+    "pool_final_size": 11851,
+    "cg_iterations": 20,
+    "new_cols_added_total": 7011
+  },
+  "proof": {
+    "coverage_pct": 100.0,
+    "total_tours": 1272,
+    "covered_tours": 1272,
+    "artificial_used_final": 0
+  }
+}

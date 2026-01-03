@@ -1,0 +1,34 @@
+{
+  "iteration": 5,
+  "mip_status": "OPTIMAL",
+  "mip_time": 20.312376499176025,
+  "incumbent_drivers": 1027,
+  "avg_hours": 6.068646543330088,
+  "pct_under_30": 98.34469328140214,
+  "pct_under_20": 98.05258033106135,
+  "selected_days_worked_hist": {
+    "1": 1006,
+    "2": 4,
+    "5": 6,
+    "6": 11
+  },
+  "lp_obj": 711.6101036975094,
+  "lp_status": "Optimal",
+  "duals_source": "fresh",
+  "dual_stats": {
+    "count": 1385,
+    "nnz": 1381,
+    "min": -4.584752675756983,
+    "max": 1.0,
+    "mean": 0.5137979088068666
+  },
+  "new_cols": 1500,
+  "added_count": 1500,
+  "pool_size": 9500,
+  "stale_age": 0,
+  "stop_counters": {
+    "no_new_cols": 0,
+    "pool_stagnation": 0,
+    "incumbent_stagnation": 0
+  }
+}

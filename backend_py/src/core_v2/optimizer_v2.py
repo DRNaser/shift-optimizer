@@ -114,7 +114,7 @@ class OptimizerCoreV2:
             # 3. Generate seed columns via greedy seeder
             t0 = time.time()
             target_seeds = config.get("target_seed_columns", 5000)
-            seeder = GreedyWeeklySeeder(tours_by_day, target_seeds, ValidatorV2)
+            seeder = GreedyWeeklySeeder(tours_by_day, duty_factory, ValidatorV2, target_seeds)
             
             pool = ColumnPoolStore()
             seed_cols = seeder.generate_seeds()

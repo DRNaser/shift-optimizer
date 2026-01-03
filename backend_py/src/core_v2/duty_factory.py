@@ -28,9 +28,9 @@ class DutyFactoryCaps:
     max_multi_duties_per_day: int = 50_000
     top_m_start_tours: int = 200
     max_succ_per_tour: int = 20
-    max_triples_per_tour: int = 5
-    min_gap_minutes: int = 0       # Minimum gap between tours
-    max_gap_minutes: int = 180     # Maximum gap window for successor search
+    max_triples_per_tour: int = 20  # MANUAL REPLICATION: 5→20 (Manual: 22% of all duties!)
+    min_gap_minutes: int = 120      # MANUAL REPLICATION: 0→120min (2h min)
+    max_gap_minutes: int = 480      # MANUAL REPLICATION: 180→480min (8h max, Manual avg: 6h!)
 
 
 @dataclass

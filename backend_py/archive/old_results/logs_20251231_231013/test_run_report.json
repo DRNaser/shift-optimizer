@@ -1,0 +1,81 @@
+{
+  "timestamp": "2025-12-19T20:03:49.525445",
+  "input_summary": {
+    "n_tours": 83,
+    "total_hours": 373.5
+  },
+  "features": {
+    "n_tours": 83,
+    "n_blocks": 356,
+    "blocks_per_tour_avg": 4.29,
+    "peakiness_index": 0.313,
+    "rest_risk_proxy": 0.024,
+    "pt_pressure_proxy": 0.0,
+    "pool_pressure": "LOW",
+    "coverage_density": 8.04,
+    "daymin_mon": 7,
+    "daymin_tue": 7,
+    "daymin_wed": 7,
+    "daymin_thu": 7,
+    "daymin_fri": 9,
+    "daymin_sat": 5,
+    "lower_bound_drivers": 9,
+    "time_budget_class": "MEDIUM",
+    "time_budget_seconds": 30.0,
+    "blocks_1er": 83,
+    "blocks_2er": 235,
+    "blocks_3er": 38,
+    "total_work_hours": 373.5,
+    "expected_drivers_min": 7,
+    "expected_drivers_max": 9
+  },
+  "policy_decisions": {
+    "initial_path": "FAST",
+    "final_path": "FAST",
+    "reason_codes": [
+      "NORMAL_INSTANCE",
+      "GOOD_ENOUGH"
+    ],
+    "fallback_used": false,
+    "fallback_count": 0,
+    "parameters": {
+      "path": "FAST",
+      "reason_code": "NORMAL_INSTANCE",
+      "lns_iterations": 100,
+      "lns_time_limit_s": 21.0,
+      "destroy_fraction": 0.1,
+      "repair_time_limit_s": 3.0,
+      "pt_focused_destroy_weight": 0.2,
+      "enable_pt_elimination": true,
+      "sp_enabled": false,
+      "column_gen_quota": 200,
+      "pool_cap": 5000,
+      "pricing_time_limit_s": 15.0,
+      "sp_max_rounds": 100,
+      "phase1_time_limit_s": 6.0,
+      "epsilon": 0.02,
+      "daymin_buffer": 1,
+      "stagnation_iters": 15,
+      "repair_failure_threshold": 0.25,
+      "heuristic_improvement_budget_s": 4.5
+    }
+  },
+  "execution_log": [],
+  "result_summary": {
+    "status": "OK",
+    "drivers_fte": 8,
+    "drivers_pt": 1,
+    "lower_bound": 9,
+    "achieved_score": 9,
+    "gap_to_lb_pct": 0.0,
+    "early_stopped": true,
+    "early_stop_reason": "GOOD_ENOUGH"
+  },
+  "solve_times": {
+    "profiling_s": 0.0006950000097276643,
+    "phase1_s": 0.2756723000056809,
+    "phase2_s": 0.0028901000041514635,
+    "lns_s": 0.5611139000102412,
+    "total_s": 1.2907523000030778
+  }
+}

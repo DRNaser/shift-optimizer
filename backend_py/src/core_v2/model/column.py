@@ -110,16 +110,69 @@ class ColumnV2:
 
     def cost_stage1(self, week_category: 'WeekCategory') -> float:
         """
-        Stage 1 Cost (CG / LP Relaxation).
+        Stage 1 Cost (CG / LP Relaxation) - MANUAL REPLICATION!
         
-        STRICT RULE: Always 1.0 for real columns.
-        Objective is 'Minimize Drivers'.
-        No utilization penalties here (Stage 2 only).
+        Manual planners use:
+        - 26.5% Split-Shifts (Early+Evening, 6h gap)
+        - 22.1% 3er-Touren
+        - 72.1% 2er-Touren  
+        - 45h avg utilization
+        
+        We MASSIVELY bias towards these patterns!
         """
-        # Artificial columns are handled in MasterLP directly, but if one sneaks in:
+        # Artificial columns
         if self.origin and self.origin.startswith("artificial"):
             return 1_000_000.0
-        return 1.0
+        
+        base_cost = 1.0
+        
+        # ====== MANUAL PATTERN REPLICATION ======
+        
+        # 1. MASSIVE Bonus für 3er-Touren (Manual: 22%!)
+        three_tour_duties = sum(1 for d in self.duties if d.num_tours >= 3)
+        if three_tour_duties >= 3:  # 3+ days with 3er-tours
+            base_cost *= 0.60  # 40% billiger!
+        elif three_tour_duties >= 2:
+            base_cost *= 0.75  # 25% billiger
+        elif three_tour_duties >= 1:
+            base_cost *= 0.85  # 15% billiger
+        
+        # 2. MASSIVE Bonus für Split-Shifts (Manual: 26.5%!)
+        # Split = 2+ tours mit großem Gap (4-8h)
+        split_count = 0
+        for duty in self.duties:
+            if duty.num_tours >= 2:
+                # Estimate gap (span - work = pauses)
+                estimated_gap_h = (duty.span_min - duty.work_min) / 60.0
+                if estimated_gap_h >= 4:  # Split-Pattern!
+                    split_count += 1
+        
+        if split_count >= 4:  # 4+ Split-Tage
+            base_cost *= 0.60  # 40% billiger!
+        elif split_count >= 3:
+            base_cost *= 0.70  # 30% billiger
+        elif split_count >= 2:
+            base_cost *= 0.85  # 15% billiger
+        
+        # 3. Bonus für 45h+ Nutzung (Manual avg)
+        if self.hours >= 45:
+            base_cost *= 0.85  # 15% billiger
+        elif self.hours >= 40:
+            base_cost *= 0.95  # 5% billiger
+        
+        # 4. Penalty für unter-Nutzung
+        if self.hours < 30:
+            base_cost *= 1.20  # 20% teurer
+        
+        # 5. STARK bevorzuge 5-Tage-Ketten
+        if self.days_worked == 5:
+            base_cost *= 0.80  # 20% billiger
+        elif self.days_worked == 4:
+            base_cost *= 0.90  # 10% billiger
+        elif self.days_worked <= 2:
+            base_cost *= 1.15  # 15% teurer (Singleton-Penalty!)
+        
+        return base_cost
 
     def cost_utilization(self, week_category: 'WeekCategory') -> float:
         """

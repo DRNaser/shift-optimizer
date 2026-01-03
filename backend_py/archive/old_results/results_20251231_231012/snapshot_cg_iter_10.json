@@ -1,0 +1,24 @@
+{
+  "iteration": 10,
+  "mip_status": "FAILED_STAGE_1",
+  "mip_time": 0.7131481170654297,
+  "lp_obj": 379.7192319707596,
+  "lp_status": "Time limit reached",
+  "duals_source": "stale",
+  "dual_stats": {
+    "count": 0,
+    "nnz": 0,
+    "min": 0.0,
+    "max": 0.0,
+    "mean": 0.0
+  },
+  "new_cols": 1500,
+  "added_count": 0,
+  "pool_size": 15340,
+  "stale_age": 3,
+  "stop_counters": {
+    "no_new_cols": 0,
+    "pool_stagnation": 2,
+    "incumbent_stagnation": 0
+  }
+}
