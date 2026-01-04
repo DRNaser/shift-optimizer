@@ -16,6 +16,29 @@ version: "3.8"
 
 services:
   # =========================================================================
+  # PostgreSQL Database (V3 MVP)
+  # =========================================================================
+  postgres:
+    image: postgres:16-alpine
+    container_name: solvereign-db
+    environment:
+      POSTGRES_DB: solvereign
+      POSTGRES_USER: solvereign
+      POSTGRES_PASSWORD: dev_password_change_in_production
+      PGDATA: /var/lib/postgresql/data/pgdata
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./backend_py/db/init.sql:/docker-entrypoint-initdb.d/01-init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U solvereign"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # =========================================================================
   # Shift Optimizer Backend
   # =========================================================================
   api:
@@ -83,6 +106,7 @@ services:
       - prometheus
 
 volumes:
+  postgres_data:
   prometheus_data:
   grafana_data:
 

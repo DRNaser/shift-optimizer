@@ -112,34 +112,54 @@ class Tour(BaseModel):
     A Tour represents a single delivery shift from the forecast.
     Tours are the atomic unit of work - they cannot be split.
     Typical duration: 4-5 hours.
+
+    Cross-midnight tours: Tours that start on one day and end on the next
+    (e.g., 22:00-06:00). For these, end_time < start_time and crosses_midnight=True.
     """
     model_config = {"frozen": True}
-    
+
     id: str = Field(..., description="Unique tour identifier")
     day: Weekday = Field(..., description="Day of the week")
     start_time: time = Field(..., description="Tour start time")
-    end_time: time = Field(..., description="Tour end time")
+    end_time: time = Field(..., description="Tour end time (on next day if crosses_midnight=True)")
     location: str = Field(default="DEFAULT", description="Delivery zone/location")
     required_qualifications: list[str] = Field(
         default_factory=list,
         description="Required driver qualifications"
     )
-    
+    crosses_midnight: bool = Field(
+        default=False,
+        description="True if tour ends on next day (e.g., 22:00-06:00)"
+    )
+
     @model_validator(mode="after")
     def validate_tour(self) -> "Tour":
         """Validate tour timing."""
-        if self.start_time >= self.end_time:
-            raise ValueError(
-                f"Tour {self.id}: start_time {self.start_time} must be before end_time {self.end_time}"
-            )
+        # For cross-midnight tours, end_time < start_time is expected
+        if not self.crosses_midnight:
+            if self.start_time >= self.end_time:
+                raise ValueError(
+                    f"Tour {self.id}: start_time {self.start_time} must be before end_time {self.end_time} (or set crosses_midnight=True)"
+                )
+        else:
+            # For cross-midnight tours, end_time should be < start_time
+            if self.start_time <= self.end_time:
+                raise ValueError(
+                    f"Tour {self.id}: crosses_midnight=True but end_time {self.end_time} >= start_time {self.start_time}"
+                )
         return self
-    
+
     @property
     def duration_minutes(self) -> int:
-        """Tour duration in minutes."""
+        """Tour duration in minutes (handles cross-midnight)."""
         start_mins = self.start_time.hour * 60 + self.start_time.minute
         end_mins = self.end_time.hour * 60 + self.end_time.minute
-        return end_mins - start_mins
+
+        if self.crosses_midnight:
+            # Tour ends next day: duration = (24h - start) + end
+            return (24 * 60 - start_mins) + end_mins
+        else:
+            return end_mins - start_mins
     
     @property
     def duration_hours(self) -> float:

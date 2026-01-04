@@ -121,105 +121,268 @@ def main():
 
 def export_solution(drivers):
     """
-    Exports the roster to CSV and HTML for user consumption.
+    Exports the roster to a rich interactive HTML Dashboard (The "Dispatcher Cockpit").
+    Features:
+    - Density View (Color Coding)
+    - Safety View (Red Borders for Rest < 12h)
+    - Chronological Info (Hover)
+    - JS Sorting/Filtering
     """
-    import csv
+    import json
+    from datetime import datetime
     
-    # Prepare data
     # Sort drivers: FTE first, then PT, then by hours descending
     drivers.sort(key=lambda d: (-1 if d.total_hours >= 40.0 else 1, -d.total_hours))
     
     days = [Weekday.MONDAY, Weekday.TUESDAY, Weekday.WEDNESDAY, Weekday.THURSDAY, Weekday.FRIDAY, Weekday.SATURDAY]
     
-    # CSV Export
-    csv_file = Path(__file__).parent.parent / "final_schedule_matrix.csv"
-    with open(csv_file, "w", newline="") as f:
-        writer = csv.writer(f, delimiter=";")
-        
-        # Header
-        header = ["DriverID", "Type", "TotalHours"] + [d.value for d in days]
-        writer.writerow(header)
-        
-        for d in drivers:
-            row = [d.id, "FTE" if d.total_hours >= 40 else "PT", f"{d.total_hours:.1f}"]
-            for day in days:
-                if day in d.day_map:
-                    blk = d.day_map[day]
-                    # Identify Type
-                    if len(blk.tours) == 3: btype = "3er"
-                    elif len(blk.tours) == 2:
-                        # Check split
-                        # We don't have perfect split flag in Block object here, infer from ID or Span
-                        if "S" in blk.id: btype = "2er-Split"
-                        else: btype = "2er-Reg"
-                    else: btype = "1er"
-                    
-                    cell = f"{btype} ({blk.total_work_hours:.1f}h) [{blk.first_start.strftime('%H:%M')}-{blk.last_end.strftime('%H:%M')}]"
-                    row.append(cell)
-                else:
-                    row.append("")
-            writer.writerow(row)
-            
-    print(f"Exported CSV to {csv_file}")
-
-    # HTML Export
-    html_file = Path(__file__).parent.parent / "final_schedule_matrix.html"
+    # Prepare Data Structure for JS
+    # We need to calculate Rest Times to flag "Red Borders"
     
-    html = """
-    <html>
-    <head>
-        <style>
-            body { font-family: sans-serif; }
-            table { border-collapse: collapse; width: 100%; font-size: 12px; }
-            th, td { border: 1px solid #ccc; padding: 4px; text-align: center; }
-            th { background-color: #f0f0f0; }
-            .type-3er { background-color: #dcedc8; color: #33691e; } /* Green */
-            .type-2er-Reg { background-color: #bbdefb; color: #0d47a1; } /* Blue */
-            .type-2er-Split { background-color: #ffe0b2; color: #e65100; } /* Orange */
-            .type-1er { background-color: #f5f5f5; color: #616161; } /* Gray */
-            .fte-ok { color: green; font-weight: bold; }
-            .pt-warn { color: red; font-weight: bold; }
-        </style>
-    </head>
-    <body>
-        <h2>Final Driver Schedule</h2>
-        <table>
-            <tr>
-                <th>Msg</th><th>Type</th><th>Hours</th>
-                <th>Mon</th><th>Tue</th><th>Wed</th><th>Thu</th><th>Fri</th><th>Sat</th>
-            </tr>
-    """
+    data_model = []
     
     for d in drivers:
-        d_cls = "fte-ok" if d.total_hours >= 40 else "pt-warn"
-        d_lbl = "FTE" if d.total_hours >= 40 else "PT"
+        driver_obj = {
+            "id": d.id,
+            "type": "FTE" if d.total_hours >= 40 else "PT",
+            "total_hours": round(d.total_hours, 1),
+            "days": {}
+        }
         
-        html += f"<tr><td>{d.id}</td><td><span class='{d_cls}'>{d_lbl}</span></td><td>{d.total_hours:.1f}</td>"
+        last_end_minutes = -9999 # From previous week (assume rested)
+        last_day_idx = -1
         
-        for day in days:
+        for d_idx, day in enumerate(days):
             if day in d.day_map:
                 blk = d.day_map[day]
+                
+                # Identify Type
                 if len(blk.tours) == 3: btype = "3er"
                 elif len(blk.tours) == 2:
                     if "S" in blk.id: btype = "2er-Split"
                     else: btype = "2er-Reg"
                 else: btype = "1er"
                 
-                cell_cls = f"type-{btype}"
-                tooltip = f"{blk.id} | {len(blk.tours)} tours"
-                content = f"{btype}<br>{blk.total_work_hours:.1f}h<br>{blk.first_start.strftime('%H:%M')}-{blk.last_end.strftime('%H:%M')}"
+                # Calc Rest from Prev Block
+                # Rest = (Current Start + (DayDiff * 24h)) - Last End
+                current_start_min = blk.first_start.hour * 60 + blk.first_start.minute
+                current_end_min = blk.last_end.hour * 60 + blk.last_end.minute
                 
-                html += f"<td class='{cell_cls}' title='{tooltip}'>{content}</td>"
-            else:
-                html += "<td></td>"
-        html += "</tr>"
-        
-    html += "</table></body></html>"
+                if last_day_idx != -1:
+                    day_diff = d_idx - last_day_idx
+                    gap_min = (current_start_min + (day_diff * 1440)) - last_end_minutes
+                else:
+                    gap_min = 9999 # First shift of week
+                
+                # Calc Risk (Gap quality within block)
+                # Simple proxy: (Work Hours / Span) ratio? Or just average gap?
+                # Let's use Span - WorkHours as "Idle Time". Less Idle = Redder?
+                # User said: "Je kürzer der Gap, desto röter der Balken" (Pünktlichkeit risk).
+                # Actually, small gap between tours = risk.
+                # Let's compute min_gap inside block
+                min_inner_gap = 999
+                tours_sorted = sorted(blk.tours, key=lambda t: t.start_time)
+                for i in range(len(tours_sorted)-1):
+                     t1 = tours_sorted[i]
+                     t2 = tours_sorted[i+1]
+                     # simplified
+                     g = (t2.start_time.hour*60 + t2.start_time.minute) - (t1.end_time.hour*60 + t1.end_time.minute)
+                     if g < min_inner_gap: min_inner_gap = g
+                
+                if min_inner_gap == 999: min_inner_gap = 60 # Single tour default
+                
+                
+                block_data = {
+                    "id": blk.id,
+                    "type": btype,
+                    "work_h": round(blk.total_work_hours, 1),
+                    "start": blk.first_start.strftime('%H:%M'),
+                    "end": blk.last_end.strftime('%H:%M'),
+                    "tours": len(blk.tours),
+                    "rest_before": gap_min,
+                    "min_inner_gap": min_inner_gap
+                }
+                
+                driver_obj["days"][day.value] = block_data
+                
+                last_end_minutes = current_end_min
+                last_day_idx = d_idx
+                
+        data_model.append(driver_obj)
+
+    # Generate HTML
+    html_file = Path(__file__).parent.parent / "final_schedule_matrix.html"
     
-    with open(html_file, "w") as f:
-        f.write(html)
+    html_content = f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <meta charset="utf-8">
+        <title>Shift Optimizer V2 - Dispatcher Cockpit</title>
+        <style>
+            :root {{
+                --c-3er: #00695c; /* Deep Emerald */
+                --c-3er-bg: #e0f2f1;
+                --c-2reg: #1565c0; /* Ocean Blue */
+                --c-2reg-bg: #e3f2fd;
+                --c-2split: #ef6c00; /* Glowing Orange */
+                --c-2split-bg: #fff3e0;
+                --c-1er: #616161; /* Grey */
+                --c-1er-bg: #f5f5f5;
+                --c-risk: #d32f2f;
+            }}
+            body {{ font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; background: #fafafa; padding: 20px; }}
+            h2 {{ color: #333; }}
+            
+            /* Controls */
+            .controls {{ margin-bottom: 20px; padding: 15px; background: white; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); display: flex; gap: 15px; align-items: center; }}
+            .kpi-badge {{ background: #333; color: white; padding: 5px 10px; border-radius: 4px; font-weight: bold; font-size: 0.9em; }}
+            button {{ padding: 8px 16px; border: none; border-radius: 4px; cursor: pointer; background: #e0e0e0; transition: background 0.2s; }}
+            button:hover {{ background: #d0d0d0; }}
+            button.active {{ background: #333; color: white; }}
+            
+            /* Table */
+            table {{ border-collapse: separate; border-spacing: 2px; width: 100%; font-size: 13px; background: white; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }}
+            th {{ background: #f4f4f4; padding: 10px; text-align: left; font-weight: 600; color: #555; position: sticky; top: 0; z-index: 10; }}
+            td {{ padding: 0; height: 50px; vertical-align: middle; }}
+            
+            /* Cells */
+            .cell-inner {{
+                height: 100%; display: flex; flex-direction: column; justify-content: center; align-items: center;
+                position: relative; border-radius: 4px; transition: transform 0.1s;
+                border: 2px solid transparent; /* reserved for safety border */
+            }}
+            .cell-inner:hover {{ z-index: 2; transform: scale(1.05); box-shadow: 0 4px 8px rgba(0,0,0,0.2); }}
+            
+            /* Types */
+            .type-3er {{ background-color: var(--c-3er-bg); color: var(--c-3er); border-left: 4px solid var(--c-3er); }}
+            .type-2er-Reg {{ background-color: var(--c-2reg-bg); color: var(--c-2reg); border-left: 4px solid var(--c-2reg); }}
+            .type-2er-Split {{ background-color: var(--c-2split-bg); color: var(--c-2split); border-left: 4px solid var(--c-2split); }}
+            .type-1er {{ background-color: var(--c-1er-bg); color: var(--c-1er); border-left: 4px solid var(--c-1er); }}
+            
+            /* Safety & Risk */
+            .safety-violation {{ border-color: var(--c-risk) !important; animation: pulse 2s infinite; }} 
+            .rest-warning {{ border-bottom: 3px solid var(--c-risk); }} /* Rest < 12h */
+            
+            /* Double Tone Risk Bar (Left Edge) */
+            /* We use the border-left for Type, maybe use a dot for Risk? */
+            .risk-dot {{
+                position: absolute; top: 4px; right: 4px; width: 8px; height: 8px; border-radius: 50%;
+            }}
+            
+            .content-main {{ font-weight: 700; font-size: 1.1em; }}
+            .content-sub {{ font-size: 0.85em; opacity: 0.8; }}
+            
+            /* Tooltip */
+            #tooltip {{
+                position: fixed; background: #333; color: white; padding: 10px; border-radius: 6px;
+                font-size: 12px; display: none; pointer-events: none; z-index: 1000;
+                box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+            }}
+            
+            @keyframes pulse {{ 0% {{ box-shadow: 0 0 0 0 rgba(211, 47, 47, 0.4); }} 70% {{ box-shadow: 0 0 0 10px rgba(211, 47, 47, 0); }} 100% {{ box-shadow: 0 0 0 0 rgba(211, 47, 47, 0); }} }}
+
+            .fte-label {{ color: green; font-weight: bold; background: #e8f5e9; padding: 2px 6px; border-radius: 4px; }}
+            .pt-label {{ color: red; font-weight: bold; background: #ffebee; padding: 2px 6px; border-radius: 4px; }}
+
+        </style>
+    </head>
+    <body>
+        <div class="controls">
+            <h2>Shift Optimizer V2</h2>
+            <div class="kpi-badge">Drivers: {len(drivers)}</div>
+            <div class="kpi-badge">FTE: {len([d for d in drivers if d.total_hours >= 40])}</div>
+            
+            <div style="flex-grow:1"></div>
+            
+            <button onclick="toggleView('matrix')" class="active">Matrix View</button>
+            <button onclick="toggleView('timeline')" disabled title="Coming Soon">Timeline View</button>
+            
+            <label><input type="checkbox" id="chkShowGaps" checked onchange="render()"> Show Gap Risk</label>
+        </div>
+
+        <div id="grid-container"></div>
+        <div id="tooltip"></div>
+
+        <script>
+            const data = {json.dumps(data_model)};
+            const days = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+            const container = document.getElementById('grid-container');
+            const tooltip = document.getElementById('tooltip');
+            
+            function render() {{
+                let html = '<table><thead><tr><th>ID</th><th>Type</th><th>Hrs</th>';
+                days.forEach(d => html += '<th>' + d + '</th>');
+                html += '</tr></thead><tbody>';
+                
+                data.forEach(d => {{
+                    html += `<tr>
+                        <td style="padding:10px; font-weight:bold">${{d.id}}</td>
+                        <td style="padding:10px"><span class="${{d.type === 'FTE' ? 'fte-label' : 'pt-label'}}">${{d.type}}</span></td>
+                        <td style="padding:10px">${{d.total_hours}}h</td>`;
+                        
+                    days.forEach(dayName => {{
+                        let blk = d.days[dayName];
+                        if (blk) {{
+                            // Classes
+                            let cls = "cell-inner type-" + blk.type;
+                            
+                            // Safety Check: Rest < 12h (Warning)
+                            if (blk.rest_before < 12 * 60) cls += " rest-warning";
+                            
+                            // Risk Indicator (Gap < 45m = High Risk/Red)
+                            let riskColor = "transparent";
+                            if (document.getElementById('chkShowGaps').checked) {{
+                                if (blk.min_inner_gap < 45) riskColor = "#d32f2f"; // High Risk
+                                else if (blk.min_inner_gap < 60) riskColor = "#fbc02d"; // Med Risk
+                                else riskColor = "#388e3c"; // Safe
+                            }}
+                            
+                            html += `<td>
+                                <div class="${{cls}}" 
+                                     onmousemove="showTip(event, '${{blk.id}}', '${{blk.start}}', '${{blk.end}}', ${{blk.rest_before}}, ${{blk.min_inner_gap}})"
+                                     onmouseleave="hideTip()">
+                                    <div class="risk-dot" style="background:${{riskColor}}"></div>
+                                    <div class="content-main">${{blk.type}}</div>
+                                    <div class="content-sub">${{blk.start}}-${{blk.end}}</div>
+                                </div>
+                            </td>`;
+                        }} else {{
+                            html += '<td style="background:#fafafa"></td>';
+                        }}
+                    }});
+                    html += '</tr>';
+                }});
+                
+                html += '</tbody></table>';
+                container.innerHTML = html;
+            }}
+            
+            function showTip(e, id, s, e_time, rest, gap) {{
+                let restHrs = (rest / 60).toFixed(1);
+                tooltip.style.display = 'block';
+                tooltip.style.left = (e.clientX + 15) + 'px';
+                tooltip.style.top = (e.clientY + 15) + 'px';
+                tooltip.innerHTML = `<strong>${{id}}</strong><br>
+                                     Time: ${{s}} - ${{e_time}}<br>
+                                     Rest Before: ${{restHrs}}h<br>
+                                     Min Gap: ${{gap}}m`;
+            }}
+            
+            function hideTip() {{
+                tooltip.style.display = 'none';
+            }}
+            
+            render();
+        </script>
+    </body>
+    </html>
+    """
+    
+    with open(html_file, "w", encoding="utf-8") as f:
+        f.write(html_content)
         
-    print(f"Exported HTML to {html_file}")
+    print(f"Exported Rich HTML to {html_file}")
 
 def partition_tours_into_blocks(tours: list[Tour], overrides: BlockGenOverrides) -> list[Block]:
     """
@@ -252,7 +415,7 @@ def partition_tours_into_blocks(tours: list[Tour], overrides: BlockGenOverrides)
             return s - e
             
         def is_reg(gap): return 30 <= gap <= 60
-        def is_split(gap): return gap == 360
+        def is_split(gap): return 240 <= gap <= 360  # 4-6 hours split break
         
         def mark_used(ts): 
             for t in ts: active_tours.remove(t.id)
@@ -269,7 +432,7 @@ def partition_tours_into_blocks(tours: list[Tour], overrides: BlockGenOverrides)
                 for j in range(i+1, len(curr)):
                     t2 = curr[j]
                     g = calc_gap(t1, t2)
-                    if is_reg(g) or is_split(g):
+                    if is_reg(g):  # 3er-chain: NUR 30-60min Gaps (keine Split-Gaps)
                         candidates_t2.append(t2)
                 
                 if not candidates_t2: continue
@@ -284,12 +447,12 @@ def partition_tours_into_blocks(tours: list[Tour], overrides: BlockGenOverrides)
                     candidates_t3 = []
                     # Simple scan all valid t3s (after t2)
                     for t3 in curr:
-                        if t3.start_time <= t2.end_time: continue 
+                        if t3.start_time <= t2.end_time: continue
                         g2 = calc_gap(t2, t3)
-                        if is_reg(g2) or is_split(g2):
-                            # Check span
+                        if is_reg(g2):  # 3er-chain: NUR 30-60min Gaps (keine Split-Gaps)
+                            # Check span - 3er blocks use 16h span limit
                             span = (t3.end_time.hour*60+t3.end_time.minute) - (t1.start_time.hour*60+t1.start_time.minute)
-                            if span <= 16*60:
+                            if span <= 16*60:  # 16h max span for 3er
                                 candidates_t3.append(t3)
                                 
                     if candidates_t3:

@@ -1,0 +1,17 @@
+{
+  "total_drivers": 5,
+  "fte_drivers": 0,
+  "pt_drivers": 5,
+  "pt_ratio": 100.0,
+  "total_tours": 5,
+  "total_hours": 40.0,
+  "avg_hours_per_driver": 8.0,
+  "block_mix": {
+    "3er": 0,
+    "2er_reg": 0,
+    "2er_split": 0,
+    "1er": 5
+  },
+  "plan_version_id": 11,
+  "exported_at": "2026-01-04T11:35:09.767168"
+}

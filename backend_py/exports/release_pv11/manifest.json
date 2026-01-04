@@ -1,0 +1,12 @@
+{
+  "plan_version_id": 11,
+  "status": "LOCKED",
+  "exported_at": "2026-01-04T11:35:09.809602",
+  "files": {
+    "matrix_csv": "matrix_pv11.csv",
+    "rosters_csv": "rosters_pv11.csv",
+    "kpis_json": "kpis_pv11.json",
+    "metadata_json": "metadata_pv11.json",
+    "audit_json": "audit_pv11.json"
+  }
+}

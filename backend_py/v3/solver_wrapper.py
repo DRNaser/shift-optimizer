@@ -1,0 +1,709 @@
+"""
+SOLVEREIGN V3 Solver Wrapper
+=============================
+
+M4: Integration of V2 Block Heuristic Solver with V3 Versioning.
+
+This module wraps the existing V2 solver (run_block_heuristic.py) and integrates
+it with V3's versioning, audit, and database infrastructure.
+
+Flow:
+    1. Load tour_instances from forecast_version
+    2. Run V2 solver (block heuristic + min-cost max-flow)
+    3. Store assignments in database (via tour_instance_id)
+    4. Compute output_hash for reproducibility
+    5. Run audit checks
+    6. Return plan_version_id with status=DRAFT
+
+NOTE: This is an MVP wrapper. Full integration requires refactoring V2 solver
+      to accept tour_instances directly instead of CSV files.
+"""
+
+import hashlib
+import json
+from datetime import datetime
+from typing import Optional
+
+from .config import config
+from .db import (
+    create_plan_version,
+    get_forecast_version,
+    update_plan_status,
+    create_assignments_batch,
+    cleanup_stale_solving_plans,
+)
+from .db_instances import (
+    get_tour_instances,
+    create_assignment_fixed,
+)
+from .audit_fixed import audit_plan_fixed
+from .models import PlanStatus, SolverConfig
+from .solver_v2_integration import solve_with_v2_solver
+
+
+# ============================================================================
+# Default Solver Configuration
+# ============================================================================
+
+DEFAULT_SOLVER_CONFIG = SolverConfig(
+    seed=94,
+    weekly_hours_cap=55,
+    freeze_window_minutes=720,
+    triple_gap_min=30,
+    triple_gap_max=60,
+    split_break_min=240,
+    split_break_max=360,
+    churn_weight=0.0,
+    seed_sweep_count=1,
+    rest_min_minutes=660,
+    span_regular_max=840,
+    span_split_max=960,
+)
+
+
+def run_crash_recovery(max_age_minutes: int = 60) -> int:
+    """
+    Clean up any stale SOLVING plans from previous crashes.
+
+    Call this on application startup or before solving.
+
+    Args:
+        max_age_minutes: Plans SOLVING longer than this are marked FAILED
+
+    Returns:
+        Number of plans cleaned up
+    """
+    try:
+        cleaned = cleanup_stale_solving_plans(max_age_minutes=max_age_minutes)
+        if cleaned > 0:
+            print(f"[CRASH RECOVERY] Cleaned {cleaned} stale SOLVING plans")
+        return cleaned
+    except Exception as e:
+        # Don't fail if DB not available
+        print(f"[CRASH RECOVERY] Skipped (DB unavailable): {e}")
+        return 0
+
+
+def solve_forecast(
+    forecast_version_id: int,
+    seed: Optional[int] = None,
+    save_to_db: bool = True,
+    run_audit: bool = True,
+    solver_config: Optional[SolverConfig] = None,
+    baseline_plan_id: Optional[int] = None,
+    scenario_label: Optional[str] = None
+) -> dict:
+    """
+    Solve a forecast using V2 block heuristic solver.
+
+    Args:
+        forecast_version_id: ID of forecast to solve
+        seed: Random seed for deterministic solver (default: config.SOLVER_SEED)
+        save_to_db: Whether to save results to database
+        run_audit: Whether to run audit checks after solving
+        solver_config: Full solver configuration (overrides seed if provided)
+        baseline_plan_id: Baseline plan for churn calculation
+        scenario_label: Optional scenario name for tracking
+
+    Returns:
+        dict with:
+            - plan_version_id: ID of created plan
+            - assignments_count: Number of assignments created
+            - drivers_count: Number of unique drivers
+            - output_hash: SHA256 of assignments for reproducibility
+            - audit_results: Audit check results (if run_audit=True)
+            - status: "DRAFT"
+            - churn_count: Changes vs baseline (if baseline provided)
+            - drivers_total, fte_count, pt_count, etc.
+
+    Raises:
+        ValueError: If forecast_version not found or has no instances
+    """
+    # Build solver config
+    if solver_config is None:
+        solver_config = SolverConfig(
+            seed=seed if seed is not None else config.SOLVER_SEED,
+            weekly_hours_cap=DEFAULT_SOLVER_CONFIG.weekly_hours_cap,
+            freeze_window_minutes=DEFAULT_SOLVER_CONFIG.freeze_window_minutes,
+            triple_gap_min=DEFAULT_SOLVER_CONFIG.triple_gap_min,
+            triple_gap_max=DEFAULT_SOLVER_CONFIG.triple_gap_max,
+            split_break_min=DEFAULT_SOLVER_CONFIG.split_break_min,
+            split_break_max=DEFAULT_SOLVER_CONFIG.split_break_max,
+            churn_weight=DEFAULT_SOLVER_CONFIG.churn_weight,
+            seed_sweep_count=DEFAULT_SOLVER_CONFIG.seed_sweep_count,
+            rest_min_minutes=DEFAULT_SOLVER_CONFIG.rest_min_minutes,
+            span_regular_max=DEFAULT_SOLVER_CONFIG.span_regular_max,
+            span_split_max=DEFAULT_SOLVER_CONFIG.span_split_max,
+        )
+
+    # Use seed from config if not explicitly provided
+    if seed is None:
+        seed = solver_config.seed
+
+    # Validate forecast exists
+    forecast = get_forecast_version(forecast_version_id)
+    if not forecast:
+        raise ValueError(f"Forecast version {forecast_version_id} not found")
+
+    # Check forecast status - must be PASS to solve
+    if forecast.get('status') == 'FAIL':
+        raise ValueError(
+            f"Cannot solve FAIL forecast (forecast_version_id={forecast_version_id}). "
+            "Fix parse errors before solving."
+        )
+
+    # Load tour instances
+    instances = get_tour_instances(forecast_version_id)
+    if not instances:
+        raise ValueError(
+            f"No tour instances found for forecast {forecast_version_id}. "
+            "Run expand_tour_template() first."
+        )
+
+    print(f"Loaded {len(instances)} tour instances for forecast {forecast_version_id}")
+
+    # SPEC 8.1: Freeze Window Enforcement
+    # Get frozen instances and their baseline assignments
+    frozen_assignments = {}
+    if baseline_plan_id and solver_config.freeze_window_minutes > 0:
+        frozen_ids = get_frozen_instances(
+            forecast_version_id,
+            baseline_plan_id,
+            freeze_minutes=solver_config.freeze_window_minutes
+        )
+        if frozen_ids:
+            print(f"[FREEZE] {len(frozen_ids)} instances frozen (within {solver_config.freeze_window_minutes}min of start)")
+            # Get baseline assignments for frozen instances
+            from .db_instances import get_assignments_with_instances
+            baseline_assignments = get_assignments_with_instances(baseline_plan_id)
+            for ba in baseline_assignments:
+                if ba['tour_instance_id'] in frozen_ids:
+                    frozen_assignments[ba['tour_instance_id']] = ba['driver_id']
+            print(f"[FREEZE] Preserving {len(frozen_assignments)} baseline assignments")
+
+    # Call V2 Block Heuristic Solver via integration bridge
+    try:
+        assignments = solve_with_v2_solver(instances, seed=seed)
+    except Exception as e:
+        print(f"[WARN] V2 solver failed ({e}), falling back to dummy assignments")
+        assignments = _create_dummy_assignments(instances, seed)
+
+    # SPEC 8.1: Override solver assignments for frozen instances
+    if frozen_assignments:
+        for i, assignment in enumerate(assignments):
+            instance_id = assignment['tour_instance_id']
+            if instance_id in frozen_assignments:
+                baseline_driver = frozen_assignments[instance_id]
+                if assignment['driver_id'] != baseline_driver:
+                    print(f"[FREEZE] Overriding instance {instance_id}: {assignment['driver_id']} -> {baseline_driver}")
+                    assignments[i]['driver_id'] = baseline_driver
+                    assignments[i]['metadata'] = assignments[i].get('metadata', {})
+                    assignments[i]['metadata']['freeze_enforced'] = True
+                    assignments[i]['metadata']['original_driver'] = assignment['driver_id']
+
+    print(f"Solver created {len(assignments)} assignments using {len(set(a['driver_id'] for a in assignments))} drivers")
+
+    # Compute solver config hash (for reproducibility)
+    solver_config_dict = solver_config.to_dict()
+    solver_config_dict["version"] = "v2_block_heuristic"
+    solver_config_dict["fatigue_rule"] = "no_consecutive_triples"
+    solver_config_hash = hashlib.sha256(
+        json.dumps(solver_config_dict, sort_keys=True).encode()
+    ).hexdigest()
+
+    # Compute output hash (for reproducibility)
+    # SPEC 11: output_hash must include solver_config_hash for complete reproducibility
+    output_data = {
+        "solver_config_hash": solver_config_hash,
+        "assignments": sorted(
+            [
+                {
+                    "driver_id": a["driver_id"],
+                    "tour_instance_id": a["tour_instance_id"],
+                    "day": a["day"],
+                }
+                for a in assignments
+            ],
+            key=lambda x: (x["driver_id"], x["day"], x["tour_instance_id"])
+        )
+    }
+    output_hash = hashlib.sha256(
+        json.dumps(output_data, sort_keys=True).encode()
+    ).hexdigest()
+
+    # Create plan version with SOLVING status (crash recovery marker)
+    if save_to_db:
+        plan_version_id = create_plan_version(
+            forecast_version_id=forecast_version_id,
+            seed=seed,
+            solver_config_hash=solver_config_hash,
+            output_hash="",  # Placeholder, updated after batch insert
+            status=PlanStatus.SOLVING.value,
+            scenario_label=scenario_label,
+            baseline_plan_version_id=baseline_plan_id,
+            solver_config_json=solver_config_dict,
+        )
+        print(f"Created plan_version {plan_version_id} (status=SOLVING)")
+
+        try:
+            # TRANSACTION SAFETY: Insert ALL assignments in single transaction
+            # If crash occurs here, plan stays in SOLVING state for cleanup
+            count = create_assignments_batch(plan_version_id, assignments)
+            print(f"Stored {count} assignments in database (batch transaction)")
+
+            # Update plan status to DRAFT with final output_hash
+            update_plan_status(plan_version_id, PlanStatus.DRAFT.value, output_hash)
+            print(f"Plan {plan_version_id} status updated to DRAFT")
+
+        except Exception as e:
+            # Mark plan as FAILED on any error
+            update_plan_status(plan_version_id, PlanStatus.FAILED.value)
+            print(f"[ERROR] Solver failed, plan {plan_version_id} marked FAILED: {e}")
+            raise
+
+        # Run audit checks
+        audit_results = None
+        if run_audit:
+            print("Running audit checks...")
+            audit_results = audit_plan_fixed(plan_version_id, save_to_db=True)
+            print(f"Audit: {audit_results['checks_passed']}/{audit_results['checks_run']} checks passed")
+
+            if not audit_results['all_passed']:
+                print("WARNING: Some audit checks failed!")
+                for check_name, result in audit_results['results'].items():
+                    if result['status'] == 'FAIL':
+                        print(f"  FAIL: {check_name} ({result['violation_count']} violations)")
+
+        # Calculate churn vs baseline if provided
+        # SPEC 8.2: If no baseline, churn must be marked N/A explicitly (never "0")
+        churn_count = None  # N/A when no baseline
+        churn_drivers_affected = None
+        churn_percent = None
+        churn_available = False
+
+        if baseline_plan_id:
+            churn = _calculate_churn(baseline_plan_id, assignments)
+            churn_count = churn['churn_count']
+            churn_drivers_affected = churn['drivers_affected']
+            churn_percent = churn['churn_percent']
+            churn_available = True
+
+            # Store churn metrics in plan_versions
+            _update_plan_churn(plan_version_id, churn_count, churn_drivers_affected)
+
+        # Calculate driver metrics
+        kpis = compute_plan_kpis(plan_version_id)
+
+        result = {
+            "plan_version_id": plan_version_id,
+            "assignments_count": len(assignments),
+            "drivers_count": len(set(a["driver_id"] for a in assignments)),
+            "drivers_total": kpis.get('total_drivers', 0),
+            "fte_count": kpis.get('total_drivers', 0) - kpis.get('pt_drivers', 0),
+            "pt_count": kpis.get('pt_drivers', 0),
+            "avg_weekly_hours": kpis.get('avg_work_hours', 0.0),
+            "max_weekly_hours": _get_max_weekly_hours(assignments),
+            "output_hash": output_hash,
+            "solver_config_hash": solver_config_hash,
+            "seed": seed,
+            "status": PlanStatus.DRAFT.value,
+            "audit_results": audit_results,
+            "audits_passed": audit_results['checks_passed'] if audit_results else 0,
+            "audits_total": audit_results['checks_run'] if audit_results else 0,
+            "churn_count": churn_count,
+            "churn_drivers_affected": churn_drivers_affected,
+            "churn_percent": churn_percent,
+            "churn_available": churn_available,  # False = N/A (no baseline)
+            "assignments": assignments,  # Include for scenario runner
+        }
+
+    else:
+        # Dry run (no DB save)
+        result = {
+            "plan_version_id": None,
+            "assignments_count": len(assignments),
+            "drivers_count": len(set(a["driver_id"] for a in assignments)),
+            "drivers_total": len(set(a["driver_id"] for a in assignments)),
+            "fte_count": 0,
+            "pt_count": 0,
+            "avg_weekly_hours": 0.0,
+            "max_weekly_hours": 0.0,
+            "output_hash": output_hash,
+            "solver_config_hash": solver_config_hash,
+            "seed": seed,
+            "status": "DRY_RUN",
+            "audit_results": None,
+            "audits_passed": 0,
+            "audits_total": 0,
+            "churn_count": None,  # N/A in dry run
+            "churn_drivers_affected": None,
+            "churn_percent": None,
+            "churn_available": False,  # N/A
+            "assignments": assignments,
+        }
+
+    return result
+
+
+def _create_dummy_assignments(instances: list[dict], seed: int) -> list[dict]:
+    """
+    Create dummy assignments for MVP demonstration.
+
+    TODO (FULL M4): Replace with actual V2 solver call.
+
+    This function creates a simple greedy assignment:
+    - Assign each instance to a unique driver
+    - Driver IDs: D001, D002, D003, ...
+    - One instance per driver per day (1er blocks)
+    """
+    import random
+    random.seed(seed)
+
+    assignments = []
+
+    # Group instances by day
+    from collections import defaultdict
+    instances_by_day = defaultdict(list)
+    for instance in instances:
+        instances_by_day[instance['day']].append(instance)
+
+    # Simple greedy: one driver per instance per day
+    driver_counter = 1
+
+    for day in sorted(instances_by_day.keys()):
+        day_instances = sorted(instances_by_day[day], key=lambda x: x['start_ts'])
+
+        for instance in day_instances:
+            driver_id = f"D{driver_counter:03d}"
+            block_id = f"D{day}_B1"  # Day X, Block 1 (1er)
+
+            assignments.append({
+                "driver_id": driver_id,
+                "tour_instance_id": instance['id'],
+                "day": day,
+                "block_id": block_id,
+                "role": "PRIMARY",
+                "metadata": {
+                    "solver_note": "MVP dummy assignment (1 driver per instance)",
+                    "seed": seed
+                }
+            })
+
+            driver_counter += 1
+
+    # Shuffle to make it deterministic but realistic
+    random.shuffle(assignments)
+
+    return assignments
+
+
+def compute_plan_kpis(plan_version_id: int) -> dict:
+    """
+    Compute KPIs for a plan version.
+
+    Returns:
+        dict with KPIs:
+            - total_drivers: Total number of drivers
+            - avg_work_hours: Average work hours per driver
+            - pt_drivers: Number of part-time drivers (<40h)
+            - block_mix: Distribution of 1er/2er/3er blocks
+            - peak_concurrent: Max concurrent active tours
+    """
+    from .db_instances import get_assignments_with_instances
+    from collections import defaultdict
+
+    assignments = get_assignments_with_instances(plan_version_id)
+
+    # Group by driver
+    driver_hours = defaultdict(float)
+    driver_blocks = defaultdict(list)
+
+    for a in assignments:
+        driver_id = a['driver_id']
+        work_hours = float(a.get('work_hours', 0))
+        driver_hours[driver_id] += work_hours
+        driver_blocks[driver_id].append(a)
+
+    total_drivers = len(driver_hours)
+    avg_work_hours = sum(driver_hours.values()) / total_drivers if total_drivers > 0 else 0
+    pt_drivers = sum(1 for hours in driver_hours.values() if hours < 40)
+
+    # Block mix (count tours per driver per day)
+    block_counts = defaultdict(int)
+    for driver_id, driver_assignments in driver_blocks.items():
+        tours_per_day = defaultdict(int)
+        for a in driver_assignments:
+            tours_per_day[a['day']] += 1
+
+        for day, tour_count in tours_per_day.items():
+            if tour_count == 1:
+                block_counts['1er'] += 1
+            elif tour_count == 2:
+                block_counts['2er'] += 1
+            elif tour_count >= 3:
+                block_counts['3er'] += 1
+
+    total_blocks = sum(block_counts.values())
+    block_mix = {
+        k: {
+            "count": v,
+            "percentage": round(100 * v / total_blocks, 1) if total_blocks > 0 else 0
+        }
+        for k, v in block_counts.items()
+    }
+
+    kpis = {
+        "total_drivers": total_drivers,
+        "avg_work_hours": round(avg_work_hours, 2),
+        "pt_drivers": pt_drivers,
+        "pt_ratio": round(100 * pt_drivers / total_drivers, 1) if total_drivers > 0 else 0,
+        "block_mix": block_mix,
+        "total_blocks": total_blocks
+    }
+
+    return kpis
+
+
+# Convenience function (matches old API)
+def solve_and_audit(forecast_version_id: int, seed: Optional[int] = None) -> dict:
+    """
+    Solve forecast and run audits (one-step convenience function).
+
+    This is the primary entry point for creating a new plan from a forecast.
+
+    Returns:
+        Complete result dict with plan_version_id, KPIs, and audit results.
+    """
+    result = solve_forecast(
+        forecast_version_id=forecast_version_id,
+        seed=seed,
+        save_to_db=True,
+        run_audit=True
+    )
+
+    # Add KPIs
+    if result['plan_version_id']:
+        kpis = compute_plan_kpis(result['plan_version_id'])
+        result['kpis'] = kpis
+
+    return result
+
+
+# ============================================================================
+# Churn Calculation Helpers
+# ============================================================================
+
+def _calculate_churn(baseline_plan_id: int, new_assignments: list[dict]) -> dict:
+    """
+    Calculate churn between baseline and new assignments.
+
+    Churn = number of instance-level changes (added/removed/changed driver).
+
+    Args:
+        baseline_plan_id: Baseline plan ID
+        new_assignments: New assignments list
+
+    Returns:
+        dict with churn metrics
+    """
+    from .db_instances import get_assignments_with_instances
+
+    try:
+        baseline_assignments = get_assignments_with_instances(baseline_plan_id)
+    except Exception:
+        return {'churn_count': 0, 'drivers_affected': 0, 'churn_percent': 0.0}
+
+    # Build baseline map: tour_instance_id -> (driver_id, block_id)
+    baseline_map = {
+        a['tour_instance_id']: (a['driver_id'], a.get('block_id', ''))
+        for a in baseline_assignments
+    }
+
+    # Build new map
+    new_map = {
+        a['tour_instance_id']: (a['driver_id'], a.get('block_id', ''))
+        for a in new_assignments
+    }
+
+    # Calculate differences
+    all_instances = set(baseline_map.keys()) | set(new_map.keys())
+    churn_count = 0
+    affected_drivers = set()
+
+    for instance_id in all_instances:
+        baseline_val = baseline_map.get(instance_id)
+        new_val = new_map.get(instance_id)
+
+        if baseline_val != new_val:
+            churn_count += 1
+
+            if baseline_val:
+                affected_drivers.add(baseline_val[0])
+            if new_val:
+                affected_drivers.add(new_val[0])
+
+    total_instances = len(all_instances)
+    churn_percent = (churn_count / total_instances * 100) if total_instances > 0 else 0.0
+
+    return {
+        'churn_count': churn_count,
+        'drivers_affected': len(affected_drivers),
+        'churn_percent': round(churn_percent, 2),
+    }
+
+
+def _update_plan_churn(plan_version_id: int, churn_count: int, churn_drivers: int) -> None:
+    """
+    Update churn metrics in plan_versions table.
+
+    Args:
+        plan_version_id: Plan to update
+        churn_count: Number of instance changes
+        churn_drivers: Number of affected drivers
+    """
+    from .db import get_connection
+
+    try:
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    UPDATE plan_versions
+                    SET churn_count = %s, churn_drivers_affected = %s
+                    WHERE id = %s
+                """, (churn_count, churn_drivers, plan_version_id))
+            conn.commit()
+    except Exception as e:
+        print(f"[WARN] Could not update churn metrics: {e}")
+
+
+def _get_max_weekly_hours(assignments: list[dict]) -> float:
+    """
+    Get max weekly hours across all drivers.
+
+    Args:
+        assignments: List of assignment dicts
+
+    Returns:
+        Max weekly hours
+    """
+    from collections import defaultdict
+
+    driver_hours = defaultdict(float)
+    for a in assignments:
+        driver_id = a['driver_id']
+        work_hours = float(a.get('work_hours', 0))
+        driver_hours[driver_id] += work_hours
+
+    if not driver_hours:
+        return 0.0
+
+    return max(driver_hours.values())
+
+
+# ============================================================================
+# Freeze Window Helpers
+# ============================================================================
+
+def check_freeze_violations(
+    forecast_version_id: int,
+    baseline_plan_id: Optional[int],
+    freeze_minutes: int = 720
+) -> list[dict]:
+    """
+    Check for freeze window violations.
+
+    A freeze violation occurs when:
+    1. A tour instance is within freeze_minutes of starting
+    2. The assignment differs from the baseline
+
+    Args:
+        forecast_version_id: Forecast to check
+        baseline_plan_id: Baseline plan (last LOCKED)
+        freeze_minutes: Freeze window in minutes (default 12h)
+
+    Returns:
+        List of violation dicts with instance details
+    """
+    from datetime import timedelta
+    from .db import get_forecast_version
+    from .db_instances import get_tour_instances, get_assignments_with_instances
+
+    if not baseline_plan_id:
+        return []  # No baseline = no freeze violations
+
+    forecast = get_forecast_version(forecast_version_id)
+    if not forecast:
+        return []
+
+    week_anchor = forecast.get('week_anchor_date')
+    if not week_anchor:
+        return []  # Cannot compute without anchor
+
+    now = datetime.now()
+    freeze_threshold = now + timedelta(minutes=freeze_minutes)
+
+    instances = get_tour_instances(forecast_version_id)
+    baseline_assignments = get_assignments_with_instances(baseline_plan_id)
+
+    # Build baseline map
+    baseline_map = {
+        a['tour_instance_id']: a['driver_id']
+        for a in baseline_assignments
+    }
+
+    violations = []
+    for instance in instances:
+        # Compute instance start datetime
+        day_offset = instance['day'] - 1  # Day 1 = Monday = offset 0
+        start_ts = instance['start_ts']
+
+        instance_start = datetime.combine(
+            week_anchor + timedelta(days=day_offset),
+            start_ts
+        )
+
+        # Handle cross-midnight
+        if instance.get('crosses_midnight'):
+            # Start is on the previous day's evening
+            pass  # Still uses same logic
+
+        # Check if within freeze window
+        if instance_start <= freeze_threshold:
+            instance_id = instance['id']
+            baseline_driver = baseline_map.get(instance_id)
+
+            if baseline_driver:
+                violations.append({
+                    'instance_id': instance_id,
+                    'day': instance['day'],
+                    'start_ts': str(start_ts),
+                    'instance_start': instance_start.isoformat(),
+                    'frozen_driver': baseline_driver,
+                    'minutes_until_start': int((instance_start - now).total_seconds() / 60),
+                })
+
+    return violations
+
+
+def get_frozen_instances(
+    forecast_version_id: int,
+    baseline_plan_id: int,
+    freeze_minutes: int = 720
+) -> set[int]:
+    """
+    Get set of frozen tour instance IDs.
+
+    Frozen = within freeze window AND has baseline assignment.
+
+    Args:
+        forecast_version_id: Forecast to check
+        baseline_plan_id: Baseline plan
+        freeze_minutes: Freeze window
+
+    Returns:
+        Set of frozen instance IDs
+    """
+    violations = check_freeze_violations(
+        forecast_version_id, baseline_plan_id, freeze_minutes
+    )
+    return {v['instance_id'] for v in violations}

@@ -17,14 +17,14 @@ class DriverState:
         # 1. Max 1 block per day
         if block.day in self.day_map:
             return False
-            
+
         # 2. Max Weekly Hours
         if self.total_hours + block.total_work_hours > max_hours:
             return False
-            
+
         if not check_rest:
             return True
-            
+
         # 3. 11h Rest Period
         # Check against previous day block
         prev_day = self._get_adj_day(block.day, -1)
@@ -32,14 +32,20 @@ class DriverState:
             prev_block = self.day_map[prev_day]
             if not self._check_rest(prev_block, block):
                 return False
-                
+            # 4. FATIGUE RULE: No 3er -> 3er on consecutive days
+            if len(prev_block.tours) == 3 and len(block.tours) == 3:
+                return False
+
         # Check against next day block
         next_day = self._get_adj_day(block.day, 1)
         if next_day and next_day in self.day_map:
             next_block = self.day_map[next_day]
             if not self._check_rest(block, next_block):
                 return False
-                
+            # 4. FATIGUE RULE: No 3er -> 3er on consecutive days
+            if len(block.tours) == 3 and len(next_block.tours) == 3:
+                return False
+
         return True
         
     def assign(self, block: Block):
@@ -306,16 +312,13 @@ class BlockHeuristicSolver:
                 curr = b
                 while True:
                     # Check verify assignment (should be valid by graph def)
-                    if not new_driver.can_assign(curr, check_rest=False): # 55h check?
-                        # If flow ignored 55h, we might have issue.
-                        # But typically flow gives valid rest.
-                        # Force assign?
-                        # If 55h violated, we might need to break the chain.
-                        # For now, just assign. Heuristic handles cleanup?
-                        # User constraint: "Stunden im Zielbereich so gut wie möglich" (Soft)
-                        # We prioritize 0 Rest Violations.
-                        pass
-                        
+                    # CRITICAL: 55h max weekly hours is a HARD constraint
+                    if not new_driver.can_assign(curr, check_rest=False):
+                        # 55h limit exceeded! Break the chain and start new driver
+                        # This ensures no driver exceeds 55h weekly
+                        self.drivers.append(new_driver)
+                        new_driver = DriverState(id=f"D{len(self.drivers)+1:03d}", driver_type="UNK")
+
                     new_driver.assign(curr)
                     
                     if curr.id in adj:
