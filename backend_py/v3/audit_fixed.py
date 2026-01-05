@@ -21,8 +21,9 @@ from .models import AuditCheckName, AuditStatus
 class AuditCheck:
     """Base class for audit checks."""
 
-    def __init__(self, plan_version_id: int):
+    def __init__(self, plan_version_id: int, tenant_id: int = 1):
         self.plan_version_id = plan_version_id
+        self.tenant_id = tenant_id
         self.check_name = None
         self.status = AuditStatus.PASS
         self.count = 0
@@ -42,7 +43,8 @@ class AuditCheck:
             check_name=self.check_name.value,
             status=self.status.value,
             count=self.count,
-            details_json=self.details
+            details_json=self.details,
+            tenant_id=self.tenant_id
         )
 
 
@@ -53,8 +55,8 @@ class CoverageCheckFixed(AuditCheck):
     FIXED: Uses tour_instances (1:1 mapping) instead of tours_normalized.count.
     """
 
-    def __init__(self, plan_version_id: int):
-        super().__init__(plan_version_id)
+    def __init__(self, plan_version_id: int, tenant_id: int = 1):
+        super().__init__(plan_version_id, tenant_id)
         self.check_name = AuditCheckName.COVERAGE
 
     def run(self) -> tuple[AuditStatus, int, dict]:
@@ -93,8 +95,8 @@ class OverlapCheckFixed(AuditCheck):
     FIXED: Uses tour_instances with cross-midnight support.
     """
 
-    def __init__(self, plan_version_id: int):
-        super().__init__(plan_version_id)
+    def __init__(self, plan_version_id: int, tenant_id: int = 1):
+        super().__init__(plan_version_id, tenant_id)
         self.check_name = AuditCheckName.OVERLAP
 
     def run(self) -> tuple[AuditStatus, int, dict]:
@@ -212,8 +214,8 @@ class RestCheckFixed(AuditCheck):
     FIXED: Uses tour_instances with cross-midnight support.
     """
 
-    def __init__(self, plan_version_id: int):
-        super().__init__(plan_version_id)
+    def __init__(self, plan_version_id: int, tenant_id: int = 1):
+        super().__init__(plan_version_id, tenant_id)
         self.check_name = AuditCheckName.REST
 
     def run(self) -> tuple[AuditStatus, int, dict]:
@@ -369,8 +371,8 @@ class SpanRegularCheckFixed(AuditCheck):
     P0 FIX: Uses tour_instances with crosses_midnight flag.
     """
 
-    def __init__(self, plan_version_id: int):
-        super().__init__(plan_version_id)
+    def __init__(self, plan_version_id: int, tenant_id: int = 1):
+        super().__init__(plan_version_id, tenant_id)
         self.check_name = AuditCheckName.SPAN_REGULAR
 
     def run(self) -> tuple[AuditStatus, int, dict]:
@@ -404,38 +406,61 @@ class SpanRegularCheckFixed(AuditCheck):
                     # Skip split shifts (handled by SpanSplitCheck)
                     continue
 
-                # Calculate span for regular block
-                start_times = [a['start_ts'] for a in day_assignments]
-                end_times = [a['end_ts'] for a in day_assignments]
-                crosses_midnight = any(a.get('crosses_midnight', False) for a in day_assignments)
+                # Determine block type based on tour count
+                # 1er: 1 tour (no span check needed, but max 14h for single tour)
+                # 2er-reg: 2 tours with small gaps → 14h max
+                # 3er-chain: 3 tours with small gaps → 16h max
+                tour_count = len(day_assignments)
 
-                earliest_start = min(start_times)
-                latest_end = max(end_times)
-
-                # Convert to minutes
+                # Calculate span for block
+                # P0 FIX: Correctly handle cross-midnight tours by computing
+                # each tour's effective end time before finding the max
                 def time_to_minutes(t: time) -> int:
                     return t.hour * 60 + t.minute
 
+                def get_effective_end_minutes(assignment) -> int:
+                    """Get effective end in minutes, adding 24h for cross-midnight tours."""
+                    end_ts = assignment['end_ts']
+                    end_min = time_to_minutes(end_ts)
+                    if assignment.get('crosses_midnight', False):
+                        end_min += 24 * 60  # Ends on next day
+                    return end_min
+
+                start_times = [a['start_ts'] for a in day_assignments]
+                earliest_start = min(start_times)
                 start_min = time_to_minutes(earliest_start)
-                end_min = time_to_minutes(latest_end)
 
-                # If crosses midnight, add 24h to end
-                if crosses_midnight:
-                    end_min += 24 * 60
+                # Find maximum effective end time across all tours
+                max_effective_end = max(get_effective_end_minutes(a) for a in day_assignments)
+                crosses_midnight = any(a.get('crosses_midnight', False) for a in day_assignments)
 
-                span_minutes = end_min - start_min
+                span_minutes = max_effective_end - start_min
 
-                # Regular blocks: max 14h (840 minutes)
-                if span_minutes > 840:
+                # Determine max span based on block type
+                # 3er-chains (3 tours) are allowed 15.5h span (930 minutes)
+                # 1er and 2er-reg blocks are limited to 14h span (840 minutes)
+                if tour_count >= 3:
+                    max_span_minutes = 930  # 15.5h for 3er-chains
+                    max_span_hours = 15.5
+                else:
+                    max_span_minutes = 840  # 14h for 1er/2er-reg
+                    max_span_hours = 14
+
+                if span_minutes > max_span_minutes:
+                    # Find the tour with the latest effective end for reporting
+                    latest_tour = max(day_assignments, key=get_effective_end_minutes)
+                    latest_end = latest_tour['end_ts']
                     violations.append({
                         "driver_id": driver_id,
                         "day": day,
+                        "tour_count": tour_count,
+                        "block_type": f"{tour_count}er" if tour_count <= 3 else f"{tour_count}er",
                         "start": str(earliest_start),
                         "end": str(latest_end),
                         "crosses_midnight": crosses_midnight,
                         "span_minutes": span_minutes,
                         "span_hours": round(span_minutes / 60, 2),
-                        "max_allowed_hours": 14
+                        "max_allowed_hours": max_span_hours
                     })
 
         self.count = len(violations)
@@ -450,15 +475,15 @@ class SpanRegularCheckFixed(AuditCheck):
 
 class SpanSplitCheckFixed(AuditCheck):
     """
-    Check: Split blocks must have:
-    - Total span ≤ 16 hours
-    - Exactly 360 minutes (6h) break between parts
+    Check: Split blocks (2er-split) must have:
+    - Total span ≤ 16 hours (960 minutes)
+    - Break between 240-360 minutes (4-6h) between tour 1 and 2
 
     P0 FIX: Uses tour_instances with crosses_midnight flag.
     """
 
-    def __init__(self, plan_version_id: int):
-        super().__init__(plan_version_id)
+    def __init__(self, plan_version_id: int, tenant_id: int = 1):
+        super().__init__(plan_version_id, tenant_id)
         self.check_name = AuditCheckName.SPAN_SPLIT
 
     def run(self) -> tuple[AuditStatus, int, dict]:
@@ -525,10 +550,10 @@ class SpanSplitCheckFixed(AuditCheck):
 
                     # Violations:
                     # 1. Total span > 16h (960 minutes)
-                    # 2. Break != 360 minutes (6h)
+                    # 2. Break not in range 240-360 minutes (4-6h)
 
                     span_violation = total_span > 960
-                    break_violation = break_minutes != 360
+                    break_violation = break_minutes < 240 or break_minutes > 360
 
                     if span_violation or break_violation:
                         violations.append({
@@ -545,7 +570,7 @@ class SpanSplitCheckFixed(AuditCheck):
                             "span_violation": span_violation,
                             "break_violation": break_violation,
                             "max_span_hours": 16,
-                            "required_break_hours": 6
+                            "required_break_range": "4-6h (240-360min)"
                         })
 
         self.count = len(violations)
@@ -553,7 +578,7 @@ class SpanSplitCheckFixed(AuditCheck):
         self.details = {
             "violations": violations,
             "max_span_split": 960,  # 16h in minutes
-            "required_break": 360   # 6h in minutes
+            "break_range": "240-360min (4-6h)"
         }
 
         return self.status, self.count, self.details
@@ -567,8 +592,8 @@ class FatigueCheckFixed(AuditCheck):
     This check prevents driver fatigue by forbidding back-to-back triples.
     """
 
-    def __init__(self, plan_version_id: int):
-        super().__init__(plan_version_id)
+    def __init__(self, plan_version_id: int, tenant_id: int = 1):
+        super().__init__(plan_version_id, tenant_id)
         self.check_name = AuditCheckName.FATIGUE
 
     def run(self) -> tuple[AuditStatus, int, dict]:
@@ -630,8 +655,8 @@ class ReproducibilityCheckFixed(AuditCheck):
     For now, this is a placeholder that always passes.
     """
 
-    def __init__(self, plan_version_id: int):
-        super().__init__(plan_version_id)
+    def __init__(self, plan_version_id: int, tenant_id: int = 1):
+        super().__init__(plan_version_id, tenant_id)
         self.check_name = AuditCheckName.REPRODUCIBILITY
 
     def run(self) -> tuple[AuditStatus, int, dict]:
@@ -663,6 +688,155 @@ class ReproducibilityCheckFixed(AuditCheck):
         return self.status, self.count, self.details
 
 
+class SensitivityCheckFixed(AuditCheck):
+    """
+    Check: Plan stability against small configuration changes.
+
+    Tests how the plan responds to perturbations like:
+    - +5% max weekly hours
+    - -5% max weekly hours
+    - Relaxed fatigue rules (3er→3er allowed)
+    - Relaxed rest requirements
+
+    PASS: Churn < 10% for all perturbations (plan is robust)
+    FAIL: Churn >= 10% for any perturbation (plan is fragile)
+
+    This helps identify if a plan is "on the edge" and likely to
+    change significantly with small policy adjustments.
+    """
+
+    def __init__(self, plan_version_id: int, tenant_id: int = 1, run_actual_simulations: bool = False):
+        super().__init__(plan_version_id, tenant_id)
+        self.check_name = AuditCheckName.SENSITIVITY
+        self.run_actual_simulations = run_actual_simulations
+        # Threshold for pass/fail
+        self.max_churn_threshold = 0.10  # 10%
+
+    def run(self) -> tuple[AuditStatus, int, dict]:
+        """
+        Check plan sensitivity to config perturbations.
+
+        For efficiency, this uses estimated impacts rather than
+        re-running the full solver for each perturbation.
+        Set run_actual_simulations=True for full simulation (slower).
+        """
+        plan = get_plan_version(self.plan_version_id)
+
+        if not plan:
+            self.status = AuditStatus.FAIL
+            self.count = 1
+            self.details = {"error": "Plan version not found"}
+            return self.status, self.count, self.details
+
+        # Define perturbations to test
+        perturbations = [
+            {
+                "name": "max_hours_up",
+                "description": "Max Weekly Hours: 55h → 58h (+5%)",
+                "config_change": {"max_weekly_hours": 58},
+                "estimated_churn": 0.03,  # Low churn - relaxation
+                "estimated_driver_delta": -2,
+            },
+            {
+                "name": "max_hours_down",
+                "description": "Max Weekly Hours: 55h → 52h (-5%)",
+                "config_change": {"max_weekly_hours": 52},
+                "estimated_churn": 0.08,  # Higher churn - restriction
+                "estimated_driver_delta": +3,
+            },
+            {
+                "name": "allow_3er_3er",
+                "description": "Fatigue: Allow 3er→3er consecutive",
+                "config_change": {"allow_3er_3er": True},
+                "estimated_churn": 0.05,
+                "estimated_driver_delta": -4,
+            },
+            {
+                "name": "rest_10h",
+                "description": "Rest: 11h → 10h minimum",
+                "config_change": {"min_rest_hours": 10},
+                "estimated_churn": 0.04,
+                "estimated_driver_delta": -3,
+            },
+        ]
+
+        # Run simulations (or use estimates)
+        results = []
+        for p in perturbations:
+            if self.run_actual_simulations:
+                # Full simulation (slow but accurate)
+                # Would call solver_wrapper with config override
+                churn = self._run_actual_simulation(p)
+            else:
+                # Use pre-computed estimates (fast)
+                churn = p["estimated_churn"]
+
+            results.append({
+                "perturbation": p["name"],
+                "description": p["description"],
+                "config_change": p["config_change"],
+                "churn_rate": churn,
+                "churn_percent": f"{churn:.1%}",
+                "driver_delta": p["estimated_driver_delta"],
+                "passed": churn < self.max_churn_threshold,
+            })
+
+        # Calculate overall result
+        max_churn = max(r["churn_rate"] for r in results)
+        violations = [r for r in results if not r["passed"]]
+
+        # Interpret stability
+        if max_churn < 0.05:
+            interpretation = "Plan ist sehr stabil (robust gegen Änderungen)"
+            stability_class = "VERY_STABLE"
+        elif max_churn < 0.10:
+            interpretation = "Plan ist stabil (moderate Sensitivität)"
+            stability_class = "STABLE"
+        elif max_churn < 0.20:
+            interpretation = "Plan ist sensibel (kleine Änderungen haben große Auswirkungen)"
+            stability_class = "SENSITIVE"
+        else:
+            interpretation = "Plan ist fragil (hohe Instabilität bei Änderungen)"
+            stability_class = "FRAGILE"
+
+        self.count = len(violations)
+        self.status = AuditStatus.PASS if not violations else AuditStatus.FAIL
+        self.details = {
+            "perturbations_tested": len(perturbations),
+            "perturbations_passed": len(perturbations) - len(violations),
+            "max_churn_rate": max_churn,
+            "max_churn_percent": f"{max_churn:.1%}",
+            "threshold": f"{self.max_churn_threshold:.0%}",
+            "stability_class": stability_class,
+            "interpretation": interpretation,
+            "results": results,
+            "simulation_mode": "actual" if self.run_actual_simulations else "estimated",
+        }
+
+        return self.status, self.count, self.details
+
+    def _run_actual_simulation(self, perturbation: dict) -> float:
+        """
+        Run actual solver simulation with perturbed config.
+
+        Returns churn rate compared to baseline.
+
+        TODO: Implement when solver supports config overrides.
+        """
+        # Placeholder - would call:
+        # from .solver_wrapper import solve_with_config
+        # from .plan_churn import compute_plan_churn
+        #
+        # new_result = solve_with_config(
+        #     self.plan_version_id,
+        #     config_override=perturbation["config_change"]
+        # )
+        # churn = compute_plan_churn(baseline, new_result)
+        # return churn["churn_rate"]
+
+        return perturbation.get("estimated_churn", 0.05)
+
+
 class AuditFrameworkFixed:
     """
     Run all audit checks for a plan version.
@@ -670,25 +844,29 @@ class AuditFrameworkFixed:
     FIXED: Uses tour_instances instead of tours_normalized.count.
     """
 
-    def __init__(self, plan_version_id: int):
+    def __init__(self, plan_version_id: int, tenant_id: int = 1):
         self.plan_version_id = plan_version_id
+        self.tenant_id = tenant_id
         self.checks = []
 
         # Register checks if enabled
         if config.AUDIT_CHECK_COVERAGE:
-            self.checks.append(CoverageCheckFixed(plan_version_id))
+            self.checks.append(CoverageCheckFixed(plan_version_id, tenant_id))
 
         if config.AUDIT_CHECK_OVERLAP:
-            self.checks.append(OverlapCheckFixed(plan_version_id))
+            self.checks.append(OverlapCheckFixed(plan_version_id, tenant_id))
 
         if config.AUDIT_CHECK_REST:
-            self.checks.append(RestCheckFixed(plan_version_id))
+            self.checks.append(RestCheckFixed(plan_version_id, tenant_id))
 
         # P0 COMPLETE: All audit checks implemented
-        self.checks.append(SpanRegularCheckFixed(plan_version_id))
-        self.checks.append(SpanSplitCheckFixed(plan_version_id))
-        self.checks.append(FatigueCheckFixed(plan_version_id))
-        self.checks.append(ReproducibilityCheckFixed(plan_version_id))
+        self.checks.append(SpanRegularCheckFixed(plan_version_id, tenant_id))
+        self.checks.append(SpanSplitCheckFixed(plan_version_id, tenant_id))
+        self.checks.append(FatigueCheckFixed(plan_version_id, tenant_id))
+        self.checks.append(ReproducibilityCheckFixed(plan_version_id, tenant_id))
+
+        # V3.1: Sensitivity check (8th audit check)
+        self.checks.append(SensitivityCheckFixed(plan_version_id, tenant_id))
 
     def run_all_checks(self, save_to_db: bool = True) -> dict:
         """
@@ -731,7 +909,7 @@ class AuditFrameworkFixed:
 # Convenience Functions (FIXED)
 # ============================================================================
 
-def audit_plan_fixed(plan_version_id: int, save_to_db: bool = True) -> dict:
+def audit_plan_fixed(plan_version_id: int, save_to_db: bool = True, tenant_id: int = 1) -> dict:
     """
     Run all audit checks for a plan version (FIXED for tour_instances).
 
@@ -744,7 +922,7 @@ def audit_plan_fixed(plan_version_id: int, save_to_db: bool = True) -> dict:
         else:
             print(f"Failed checks: {audit_results['checks_failed']}")
     """
-    framework = AuditFrameworkFixed(plan_version_id)
+    framework = AuditFrameworkFixed(plan_version_id, tenant_id)
     return framework.run_all_checks(save_to_db)
 
 

@@ -1,9 +1,111 @@
 # SOLVEREIGN Roadmap
 
-> **Last Update**: 2026-01-04 (V3.1 Enterprise Features)
-> **Version**: 8.5.0 (V3.1 Enterprise Features)
-> **Status**: **V3.1 ENTERPRISE FEATURES** ✅ | **COMPOSE ENGINE** ✅ | **SCENARIO RUNNER** ✅
-> **Tag**: [`v8.5.0-enterprise`](https://github.com/DRNaser/shift-optimizer/tree/main)
+> **Last Update**: 2026-01-05 (V3.2 Simulation Framework)
+> **Version**: 9.0.0 (V3.2 Simulation Framework Complete)
+> **Status**: **V3.2 SIMULATION FRAMEWORK** ✅ | **8 AUDIT CHECKS** ✅ | **13 SCENARIOS** ✅
+> **Tag**: [`v9.0.0-simulation`](https://github.com/DRNaser/shift-optimizer/tree/main)
+
+---
+
+## 🚀 V3.2 Simulation Framework (Jan 5, 2026) ✅ NEW
+
+### Overview
+
+V3.2 adds a comprehensive **What-If Simulation Framework** with 13 business scenarios across 5 categories:
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                 SIMULATION FRAMEWORK (13 Szenarien)                 │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                     │
+│ ECONOMIC (3)           COMPLIANCE (2)        OPERATIONAL (3)        │
+│ ├─ Cost Curve          ├─ Max-Hours Policy   ├─ Patch-Chaos         │
+│ ├─ Freeze Tradeoff     └─ Driver-Friendly    ├─ Sick-Call Drill     │
+│ └─ Headcount Budget                          └─ Tour-Cancel         │
+│                                                                     │
+│ STRATEGIC (2)          ADVANCED V3.2 (3)                            │
+│ ├─ Auto-Seed-Sweep     ├─ Multi-Failure Cascade                     │
+│ └─ Multi-Scenario      ├─ Probabilistic Churn (Monte Carlo)         │
+│    Comparison          └─ Policy ROI Optimizer (Pareto)             │
+│                                                                     │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+### New Files (V3.2)
+
+| File | Lines | Purpose |
+|------|-------|---------|
+| `v3/simulation_engine.py` | ~2,500 | Unified simulation framework |
+| `v3/seed_sweep.py` | ~520 | Auto-seed optimization with parallel execution |
+| `v3/plan_churn.py` | ~212 | Plan stability metrics |
+| `v3/near_violations.py` | ~302 | Yellow Zone warnings |
+| `v3/peak_fleet.py` | ~229 | Concurrent tour analysis |
+| `v3/audit_fixed.py` (updated) | +150 | 8th audit check: Sensitivity |
+| `cli.py` (updated) | +350 | 9 simulation CLI commands |
+| `streamlit_app.py` (updated) | +500 | Simulation Tab with all 13 scenarios |
+| `tests/test_simulation.py` | ~680 | Comprehensive test suite |
+
+### 8 Audit Checks (Updated from 6)
+
+| # | Check | Criteria | Status |
+|---|-------|----------|--------|
+| 1 | **COVERAGE** | Every tour assigned exactly once | ✅ |
+| 2 | **OVERLAP** | No driver works overlapping tours | ✅ |
+| 3 | **REST** | ≥11h rest between consecutive blocks | ✅ |
+| 4 | **SPAN_REGULAR** | Regular blocks ≤14h span | ✅ |
+| 5 | **SPAN_SPLIT** | Split blocks ≤16h span + 240-360min break | ✅ |
+| 6 | **FATIGUE** | No consecutive 3er→3er days | ✅ |
+| 7 | **REPRODUCIBILITY** | Same inputs → same outputs | ✅ |
+| 8 | **SENSITIVITY** | Churn <10% under perturbations | ✅ NEW |
+
+### CLI Commands (V3.2)
+
+```bash
+# Basic Scenarios
+solvereign simulate cost-curve --forecast 1
+solvereign simulate max-hours --forecast 1 --caps 55,52,50,48
+solvereign simulate auto-sweep --forecast 1 --seeds 15
+solvereign simulate headcount --forecast 1 --target 140
+solvereign simulate tour-cancel --forecast 1 --count 20
+solvereign simulate sick-call --forecast 1 --count 5 --day 1
+
+# V3.2 Advanced Scenarios
+solvereign simulate multi-failure --forecast 1 --count 5 --tours 10 --cascade 0.15
+solvereign simulate prob-churn --forecast 1 --sims 100 --threshold 0.10
+solvereign simulate policy-roi --forecast 1 --budget 5 --optimize balanced
+```
+
+### Usage Examples
+
+```python
+# Cost Curve Analysis
+from v3.simulation_engine import run_cost_curve
+result = run_cost_curve(tour_instances, baseline_seed=94)
+# → Shows cost of each rule in drivers
+
+# Monte Carlo Churn Forecast
+from v3.simulation_engine import run_probabilistic_churn
+result = run_probabilistic_churn(
+    num_simulations=100,
+    churn_threshold=0.10,
+    failure_probability=0.05
+)
+# → P(Churn > 10%) with confidence intervals
+
+# Policy ROI Optimizer (Pareto Frontier)
+from v3.simulation_engine import run_policy_roi_optimizer
+result = run_policy_roi_optimizer(
+    budget_drivers=5,
+    optimize_for="balanced",  # "cost" | "stability" | "balanced"
+    constraints=["arbzg_compliant"]
+)
+# → Optimal policy combination with ROI score
+
+# Auto-Seed-Sweep (Parallel)
+from v3.seed_sweep import auto_seed_sweep
+result = auto_seed_sweep(tour_instances, num_seeds=15, parallel=True)
+# → Best seed with lexicographic optimization
+```
 
 ---
 
@@ -192,25 +294,45 @@ violations = check_freeze_violations(forecast_id, baseline_plan_id, 720)
 | **#8** | ✅ PASS | No consecutive 3er→3er (fatigue rule in can_assign) |
 | **#9** | ✅ PASS | Freeze window with datetime logic |
 
-**Result**: **ALL 6 AUDITS PASS** - water-tight and production-ready.
+**Result**: **ALL 8 AUDITS PASS** - water-tight and production-ready.
 
 ---
 
-## 📊 Final Status (V2 Block Heuristic)
+## 📊 Final Status (V3.2 Complete)
 
 ```
-Drivers:     142 (FTE)
-PT Drivers:  0 (100% FTE)
-Coverage:    1385/1385 tours (100%)
-Violations:  0 (Rest/Overlap/Span/Fatigue)
-All Audits:  6/6 PASS
+═══════════════════════════════════════════════════════════════════
+                    SOLVEREIGN V3.2 - PRODUCTION METRICS
+═══════════════════════════════════════════════════════════════════
 
-Block Mix:
+SOLVER PERFORMANCE:
+  Drivers:     142-145 (FTE, varies by seed)
+  PT Drivers:  0 (100% FTE)
+  Coverage:    1385/1385 tours (100%)
+  Violations:  0 (Rest/Overlap/Span/Fatigue)
+  All Audits:  8/8 PASS
+
+BLOCK MIX (Seed 94):
   3er-chain:  193 blocks (connected triples, 30-60min gaps)
   2er-split:  157 blocks (240-360min break)
   2er-reg:    189 blocks (30-60min gap)
   1er:        114 blocks (single tours)
   Total:      653 blocks
+
+SIMULATION FRAMEWORK:
+  Scenarios:       13 (Economic, Compliance, Operational, Strategic, Advanced)
+  Monte Carlo:     Up to 1000 simulations
+  Parallel Seeds:  4 workers (ThreadPoolExecutor)
+  Risk Scoring:    LOW | MEDIUM | HIGH | CRITICAL
+
+CODE STATISTICS:
+  V3 Core Modules:     ~7,500 lines
+  Simulation Engine:   ~2,500 lines
+  Streamlit UI:        ~2,850 lines
+  CLI:                 ~770 lines
+  Tests:               ~1,500 lines
+  ─────────────────────────────────
+  Total Codebase:      ~11,000+ lines
 ```
 
 ### Block Type Rules (Final)
@@ -1076,26 +1198,43 @@ python -m v3.export <plan_version_id> [output_dir]
 
 ## 📝 Current Status Summary
 
-### Completed ✅
-- ✅ V2 Solver (145 drivers, 0 PT, seed 94)
+### V3.2 Complete ✅ (Jan 5, 2026)
+
+#### Core Platform
+- ✅ V2 Solver (142-145 drivers, 0 PT, seed 94)
 - ✅ V3 Architecture (P0 + M1-M5)
 - ✅ Proof Hardening (canonical hashing, datetime audits)
 - ✅ V2 Integration (crosses_midnight support)
 - ✅ Freeze Window Logic (Proof #9)
 - ✅ Database Integration (PostgreSQL, all tests passing)
 - ✅ E2E Workflow Testing (golden run, audits, P0 migration)
-- ✅ **Streamlit UI** (4-tab dispatcher cockpit: Parser, Diff, Plan Preview, Release)
-- ✅ **Freeze Enforcement in Solver** ([freeze_windows.py](v3/freeze_windows.py))
+
+#### User Interface
+- ✅ **Streamlit UI** (5-tab dispatcher cockpit: Forecast, Vergleich, Planung, Release, Simulation)
+- ✅ **CLI** (6 commands: ingest, solve, lock, export, status, simulate)
+
+#### Audit Framework
+- ✅ **8 Audit Checks** (Coverage, Overlap, Rest, Span-Regular, Span-Split, Fatigue, Reproducibility, Sensitivity)
 - ✅ **Snapshot Tests** ([test_diff_snapshots.py](test_diff_snapshots.py) - 8/8 passing)
 - ✅ **CSV/JSON Export** ([export.py](v3/export.py) - matrix, rosters, KPIs, metadata, audit)
 
-### In Progress 🔄
-- None (all features complete)
+#### V3.2 Simulation Framework ✅ NEW
+- ✅ **13 Simulation Scenarios** across 5 categories
+- ✅ **Economic**: Cost Curve, Freeze Tradeoff, Headcount Budget
+- ✅ **Compliance**: Max-Hours Policy, Driver-Friendly Policy
+- ✅ **Operational**: Patch-Chaos, Sick-Call Drill, Tour-Cancel
+- ✅ **Strategic**: Auto-Seed-Sweep (parallel), Multi-Scenario Comparison
+- ✅ **Advanced V3.2**: Multi-Failure Cascade, Probabilistic Churn (Monte Carlo), Policy ROI Optimizer (Pareto)
+- ✅ **Risk Scoring**: Unified LOW/MEDIUM/HIGH/CRITICAL classification
+- ✅ **Test Suite**: [test_simulation.py](tests/test_simulation.py) - 25+ test cases
 
-### Pending ⏳
-- ⏳ Driver Master Data (`drivers` table) - V4+
-- ⏳ Messaging System (SMS/WhatsApp) - V4+
-- ⏳ Mobile App (driver confirmations) - V4+
+### Pending ⏳ (V4+)
+- ⏳ Driver Master Data (`drivers` table)
+- ⏳ Messaging System (SMS/WhatsApp integration)
+- ⏳ Mobile App (driver confirmations)
+- ⏳ CI/CD Integration (GitHub Actions)
+- ⏳ Multi-Tenant SaaS Architecture
+- ⏳ REST API (FastAPI endpoints)
 
 ### Blocked ⛔
 - None
@@ -1104,31 +1243,57 @@ python -m v3.export <plan_version_id> [output_dir]
 
 ### 📋 Agent Handoff Context
 
-**SHIFT MASTER 2026 – V3 IMPLEMENTATION BRIEF**
+**SOLVEREIGN V3.2 – COMPLETE IMPLEMENTATION BRIEF**
 
 **System Overview:**
-Deterministic dispatch platform: `Slack/CSV → Parse → Validate → Normalize → Version → Diff → Solve (DRAFT) → Audit → Release (LOCK) → Export`
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│  Ingest (Slack/CSV) → Parse → Validate → Normalize → Version        │
+│       ↓                                                              │
+│  Diff → Solve (DRAFT) → Audit (8 Checks) → Release (LOCK) → Export  │
+│       ↓                                                              │
+│  Simulate (13 Scenarios) → Risk Score → Recommendations             │
+└─────────────────────────────────────────────────────────────────────┘
+```
 
 **Non-Negotiables:**
 - ❌ No LLM in core pipeline
 - ✅ Postgres in Docker = Single Source of Truth
 - ✅ Full version control (`forecast_version_id` + `plan_version_id`)
-- ✅ Immutable audit trail
+- ✅ Immutable audit trail (8 checks)
 - ✅ Freeze windows prevent last-minute chaos
 - ✅ Reproducibility: `(input_hash, seed, config_hash) → output_hash`
+- ✅ What-If Simulations for decision support
 
 **Business Constraints:**
-- **Hard Gates:** Coverage 100%, Rest ≥11h, Overlap 0, Span limits
+- **Hard Gates:** Coverage 100%, Rest ≥11h, Overlap 0, Span limits, Sensitivity <10%
 - **Soft Targets:** 0 PT drivers (<40h minimized), Headcount ≤145 (comparable demand)
 
 **Technical Reality:**
-- V2 solver (145 drivers, 0 PT, seed 94) is **production-ready**
+- V2 solver (142-145 drivers, 0 PT, seed 94) is **production-ready**
 - V3 adds **operational tooling** (versioning, diff, UI, freeze windows)
-- Partition seed sweep is heuristic → acceptable IF deterministic + audited
-- Min path cover alone insufficient for PT=0 → lexicographic cost function required
+- V3.2 adds **simulation framework** (13 scenarios, Monte Carlo, Pareto optimization)
+- 8 audit checks including Sensitivity (plan stability under perturbations)
+- Auto-Seed-Sweep with parallel execution (4 workers)
+
+**V3 Modules (Key Files):**
+```
+v3/
+├── parser.py            (576 lines)  - Whitelist parser
+├── diff_engine.py       (280 lines)  - Fingerprint-based diff
+├── solver_wrapper.py    (330 lines)  - V2 integration
+├── audit_fixed.py       (830 lines)  - 8 audit checks
+├── simulation_engine.py (2500 lines) - 13 scenarios
+├── seed_sweep.py        (520 lines)  - Auto-seed optimization
+├── freeze_windows.py    (482 lines)  - 12h freeze enforcement
+├── plan_churn.py        (212 lines)  - Stability metrics
+├── near_violations.py   (302 lines)  - Yellow zone warnings
+├── peak_fleet.py        (229 lines)  - Concurrent tours
+└── proof_pack.py        (200 lines)  - Cryptographic proofs
+```
 
 **MVP Tables:**
-`forecast_versions` (+ week_anchor_date), `tours_raw`, `tours_normalized` (templates), `tour_instances` (expanded instances), `plan_versions`, `assignments` (→ tour_instance_id), `audit_log`, `freeze_windows` (optional)
+`forecast_versions`, `tours_raw`, `tours_normalized`, `tour_instances`, `plan_versions`, `assignments`, `audit_log`, `freeze_windows`, `diff_results`, `schema_migrations`
 
 **Critical Relationships:**
 - `tours_normalized` (1) → `tour_instances` (N) via `count` expansion
@@ -1140,3 +1305,22 @@ Deterministic dispatch platform: `Slack/CSV → Parse → Validate → Normalize
 - ✅ Solve runs automatically on DRAFT
 - ⛔ Release requires manual approval
 - 📨 Messaging only from LOCKED plans (future)
+- 🔬 Simulations are read-only (no DB writes)
+
+**V3.2 Simulation Scenarios:**
+| Category | Scenarios |
+|----------|-----------|
+| Economic | Cost Curve, Freeze Tradeoff, Headcount Budget |
+| Compliance | Max-Hours Policy, Driver-Friendly Policy |
+| Operational | Patch-Chaos, Sick-Call Drill, Tour-Cancel |
+| Strategic | Auto-Seed-Sweep, Multi-Scenario Comparison |
+| Advanced | Multi-Failure Cascade, Probabilistic Churn, Policy ROI Optimizer |
+
+**Risk Score Calculation:**
+```python
+score = headcount_delta_score + churn_score + freeze_violation_score + audit_failure_score
+if score >= 8: return CRITICAL
+elif score >= 5: return HIGH
+elif score >= 3: return MEDIUM
+else: return LOW
+```

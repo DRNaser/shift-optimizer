@@ -1,0 +1,55 @@
+# SOLVEREIGN Forecast Template
+# =============================
+# Week: YYYY-WXX
+# Anchor Date: YYYY-MM-DD (Monday)
+#
+# Format: Day Start-End [Count] [Depot] [Notes]
+#
+# Day names: Mo, Di, Mi, Do, Fr, Sa, So
+# Time format: HH:MM (24h)
+# Count: "X Fahrer" (default: 1)
+# Depot: "Depot Name"
+#
+# Examples:
+# ---------
+# Single tour:
+Mo 06:00-14:00
+
+# Multiple drivers needed:
+Mo 08:00-16:00 3 Fahrer
+
+# With depot:
+Di 06:00-14:00 2 Fahrer Depot Nord
+
+# Split shift (4-6h break):
+Mi 06:00-10:00 + 15:00-19:00
+
+# Cross-midnight:
+Do 22:00-06:00
+
+# Full week example:
+# ==================
+Mo 06:00-14:00 5 Fahrer Depot Nord
+Mo 08:00-16:00 3 Fahrer Depot Sued
+Mo 14:00-22:00 4 Fahrer
+
+Di 06:00-14:00 6 Fahrer Depot Nord
+Di 08:00-16:00 2 Fahrer Depot West
+Di 06:00-10:00 + 14:00-18:00 2 Fahrer
+
+Mi 06:00-14:00 5 Fahrer
+Mi 08:00-16:00 4 Fahrer
+Mi 14:00-22:00 3 Fahrer
+
+Do 06:00-14:00 5 Fahrer
+Do 08:00-16:00 4 Fahrer
+Do 22:00-06:00 2 Fahrer
+
+Fr 06:00-14:00 6 Fahrer
+Fr 08:00-16:00 3 Fahrer
+Fr 14:00-22:00 2 Fahrer
+
+Sa 06:00-14:00 4 Fahrer
+Sa 08:00-16:00 2 Fahrer
+
+So 06:00-14:00 2 Fahrer

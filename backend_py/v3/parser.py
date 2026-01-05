@@ -38,6 +38,7 @@ from .db import (
     create_forecast_version,
     create_tour_raw,
     create_tour_normalized,
+    get_forecast_by_input_hash,
 )
 from .config import config
 
@@ -463,7 +464,8 @@ def parse_forecast_text(
     notes: Optional[str] = None,
     save_to_db: bool = True,
     week_key: Optional[str] = None,
-    week_anchor_date: Optional[str] = None
+    week_anchor_date: Optional[str] = None,
+    tenant_id: int = 1  # Default tenant for backward compatibility
 ) -> dict:
     """
     Parse complete forecast text (multi-line input).
@@ -508,11 +510,12 @@ def parse_forecast_text(
         if result.parse_status == ParseStatus.PASS:
             lines_passed += 1
             if result.normalized_fields:
-                tours_count += 1
+                # Sum up the count field (e.g., "15 Fahrer" = 15 tours)
+                tours_count += result.normalized_fields.get('count', 1)
         elif result.parse_status == ParseStatus.WARN:
             lines_warned += 1
             if result.normalized_fields:
-                tours_count += 1
+                tours_count += result.normalized_fields.get('count', 1)
         elif result.parse_status == ParseStatus.FAIL:
             lines_failed += 1
 
@@ -528,6 +531,9 @@ def parse_forecast_text(
     else:
         overall_status = ForecastStatus.PASS
 
+    # Count unique tour lines (lines with valid tours)
+    lines_with_tours = lines_passed + lines_warned
+
     result = {
         "forecast_version_id": None,
         "status": overall_status.value,
@@ -535,7 +541,8 @@ def parse_forecast_text(
         "lines_passed": lines_passed,
         "lines_warned": lines_warned,
         "lines_failed": lines_failed,
-        "tours_count": tours_count,
+        "lines_with_tours": lines_with_tours,  # Unique tour lines (e.g., 277)
+        "tours_count": tours_count,  # Total tours (sum of counts, e.g., 1385)
         "input_hash": input_hash,
         "parse_results": parse_results,
         "canonical_text": canonical_text,
@@ -545,6 +552,15 @@ def parse_forecast_text(
 
     # Save to database
     if save_to_db:
+        # Check for existing forecast with same input_hash (deduplication)
+        existing = get_forecast_by_input_hash(input_hash)
+        if existing:
+            # Forecast already exists - return existing ID
+            result['forecast_version_id'] = existing['id']
+            result['duplicate'] = True
+            result['duplicate_message'] = f"Forecast already exists (ID: {existing['id']})"
+            return result
+
         # Create forecast version
         parser_config_hash = hashlib.sha256(
             f"parser_v{config.PARSER_CONFIG_VERSION}".encode()
@@ -557,10 +573,12 @@ def parse_forecast_text(
             status=overall_status.value,
             notes=notes or f"Parsed {tours_count} tours from {source}",
             week_key=week_key,
-            week_anchor_date=week_anchor_date
+            week_anchor_date=week_anchor_date,
+            tenant_id=tenant_id
         )
 
         result['forecast_version_id'] = forecast_version_id
+        result['duplicate'] = False
 
         # Save raw lines
         for line_no, (line, parse_result) in enumerate(zip(lines, parse_results), start=1):
@@ -577,7 +595,8 @@ def parse_forecast_text(
                     {"code": i.code, "message": i.message, "severity": i.severity}
                     for i in parse_result.issues if i.severity == "WARNING"
                 ] if parse_result.issues else None,
-                canonical_text=parse_result.canonical_text
+                canonical_text=parse_result.canonical_text,
+                tenant_id=tenant_id
             )
 
         # Save normalized tours
@@ -596,6 +615,19 @@ def parse_forecast_text(
                     skill=None
                 )
 
+                # Generate span_group_key for split shifts
+                span_group_key = None
+                split_break_minutes = None
+                if fields.get('is_split'):
+                    # Format: "D{day}_{start1}-{end1}_{start2}-{end2}"
+                    day_abbr = [k for k, v in DAY_NAMES.items() if v == fields['day'] and len(k) == 2][0]
+                    span_group_key = (
+                        f"{day_abbr}_"
+                        f"{fields['split_start_1'].strftime('%H%M')}-{fields['split_end_1'].strftime('%H%M')}_"
+                        f"{fields['split_start_2'].strftime('%H%M')}-{fields['split_end_2'].strftime('%H%M')}"
+                    )
+                    split_break_minutes = fields.get('split_break_minutes')
+
                 create_tour_normalized(
                     forecast_version_id=forecast_version_id,
                     day=fields['day'],
@@ -607,7 +639,9 @@ def parse_forecast_text(
                     count=fields.get('count', 1),
                     depot=fields.get('depot'),
                     skill=None,  # Not parsed yet
-                    span_group_key=None  # TODO: Generate for split shifts
+                    span_group_key=span_group_key,
+                    split_break_minutes=split_break_minutes,
+                    tenant_id=tenant_id
                 )
 
     return result

@@ -91,7 +91,8 @@ def solve_forecast(
     run_audit: bool = True,
     solver_config: Optional[SolverConfig] = None,
     baseline_plan_id: Optional[int] = None,
-    scenario_label: Optional[str] = None
+    scenario_label: Optional[str] = None,
+    tenant_id: int = 1  # Default tenant for backward compatibility
 ) -> dict:
     """
     Solve a forecast using V2 block heuristic solver.
@@ -182,10 +183,15 @@ def solve_forecast(
             print(f"[FREEZE] Preserving {len(frozen_assignments)} baseline assignments")
 
     # Call V2 Block Heuristic Solver via integration bridge
+    solver_degraded = False
+    solver_error_message = None
     try:
         assignments = solve_with_v2_solver(instances, seed=seed)
     except Exception as e:
-        print(f"[WARN] V2 solver failed ({e}), falling back to dummy assignments")
+        solver_degraded = True
+        solver_error_message = str(e)
+        print(f"[ERROR] V2 solver failed: {e}")
+        print(f"[WARN] Falling back to dummy assignments - PLAN QUALITY DEGRADED")
         assignments = _create_dummy_assignments(instances, seed)
 
     # SPEC 8.1: Override solver assignments for frozen instances
@@ -242,18 +248,19 @@ def solve_forecast(
             scenario_label=scenario_label,
             baseline_plan_version_id=baseline_plan_id,
             solver_config_json=solver_config_dict,
+            tenant_id=tenant_id,
         )
         print(f"Created plan_version {plan_version_id} (status=SOLVING)")
 
         try:
             # TRANSACTION SAFETY: Insert ALL assignments in single transaction
             # If crash occurs here, plan stays in SOLVING state for cleanup
-            count = create_assignments_batch(plan_version_id, assignments)
+            count = create_assignments_batch(plan_version_id, assignments, tenant_id=tenant_id)
             print(f"Stored {count} assignments in database (batch transaction)")
 
-            # Update plan status to DRAFT with final output_hash
-            update_plan_status(plan_version_id, PlanStatus.DRAFT.value, output_hash)
-            print(f"Plan {plan_version_id} status updated to DRAFT")
+            # State transition: SOLVING -> SOLVED (assignments complete)
+            update_plan_status(plan_version_id, PlanStatus.SOLVED.value, output_hash)
+            print(f"Plan {plan_version_id} status: SOLVING -> SOLVED")
 
         except Exception as e:
             # Mark plan as FAILED on any error
@@ -265,8 +272,16 @@ def solve_forecast(
         audit_results = None
         if run_audit:
             print("Running audit checks...")
-            audit_results = audit_plan_fixed(plan_version_id, save_to_db=True)
+            audit_results = audit_plan_fixed(plan_version_id, save_to_db=True, tenant_id=tenant_id)
             print(f"Audit: {audit_results['checks_passed']}/{audit_results['checks_run']} checks passed")
+
+            # State transition: SOLVED -> AUDITED (audit complete)
+            update_plan_status(plan_version_id, PlanStatus.AUDITED.value)
+            print(f"Plan {plan_version_id} status: SOLVED -> AUDITED")
+
+            # State transition: AUDITED -> DRAFT (ready for review)
+            update_plan_status(plan_version_id, PlanStatus.DRAFT.value)
+            print(f"Plan {plan_version_id} status: AUDITED -> DRAFT")
 
             if not audit_results['all_passed']:
                 print("WARNING: Some audit checks failed!")
@@ -315,6 +330,9 @@ def solve_forecast(
             "churn_percent": churn_percent,
             "churn_available": churn_available,  # False = N/A (no baseline)
             "assignments": assignments,  # Include for scenario runner
+            # V2 Solver degradation flag (P0 critical: detect fallback)
+            "solver_degraded": solver_degraded,
+            "solver_error_message": solver_error_message,
         }
 
     else:
@@ -340,6 +358,9 @@ def solve_forecast(
             "churn_percent": None,
             "churn_available": False,  # N/A
             "assignments": assignments,
+            # V2 Solver degradation flag (P0 critical: detect fallback)
+            "solver_degraded": solver_degraded,
+            "solver_error_message": solver_error_message,
         }
 
     return result

@@ -10,12 +10,18 @@ Key Concepts:
     - MODIFIABLE: Tour can be freely reassigned
     - OVERRIDE: Admin action to modify frozen tour (logged)
 
+IMPORTANT (V3.2+):
+    week_anchor_date is MANDATORY for freeze window enforcement.
+    Missing week_anchor_date raises FreezeAnchorMissingError.
+    No degraded mode - operational integrity requires proper anchoring.
+
 Usage:
     from v3.freeze_windows import (
         is_frozen,
         get_frozen_instances,
         classify_instances,
-        solve_with_freeze
+        solve_with_freeze,
+        FreezeAnchorMissingError
     )
 
     # Check single instance
@@ -39,6 +45,140 @@ from .config import config
 
 # Default freeze window: 12 hours (720 minutes)
 DEFAULT_FREEZE_MINUTES = 720
+
+
+# ============================================================================
+# CUSTOM EXCEPTIONS
+# ============================================================================
+
+class FreezeAnchorMissingError(ValueError):
+    """
+    Raised when week_anchor_date is missing from forecast_version.
+
+    Freeze windows require an absolute time reference (week_anchor_date)
+    to compute whether a tour start time has passed the freeze threshold.
+    Without this, operational integrity cannot be guaranteed.
+
+    Resolution:
+        1. Set week_anchor_date when creating forecast_version
+        2. Use: set_week_anchor_date(forecast_version_id, date(2026, 1, 6))
+        3. Or SQL: UPDATE forecast_versions SET week_anchor_date = '2026-01-06' WHERE id = X
+        4. week_anchor_date should be the Monday of the planning week
+    """
+
+    def __init__(self, forecast_version_id: int, context: str = "freeze_window_check"):
+        self.forecast_version_id = forecast_version_id
+        self.context = context
+        super().__init__(
+            f"FREEZE ANCHOR MISSING: forecast_version {forecast_version_id} has no week_anchor_date. "
+            f"Context: {context}. "
+            f"Freeze windows cannot be enforced without an absolute time reference. "
+            f"Use set_week_anchor_date({forecast_version_id}, date) to fix."
+        )
+
+
+def set_week_anchor_date(forecast_version_id: int, anchor_date: date) -> bool:
+    """
+    Set the week_anchor_date for a forecast version.
+
+    The week_anchor_date should be the Monday of the planning week.
+    This enables freeze window calculation by providing an absolute time reference.
+
+    Args:
+        forecast_version_id: Forecast version ID
+        anchor_date: Monday of the planning week (date object)
+
+    Returns:
+        True if updated successfully
+
+    Raises:
+        ValueError: If anchor_date is not a Monday
+        ValueError: If forecast_version_id does not exist
+    """
+    # Validate it's a Monday (weekday 0)
+    if anchor_date.weekday() != 0:
+        raise ValueError(
+            f"week_anchor_date must be a Monday. "
+            f"Got {anchor_date} which is {anchor_date.strftime('%A')}. "
+            f"Suggestion: Use {anchor_date - timedelta(days=anchor_date.weekday())}"
+        )
+
+    with db.get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                UPDATE forecast_versions
+                SET week_anchor_date = %s
+                WHERE id = %s
+                RETURNING id
+            """, (anchor_date, forecast_version_id))
+
+            row = cur.fetchone()
+            if not row:
+                raise ValueError(f"Forecast version {forecast_version_id} does not exist")
+
+            conn.commit()
+            return True
+
+
+def validate_freeze_anchor(forecast_version_id: int) -> dict:
+    """
+    Validate that a forecast has proper freeze anchoring.
+
+    Args:
+        forecast_version_id: Forecast version ID
+
+    Returns:
+        Dict with validation result:
+        {
+            "valid": bool,
+            "week_anchor_date": date or None,
+            "error": str or None,
+            "suggestion": str or None
+        }
+    """
+    forecast = db.get_forecast_version(forecast_version_id)
+
+    if not forecast:
+        return {
+            "valid": False,
+            "week_anchor_date": None,
+            "error": f"Forecast version {forecast_version_id} does not exist",
+            "suggestion": None
+        }
+
+    anchor = forecast.get("week_anchor_date")
+
+    if not anchor:
+        # Suggest next Monday from today
+        today = date.today()
+        days_until_monday = (7 - today.weekday()) % 7
+        if days_until_monday == 0:
+            days_until_monday = 7  # Next week's Monday
+        suggested_monday = today + timedelta(days=days_until_monday)
+
+        return {
+            "valid": False,
+            "week_anchor_date": None,
+            "error": "week_anchor_date is not set",
+            "suggestion": f"set_week_anchor_date({forecast_version_id}, date({suggested_monday.year}, {suggested_monday.month}, {suggested_monday.day}))"
+        }
+
+    # Validate it's a Monday
+    if anchor.weekday() != 0:
+        correct_monday = anchor - timedelta(days=anchor.weekday())
+        return {
+            "valid": False,
+            "week_anchor_date": anchor,
+            "error": f"week_anchor_date {anchor} is not a Monday (it's {anchor.strftime('%A')})",
+            "suggestion": f"set_week_anchor_date({forecast_version_id}, date({correct_monday.year}, {correct_monday.month}, {correct_monday.day}))"
+        }
+
+    return {
+        "valid": True,
+        "week_anchor_date": anchor,
+        "error": None,
+        "suggestion": None
+    }
 
 
 def compute_tour_start_datetime(
@@ -135,8 +275,12 @@ def is_frozen(
             forecast = cur.fetchone()
 
             if not forecast or not forecast.get("week_anchor_date"):
-                # No anchor date = cannot determine freeze status
-                return False
+                # No anchor date = HARD ERROR (V3.2+)
+                # Freeze windows MUST be enforceable - no degraded mode
+                raise FreezeAnchorMissingError(
+                    forecast_version_id=instance["forecast_version_id"],
+                    context=f"is_frozen(tour_instance_id={tour_instance_id})"
+                )
 
     # Compute absolute start datetime
     week_anchor_date = forecast["week_anchor_date"]
@@ -175,12 +319,15 @@ def classify_instances(
     if freeze_minutes is None:
         freeze_minutes = get_freeze_window_minutes()
 
-    # Get week anchor date
+    # Get week anchor date - MANDATORY for freeze window calculation (V3.2+)
     forecast = db.get_forecast_version(forecast_version_id)
     if not forecast or not forecast.get("week_anchor_date"):
-        # No anchor = all modifiable
-        instances = get_tour_instances(forecast_version_id)
-        return [], [inst["id"] for inst in instances]
+        # No anchor = HARD ERROR (V3.2+)
+        # Freeze windows MUST be enforceable - no degraded mode
+        raise FreezeAnchorMissingError(
+            forecast_version_id=forecast_version_id,
+            context=f"classify_instances(forecast_version_id={forecast_version_id})"
+        )
 
     week_anchor_date = forecast["week_anchor_date"]
 
@@ -344,7 +491,16 @@ def solve_with_freeze(
     if now is None:
         now = datetime.now()
 
-    # Classify instances
+    # Validate week_anchor_date exists (MANDATORY for freeze enforcement - V3.2+)
+    # This will raise FreezeAnchorMissingError if missing
+    forecast = db.get_forecast_version(forecast_version_id)
+    if not forecast or not forecast.get("week_anchor_date"):
+        raise FreezeAnchorMissingError(
+            forecast_version_id=forecast_version_id,
+            context=f"solve_with_freeze(forecast_version_id={forecast_version_id})"
+        )
+
+    # Classify instances (also validates week_anchor_date internally)
     frozen_ids, modifiable_ids = classify_instances(forecast_version_id, now)
 
     result = {
@@ -355,7 +511,10 @@ def solve_with_freeze(
             "modifiable_count": len(modifiable_ids),
             "override": override,
             "override_user": override_user if override else None,
-            "override_reason": override_reason if override else None
+            "override_reason": override_reason if override else None,
+            # V3.2+: No degraded mode - week_anchor_date is always present at this point
+            "enforcement_guaranteed": True,
+            "week_anchor_date": str(forecast["week_anchor_date"])
         },
         "assignments": [],
         "plan_version_id": None,

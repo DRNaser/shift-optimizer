@@ -1,0 +1,17 @@
+{
+  "total_tours": 1385,
+  "total_assignments": 1385,
+  "total_drivers": 145,
+  "fte_count": 145,
+  "pt_count": 0,
+  "pt_ratio_percent": 0.0,
+  "avg_hours_per_driver": 42.98,
+  "total_work_hours": 6232.5,
+  "block_mix": {
+    "3er": 205,
+    "2er-reg": 176,
+    "2er-split": 35,
+    "1er": 348
+  },
+  "total_blocks": 764
+}

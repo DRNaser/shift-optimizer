@@ -1,0 +1,28 @@
+# SOLVEREIGN V3.3a API Dependencies
+# ==================================
+
+# Core Framework
+fastapi>=0.109.0
+uvicorn[standard]>=0.27.0
+
+# Database
+psycopg[binary,pool]>=3.1.0
+
+# Configuration
+pydantic>=2.5.0
+pydantic-settings>=2.1.0
+
+# Observability
+structlog>=24.1.0
+prometheus-client>=0.19.0
+
+# Security
+python-multipart>=0.0.6
+
+# Development
+httpx>=0.26.0  # For testing
+pytest>=7.4.0
+pytest-asyncio>=0.23.0
+
+# Optional: Load balancing
+# gunicorn>=21.0.0

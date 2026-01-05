@@ -71,7 +71,8 @@ def create_forecast_version(
     status: str,
     notes: Optional[str] = None,
     week_key: Optional[str] = None,
-    week_anchor_date: Optional[str] = None
+    week_anchor_date: Optional[str] = None,
+    tenant_id: int = 1  # Default tenant for backward compatibility
 ) -> int:
     """
     Create new forecast version and return ID.
@@ -84,17 +85,18 @@ def create_forecast_version(
         notes: Optional notes
         week_key: Week identifier (e.g., "2026-W01") - REQUIRED for compose
         week_anchor_date: Monday of the week (YYYY-MM-DD)
+        tenant_id: Tenant ID (default 1 for backward compatibility)
     """
     with get_connection() as conn:
         with conn.cursor() as cur:
             cur.execute("""
                 INSERT INTO forecast_versions (
                     source, input_hash, parser_config_hash, status, notes,
-                    week_key, week_anchor_date
+                    week_key, week_anchor_date, tenant_id
                 )
                 VALUES (
                     %(source)s, %(input_hash)s, %(parser_config_hash)s, %(status)s, %(notes)s,
-                    %(week_key)s, %(week_anchor_date)s
+                    %(week_key)s, %(week_anchor_date)s, %(tenant_id)s
                 )
                 RETURNING id
             """, {
@@ -104,7 +106,8 @@ def create_forecast_version(
                 "status": status,
                 "notes": notes,
                 "week_key": week_key,
-                "week_anchor_date": week_anchor_date
+                "week_anchor_date": week_anchor_date,
+                "tenant_id": tenant_id
             })
             forecast_id = cur.fetchone()["id"]
             conn.commit()
@@ -133,6 +136,41 @@ def get_latest_forecast_version() -> Optional[dict]:
             return cur.fetchone()
 
 
+def get_forecast_by_input_hash(input_hash: str) -> Optional[dict]:
+    """
+    Get forecast version by input_hash (for deduplication).
+
+    Returns:
+        Existing forecast version dict or None if not found
+    """
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT * FROM forecast_versions WHERE input_hash = %s
+            """, (input_hash,))
+            return cur.fetchone()
+
+
+def get_all_forecast_versions(limit: int = 50) -> list:
+    """
+    Get all forecast versions ordered by creation date.
+
+    Returns:
+        List of forecast version dicts
+    """
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT fv.*,
+                       (SELECT COUNT(*) FROM tours_normalized tn WHERE tn.forecast_version_id = fv.id) as tour_count,
+                       (SELECT COUNT(*) FROM tour_instances ti WHERE ti.forecast_version_id = fv.id) as instance_count
+                FROM forecast_versions fv
+                ORDER BY fv.created_at DESC
+                LIMIT %s
+            """, (limit,))
+            return cur.fetchall()
+
+
 # ============================================================================
 # Tours Raw
 # ============================================================================
@@ -144,7 +182,8 @@ def create_tour_raw(
     parse_status: str,
     parse_errors: Optional[list] = None,
     parse_warnings: Optional[list] = None,
-    canonical_text: Optional[str] = None
+    canonical_text: Optional[str] = None,
+    tenant_id: int = 1  # Default tenant for backward compatibility
 ) -> int:
     """Create raw tour entry and return ID."""
     with get_connection() as conn:
@@ -152,9 +191,9 @@ def create_tour_raw(
             cur.execute("""
                 INSERT INTO tours_raw (
                     forecast_version_id, line_no, raw_text, parse_status,
-                    parse_errors, parse_warnings, canonical_text
+                    parse_errors, parse_warnings, canonical_text, tenant_id
                 )
-                VALUES (%(fv_id)s, %(line_no)s, %(raw_text)s, %(status)s, %(errors)s, %(warnings)s, %(canonical)s)
+                VALUES (%(fv_id)s, %(line_no)s, %(raw_text)s, %(status)s, %(errors)s, %(warnings)s, %(canonical)s, %(tenant_id)s)
                 RETURNING id
             """, {
                 "fv_id": forecast_version_id,
@@ -163,7 +202,8 @@ def create_tour_raw(
                 "status": parse_status,
                 "errors": psycopg.types.json.Jsonb(parse_errors) if parse_errors else None,
                 "warnings": psycopg.types.json.Jsonb(parse_warnings) if parse_warnings else None,
-                "canonical": canonical_text
+                "canonical": canonical_text,
+                "tenant_id": tenant_id
             })
             tour_raw_id = cur.fetchone()["id"]
             conn.commit()
@@ -195,10 +235,12 @@ def create_tour_normalized(
     work_hours: float,
     tour_fingerprint: str,
     span_group_key: Optional[str] = None,
+    split_break_minutes: Optional[int] = None,
     count: int = 1,
     depot: Optional[str] = None,
     skill: Optional[str] = None,
-    metadata: Optional[dict] = None
+    metadata: Optional[dict] = None,
+    tenant_id: int = 1  # Default tenant for backward compatibility
 ) -> int:
     """Create normalized tour and return ID."""
     with get_connection() as conn:
@@ -206,11 +248,11 @@ def create_tour_normalized(
             cur.execute("""
                 INSERT INTO tours_normalized (
                     forecast_version_id, day, start_ts, end_ts, duration_min, work_hours,
-                    tour_fingerprint, span_group_key, count, depot, skill, metadata
+                    tour_fingerprint, span_group_key, split_break_minutes, count, depot, skill, metadata, tenant_id
                 )
                 VALUES (
                     %(fv_id)s, %(day)s, %(start)s, %(end)s, %(duration)s, %(hours)s,
-                    %(fingerprint)s, %(span_key)s, %(count)s, %(depot)s, %(skill)s, %(metadata)s
+                    %(fingerprint)s, %(span_key)s, %(split_break)s, %(count)s, %(depot)s, %(skill)s, %(metadata)s, %(tenant_id)s
                 )
                 RETURNING id
             """, {
@@ -222,10 +264,12 @@ def create_tour_normalized(
                 "hours": work_hours,
                 "fingerprint": tour_fingerprint,
                 "span_key": span_group_key,
+                "split_break": split_break_minutes,
                 "count": count,
                 "depot": depot,
                 "skill": skill,
-                "metadata": psycopg.types.json.Jsonb(metadata) if metadata else None
+                "metadata": psycopg.types.json.Jsonb(metadata) if metadata else None,
+                "tenant_id": tenant_id
             })
             tour_id = cur.fetchone()["id"]
             conn.commit()
@@ -257,7 +301,8 @@ def create_plan_version(
     notes: Optional[str] = None,
     scenario_label: Optional[str] = None,
     baseline_plan_version_id: Optional[int] = None,
-    solver_config_json: Optional[dict] = None
+    solver_config_json: Optional[dict] = None,
+    tenant_id: int = 1  # Default tenant for backward compatibility
 ) -> int:
     """Create plan version and return ID."""
     import json as json_module
@@ -267,11 +312,11 @@ def create_plan_version(
             cur.execute("""
                 INSERT INTO plan_versions (
                     forecast_version_id, seed, solver_config_hash, output_hash, status, notes,
-                    scenario_label, baseline_plan_version_id, solver_config_json
+                    scenario_label, baseline_plan_version_id, solver_config_json, tenant_id
                 )
                 VALUES (
                     %(fv_id)s, %(seed)s, %(config_hash)s, %(output_hash)s, %(status)s, %(notes)s,
-                    %(scenario_label)s, %(baseline_id)s, %(config_json)s
+                    %(scenario_label)s, %(baseline_id)s, %(config_json)s, %(tenant_id)s
                 )
                 RETURNING id
             """, {
@@ -283,7 +328,8 @@ def create_plan_version(
                 "notes": notes,
                 "scenario_label": scenario_label,
                 "baseline_id": baseline_plan_version_id,
-                "config_json": json_module.dumps(solver_config_json) if solver_config_json else None
+                "config_json": json_module.dumps(solver_config_json) if solver_config_json else None,
+                "tenant_id": tenant_id
             })
             plan_id = cur.fetchone()["id"]
             conn.commit()
@@ -416,7 +462,7 @@ def update_plan_status(plan_version_id: int, new_status: str, output_hash: str =
     return result is not None
 
 
-def create_assignments_batch(plan_version_id: int, assignments: list[dict]) -> int:
+def create_assignments_batch(plan_version_id: int, assignments: list[dict], tenant_id: int = 1) -> int:
     """
     Insert all assignments in a SINGLE transaction.
 
@@ -427,6 +473,7 @@ def create_assignments_batch(plan_version_id: int, assignments: list[dict]) -> i
         plan_version_id: Plan to assign to
         assignments: List of dicts with keys:
             - driver_id, tour_instance_id, day, block_id, role, metadata
+        tenant_id: Tenant ID (default 1 for backward compatibility)
 
     Returns:
         Number of assignments inserted
@@ -449,16 +496,17 @@ def create_assignments_batch(plan_version_id: int, assignments: list[dict]) -> i
                         "day": a["day"],
                         "block": a["block_id"],
                         "role": a.get("role"),
-                        "metadata": psycopg.types.json.Jsonb(a.get("metadata")) if a.get("metadata") else None
+                        "metadata": psycopg.types.json.Jsonb(a.get("metadata")) if a.get("metadata") else None,
+                        "tenant_id": tenant_id
                     }
                     for a in assignments
                 ]
 
                 cur.executemany("""
                     INSERT INTO assignments (
-                        plan_version_id, driver_id, tour_instance_id, day, block_id, role, metadata
+                        plan_version_id, driver_id, tour_instance_id, day, block_id, role, metadata, tenant_id
                     )
-                    VALUES (%(pv_id)s, %(driver)s, %(tour_instance)s, %(day)s, %(block)s, %(role)s, %(metadata)s)
+                    VALUES (%(pv_id)s, %(driver)s, %(tour_instance)s, %(day)s, %(block)s, %(role)s, %(metadata)s, %(tenant_id)s)
                 """, values)
 
                 count = cur.rowcount
@@ -589,21 +637,23 @@ def create_audit_log(
     check_name: str,
     status: str,
     count: int,
-    details_json: Optional[dict] = None
+    details_json: Optional[dict] = None,
+    tenant_id: int = 1  # Default tenant for backward compatibility
 ) -> int:
     """Create audit log entry and return ID."""
     with get_connection() as conn:
         with conn.cursor() as cur:
             cur.execute("""
-                INSERT INTO audit_log (plan_version_id, check_name, status, count, details_json)
-                VALUES (%(pv_id)s, %(check)s, %(status)s, %(count)s, %(details)s)
+                INSERT INTO audit_log (plan_version_id, check_name, status, count, details_json, tenant_id)
+                VALUES (%(pv_id)s, %(check)s, %(status)s, %(count)s, %(details)s, %(tenant_id)s)
                 RETURNING id
             """, {
                 "pv_id": plan_version_id,
                 "check": check_name,
                 "status": status,
                 "count": count,
-                "details": psycopg.types.json.Jsonb(details_json) if details_json else None
+                "details": psycopg.types.json.Jsonb(details_json) if details_json else None,
+                "tenant_id": tenant_id
             })
             audit_id = cur.fetchone()["id"]
             conn.commit()

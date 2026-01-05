@@ -1,0 +1,13 @@
+external_ref,display_name,home_depot,max_weekly_hours,is_active,skills
+# Driver Import Template
+# ========================
+# Required: external_ref, home_depot
+# Optional: display_name, max_weekly_hours (default 55), is_active (default true), skills
+# Skills: comma-separated list (ADR,KUEHL,SCHWER)
+#
+# Example entries:
+LTS-001,Max Mustermann,Depot-Nord,55.0,true,
+LTS-002,Anna Schmidt,Depot-Sued,55.0,true,ADR
+LTS-003,Peter Mueller,Depot-Nord,50.0,true,KUEHL
+LTS-004,Lisa Weber,Depot-West,55.0,true,ADR|SCHWER
+LTS-005,Hans Bauer,Depot-Nord,55.0,false,

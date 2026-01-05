@@ -1,0 +1,306 @@
+======================================================================
+PROOF #3: REPRODUCIBILITY TEST
+======================================================================
+
+Goal: Verify same inputs produce identical output_hash
+Method: Run V2 solver twice with seed=94
+
+Loading instances...
+Parsing day: Mon
+Parsing day: Tue
+Parsing day: Wed
+Parsing day: Thu
+Parsing day: Fri
+Parsing day: Sat
+  Loaded 1385 tour_instances
+
+============================================================
+RUN: RUN 1
+============================================================
+  Instances: 1385
+  Seed: 94
+[V2 Integration] Converting 1385 tour_instances to V2 format...
+[V2 Integration] Created 1385 V2 Tour objects
+[V2 Integration] Running partition_tours_into_blocks with seed 94...
+[Partitioning] Seed 94, 1385 tours...
+[Partitioning] Result: 764 blocks (3er:205, 2er:211, 1er:348)
+[V2 Integration] Created 764 blocks
+[V2 Integration] Running BlockHeuristicSolver...
+[Heuristic] Starting solve with 764 blocks...
+[Flow] Graph built: 1530 nodes, 113102 edges.
+[Flow] Optimal found. Cost: -61890671
+[Heuristic] Phase 1 Flow: 145 drivers assigned.
+[Heuristic] Phase 2: 145 drivers remaining.
+  [PT-Fix] Transfer B1-T1358 from D028 (54.0h) to D039 (36.0h)
+  [PT-Fix] Transfer B1-T634 from D026 (45.0h) to D044 (36.0h)
+  [PT-Fix] Swap B1-T35<->B2R-T45 between D054 and D064. Gain=4.5h
+  [PT-Fix] Swap B1-T86<->B2R-T53 between D105 and D072. Gain=4.5h
+  [PT-Fix] Swap B1-T87<->B2R-T54 between D106 and D073. Gain=4.5h
+  [PT-Fix] Swap B1-T89<->B3-T3 between D108 and D022. Gain=9.0h
+  [PT-Fix] Transfer B1-T717 from D022 (49.5h) to D141 (36.0h)
+  [PT-Fix] Transfer B1-T1191 from D021 (45.0h) to D046 (31.5h)
+  [PT-Fix] Swap B1-T318<->B2R-T314 between D046 and D022. Gain=4.5h
+  [PT-Fix] Transfer B1-T687 from D020 (45.0h) to D065 (31.5h)
+  [PT-Fix] Swap B1-T46<->B2R-T55 between D065 and D074. Gain=4.5h
+  [PT-Fix] Transfer B1-T1229 from D023 (45.0h) to D101 (31.5h)
+  [PT-Fix] Swap B1-T82<->B2R-T84 between D101 and D103. Gain=4.5h
+  [PT-Fix] Transfer B1-T1232 from D030 (49.5h) to D034 (27.0h)
+  [PT-Fix] Swap B2S-T15<->B3-T5 between D034 and D024. Gain=4.5h
+  [PT-Fix] Transfer B1-T320 from D028 (49.5h) to D001 (18.0h)
+  [PT-Fix] Transfer B1-T796 from D028 (45.0h) to D001 (22.5h)
+  [PT-Fix] Transfer B1-T572 from D031 (45.0h) to D001 (27.0h)
+  [PT-Fix] Transfer B2S-T14 from D033 (49.5h) to D001 (31.5h)
+  [PT-Fix] Transfer B1-T321 from D029 (49.5h) to D002 (18.0h)
+  [PT-Fix] Transfer B1-T707 from D029 (45.0h) to D002 (22.5h)
+  [PT-Fix] Transfer B1-T482 from D032 (45.0h) to D002 (27.0h)
+  [PT-Fix] Transfer B3-T16 from D035 (54.0h) to D002 (31.5h)
+  [PT-Fix] Transfer B1-T319 from D030 (45.0h) to D003 (18.0h)
+  [PT-Fix] Transfer B1-T514 from D036 (54.0h) to D003 (22.5h)
+  [PT-Fix] Transfer B1-T675 from D036 (49.5h) to D003 (27.0h)
+  [PT-Fix] Transfer B3-T18 from D037 (54.0h) to D003 (31.5h)
+  [PT-Fix] Transfer B3-T311 from D040 (54.0h) to D004 (18.0h)
+  [PT-Fix] Transfer B1-T23 from D042 (54.0h) to D004 (31.5h)
+  [PT-Fix] Transfer B1-T585 from D042 (49.5h) to D004 (36.0h)
+  [PT-Fix] Transfer B1-T24 from D043 (49.5h) to D008 (18.0h)
+  [PT-Fix] Transfer B1-T641 from D043 (45.0h) to D008 (22.5h)
+  [PT-Fix] Transfer B1-T440 from D045 (45.0h) to D008 (27.0h)
+  [PT-Fix] Transfer B1-T781 from D052 (49.5h) to D008 (31.5h)
+  [PT-Fix] Swap B1-T1054<->B2R-T947 between D008 and D082. Gain=4.5h
+  [PT-Fix] Transfer B2R-T323 from D047 (54.0h) to D009 (18.0h)
+  [PT-Fix] Transfer B1-T709 from D047 (45.0h) to D009 (27.0h)
+  [PT-Fix] Transfer B2R-T478 from D048 (49.5h) to D009 (31.5h)
+  [PT-Fix] Transfer B1-T316 from D049 (45.0h) to D010 (18.0h)
+  [PT-Fix] Transfer B1-T535 from D050 (49.5h) to D010 (22.5h)
+  [PT-Fix] Transfer B1-T33 from D052 (45.0h) to D010 (27.0h)
+  [PT-Fix] Transfer B1-T721 from D053 (45.0h) to D010 (31.5h)
+  [PT-Fix] Swap B1-T1056<->B2R-T954 between D010 and D095. Gain=4.5h
+  [PT-Fix] Transfer B1-T457 from D050 (45.0h) to D006 (13.5h)
+  [PT-Fix] Transfer B1-T37 from D056 (54.0h) to D006 (18.0h)
+  [PT-Fix] Transfer B1-T718 from D056 (49.5h) to D006 (22.5h)
+  [PT-Fix] Transfer B1-T596 from D060 (45.0h) to D006 (27.0h)
+  [PT-Fix] Swap B1-T1051<->B2R-T946 between D006 and D096. Gain=4.5h
+  [PT-Fix] Transfer B1-T38 from D057 (45.0h) to D007 (13.5h)
+  [PT-Fix] Transfer B1-T649 from D059 (49.5h) to D007 (18.0h)
+  [PT-Fix] Transfer B2R-T332 from D061 (58.5h) to D007 (22.5h)
+  [PT-Fix] Transfer B2R-T747 from D066 (49.5h) to D007 (31.5h)
+  [PT-Fix] Transfer B1-T40 from D059 (45.0h) to D011 (13.5h)
+  [PT-Fix] Transfer B1-T515 from D061 (49.5h) to D011 (18.0h)
+  [PT-Fix] Transfer B2R-T315 from D062 (58.5h) to D011 (22.5h)
+  [PT-Fix] Transfer B2R-T711 from D062 (49.5h) to D011 (31.5h)
+  [PT-Fix] Transfer B2R-T326 from D063 (54.0h) to D012 (13.5h)
+  [PT-Fix] Transfer B1-T48 from D067 (49.5h) to D012 (22.5h)
+  [PT-Fix] Transfer B1-T511 from D067 (45.0h) to D012 (27.0h)
+  [PT-Fix] Transfer B1-T785 from D069 (49.5h) to D012 (31.5h)
+  [PT-Fix] Swap B1-T1058<->B2R-T957 between D012 and D128. Gain=4.5h
+  [PT-Fix] Transfer B1-T49 from D068 (49.5h) to D013 (13.5h)
+  [PT-Fix] Transfer B1-T573 from D068 (45.0h) to D013 (18.0h)
+  [PT-Fix] Transfer B2R-T322 from D070 (58.5h) to D013 (22.5h)
+  [PT-Fix] Transfer B1-T708 from D070 (49.5h) to D013 (31.5h)
+  [PT-Fix] Swap B1-T1062<->B3-T872 between D013 and D110. Gain=9.0h
+  [PT-Fix] Transfer B1-T50 from D069 (45.0h) to D014 (13.5h)
+  [PT-Fix] Transfer B1-T456 from D071 (49.5h) to D014 (18.0h)
+  [PT-Fix] Transfer B1-T538 from D071 (45.0h) to D014 (22.5h)
+  [PT-Fix] Transfer B1-T681 from D072 (45.0h) to D014 (27.0h)
+  [PT-Fix] Swap B1-T1118<->B2R-T1010 between D014 and D077. Gain=4.5h
+  [PT-Fix] Transfer B1-T56 from D075 (49.5h) to D015 (13.5h)
+  [PT-Fix] Transfer B1-T642 from D075 (45.0h) to D015 (18.0h)
+  [PT-Fix] Transfer B1-T455 from D078 (49.5h) to D015 (22.5h)
+  [PT-Fix] Transfer B1-T827 from D079 (45.0h) to D015 (27.0h)
+  [PT-Fix] Swap B1-T1125<->B2R-T1012 between D015 and D099. Gain=4.5h
+  [PT-Fix] Transfer B1-T452 from D080 (45.0h) to D016 (13.5h)
+  [PT-Fix] Transfer B1-T589 from D081 (45.0h) to D016 (18.0h)
+  [PT-Fix] Transfer B1-T826 from D084 (54.0h) to D016 (22.5h)
+  [PT-Fix] Transfer B3-T66 from D085 (58.5h) to D016 (27.0h)
+  [PT-Fix] Transfer B1-T399 from D082 (49.5h) to D017 (13.5h)
+  [PT-Fix] Transfer B1-T526 from D082 (45.0h) to D017 (18.0h)
+  [PT-Fix] Transfer B1-T678 from D083 (49.5h) to D017 (22.5h)
+  [PT-Fix] Transfer B3-T68 from D087 (54.0h) to D017 (27.0h)
+  [PT-Fix] Transfer B1-T398 from D084 (49.5h) to D005 (9.0h)
+  [PT-Fix] Transfer B1-T782 from D085 (45.0h) to D005 (13.5h)
+  [PT-Fix] Transfer B1-T523 from D086 (45.0h) to D005 (18.0h)
+  [PT-Fix] Transfer B3-T69 from D088 (63.0h) to D005 (22.5h)
+  [PT-Fix] Swap B1-T1050<->B2R-T955 between D005 and D129. Gain=4.5h
+  [PT-Fix] Transfer B1-T409 from D088 (49.5h) to D018 (9.0h)
+  [PT-Fix] Transfer B1-T529 from D089 (45.0h) to D018 (13.5h)
+  [PT-Fix] Transfer B2R-T727 from D090 (49.5h) to D018 (18.0h)
+  [PT-Fix] Transfer B3-T73 from D092 (58.5h) to D018 (27.0h)
+  [PT-Fix] Transfer B1-T396 from D091 (45.0h) to D019 (9.0h)
+  [PT-Fix] Transfer B1-T784 from D092 (45.0h) to D019 (13.5h)
+  [PT-Fix] Transfer B2R-T570 from D095 (54.0h) to D019 (18.0h)
+  [PT-Fix] Transfer B3-T81 from D100 (58.5h) to D019 (27.0h)
+  [PT-Fix] Swap B2S-T1185<->B3-T1175 between D006 and D042. Gain=4.5h
+  [PT-Fix] Swap B1-T50<->B3-T74 between D014 and D093. Gain=9.0h
+  [PT-Fix] Swap B1-T56<->B3-T77 between D015 and D096. Gain=9.0h
+  [PT-Fix] Swap B1-T328<->B2R-T322 between D034 and D013. Gain=4.5h
+[Heuristic] Phase 3: Final Optimization complete.
+[V2 Integration] Solver returned 145 drivers
+[V2 Integration] Created 1385 V3 assignments
+
+  Results:
+    Assignments: 1385
+    Drivers: 145
+    FTE: 145
+    PT: 0
+    Duration: 0.52s
+    output_hash: d329b1c40b8fc566fa32487db0830d1a2948b61ed72ab30847e39dbf731efd10
+
+============================================================
+RUN: RUN 2
+============================================================
+  Instances: 1385
+  Seed: 94
+[V2 Integration] Converting 1385 tour_instances to V2 format...
+[V2 Integration] Created 1385 V2 Tour objects
+[V2 Integration] Running partition_tours_into_blocks with seed 94...
+[Partitioning] Seed 94, 1385 tours...
+[Partitioning] Result: 764 blocks (3er:205, 2er:211, 1er:348)
+[V2 Integration] Created 764 blocks
+[V2 Integration] Running BlockHeuristicSolver...
+[Heuristic] Starting solve with 764 blocks...
+[Flow] Graph built: 1530 nodes, 113102 edges.
+[Flow] Optimal found. Cost: -61890671
+[Heuristic] Phase 1 Flow: 145 drivers assigned.
+[Heuristic] Phase 2: 145 drivers remaining.
+  [PT-Fix] Transfer B1-T1358 from D028 (54.0h) to D039 (36.0h)
+  [PT-Fix] Transfer B1-T634 from D026 (45.0h) to D044 (36.0h)
+  [PT-Fix] Swap B1-T35<->B2R-T45 between D054 and D064. Gain=4.5h
+  [PT-Fix] Swap B1-T86<->B2R-T53 between D105 and D072. Gain=4.5h
+  [PT-Fix] Swap B1-T87<->B2R-T54 between D106 and D073. Gain=4.5h
+  [PT-Fix] Swap B1-T89<->B3-T3 between D108 and D022. Gain=9.0h
+  [PT-Fix] Transfer B1-T717 from D022 (49.5h) to D141 (36.0h)
+  [PT-Fix] Transfer B1-T1191 from D021 (45.0h) to D046 (31.5h)
+  [PT-Fix] Swap B1-T318<->B2R-T314 between D046 and D022. Gain=4.5h
+  [PT-Fix] Transfer B1-T687 from D020 (45.0h) to D065 (31.5h)
+  [PT-Fix] Swap B1-T46<->B2R-T55 between D065 and D074. Gain=4.5h
+  [PT-Fix] Transfer B1-T1229 from D023 (45.0h) to D101 (31.5h)
+  [PT-Fix] Swap B1-T82<->B2R-T84 between D101 and D103. Gain=4.5h
+  [PT-Fix] Transfer B1-T1232 from D030 (49.5h) to D034 (27.0h)
+  [PT-Fix] Swap B2S-T15<->B3-T5 between D034 and D024. Gain=4.5h
+  [PT-Fix] Transfer B1-T320 from D028 (49.5h) to D001 (18.0h)
+  [PT-Fix] Transfer B1-T796 from D028 (45.0h) to D001 (22.5h)
+  [PT-Fix] Transfer B1-T572 from D031 (45.0h) to D001 (27.0h)
+  [PT-Fix] Transfer B2S-T14 from D033 (49.5h) to D001 (31.5h)
+  [PT-Fix] Transfer B1-T321 from D029 (49.5h) to D002 (18.0h)
+  [PT-Fix] Transfer B1-T707 from D029 (45.0h) to D002 (22.5h)
+  [PT-Fix] Transfer B1-T482 from D032 (45.0h) to D002 (27.0h)
+  [PT-Fix] Transfer B3-T16 from D035 (54.0h) to D002 (31.5h)
+  [PT-Fix] Transfer B1-T319 from D030 (45.0h) to D003 (18.0h)
+  [PT-Fix] Transfer B1-T514 from D036 (54.0h) to D003 (22.5h)
+  [PT-Fix] Transfer B1-T675 from D036 (49.5h) to D003 (27.0h)
+  [PT-Fix] Transfer B3-T18 from D037 (54.0h) to D003 (31.5h)
+  [PT-Fix] Transfer B3-T311 from D040 (54.0h) to D004 (18.0h)
+  [PT-Fix] Transfer B1-T23 from D042 (54.0h) to D004 (31.5h)
+  [PT-Fix] Transfer B1-T585 from D042 (49.5h) to D004 (36.0h)
+  [PT-Fix] Transfer B1-T24 from D043 (49.5h) to D008 (18.0h)
+  [PT-Fix] Transfer B1-T641 from D043 (45.0h) to D008 (22.5h)
+  [PT-Fix] Transfer B1-T440 from D045 (45.0h) to D008 (27.0h)
+  [PT-Fix] Transfer B1-T781 from D052 (49.5h) to D008 (31.5h)
+  [PT-Fix] Swap B1-T1054<->B2R-T947 between D008 and D082. Gain=4.5h
+  [PT-Fix] Transfer B2R-T323 from D047 (54.0h) to D009 (18.0h)
+  [PT-Fix] Transfer B1-T709 from D047 (45.0h) to D009 (27.0h)
+  [PT-Fix] Transfer B2R-T478 from D048 (49.5h) to D009 (31.5h)
+  [PT-Fix] Transfer B1-T316 from D049 (45.0h) to D010 (18.0h)
+  [PT-Fix] Transfer B1-T535 from D050 (49.5h) to D010 (22.5h)
+  [PT-Fix] Transfer B1-T33 from D052 (45.0h) to D010 (27.0h)
+  [PT-Fix] Transfer B1-T721 from D053 (45.0h) to D010 (31.5h)
+  [PT-Fix] Swap B1-T1056<->B2R-T954 between D010 and D095. Gain=4.5h
+  [PT-Fix] Transfer B1-T457 from D050 (45.0h) to D006 (13.5h)
+  [PT-Fix] Transfer B1-T37 from D056 (54.0h) to D006 (18.0h)
+  [PT-Fix] Transfer B1-T718 from D056 (49.5h) to D006 (22.5h)
+  [PT-Fix] Transfer B1-T596 from D060 (45.0h) to D006 (27.0h)
+  [PT-Fix] Swap B1-T1051<->B2R-T946 between D006 and D096. Gain=4.5h
+  [PT-Fix] Transfer B1-T38 from D057 (45.0h) to D007 (13.5h)
+  [PT-Fix] Transfer B1-T649 from D059 (49.5h) to D007 (18.0h)
+  [PT-Fix] Transfer B2R-T332 from D061 (58.5h) to D007 (22.5h)
+  [PT-Fix] Transfer B2R-T747 from D066 (49.5h) to D007 (31.5h)
+  [PT-Fix] Transfer B1-T40 from D059 (45.0h) to D011 (13.5h)
+  [PT-Fix] Transfer B1-T515 from D061 (49.5h) to D011 (18.0h)
+  [PT-Fix] Transfer B2R-T315 from D062 (58.5h) to D011 (22.5h)
+  [PT-Fix] Transfer B2R-T711 from D062 (49.5h) to D011 (31.5h)
+  [PT-Fix] Transfer B2R-T326 from D063 (54.0h) to D012 (13.5h)
+  [PT-Fix] Transfer B1-T48 from D067 (49.5h) to D012 (22.5h)
+  [PT-Fix] Transfer B1-T511 from D067 (45.0h) to D012 (27.0h)
+  [PT-Fix] Transfer B1-T785 from D069 (49.5h) to D012 (31.5h)
+  [PT-Fix] Swap B1-T1058<->B2R-T957 between D012 and D128. Gain=4.5h
+  [PT-Fix] Transfer B1-T49 from D068 (49.5h) to D013 (13.5h)
+  [PT-Fix] Transfer B1-T573 from D068 (45.0h) to D013 (18.0h)
+  [PT-Fix] Transfer B2R-T322 from D070 (58.5h) to D013 (22.5h)
+  [PT-Fix] Transfer B1-T708 from D070 (49.5h) to D013 (31.5h)
+  [PT-Fix] Swap B1-T1062<->B3-T872 between D013 and D110. Gain=9.0h
+  [PT-Fix] Transfer B1-T50 from D069 (45.0h) to D014 (13.5h)
+  [PT-Fix] Transfer B1-T456 from D071 (49.5h) to D014 (18.0h)
+  [PT-Fix] Transfer B1-T538 from D071 (45.0h) to D014 (22.5h)
+  [PT-Fix] Transfer B1-T681 from D072 (45.0h) to D014 (27.0h)
+  [PT-Fix] Swap B1-T1118<->B2R-T1010 between D014 and D077. Gain=4.5h
+  [PT-Fix] Transfer B1-T56 from D075 (49.5h) to D015 (13.5h)
+  [PT-Fix] Transfer B1-T642 from D075 (45.0h) to D015 (18.0h)
+  [PT-Fix] Transfer B1-T455 from D078 (49.5h) to D015 (22.5h)
+  [PT-Fix] Transfer B1-T827 from D079 (45.0h) to D015 (27.0h)
+  [PT-Fix] Swap B1-T1125<->B2R-T1012 between D015 and D099. Gain=4.5h
+  [PT-Fix] Transfer B1-T452 from D080 (45.0h) to D016 (13.5h)
+  [PT-Fix] Transfer B1-T589 from D081 (45.0h) to D016 (18.0h)
+  [PT-Fix] Transfer B1-T826 from D084 (54.0h) to D016 (22.5h)
+  [PT-Fix] Transfer B3-T66 from D085 (58.5h) to D016 (27.0h)
+  [PT-Fix] Transfer B1-T399 from D082 (49.5h) to D017 (13.5h)
+  [PT-Fix] Transfer B1-T526 from D082 (45.0h) to D017 (18.0h)
+  [PT-Fix] Transfer B1-T678 from D083 (49.5h) to D017 (22.5h)
+  [PT-Fix] Transfer B3-T68 from D087 (54.0h) to D017 (27.0h)
+  [PT-Fix] Transfer B1-T398 from D084 (49.5h) to D005 (9.0h)
+  [PT-Fix] Transfer B1-T782 from D085 (45.0h) to D005 (13.5h)
+  [PT-Fix] Transfer B1-T523 from D086 (45.0h) to D005 (18.0h)
+  [PT-Fix] Transfer B3-T69 from D088 (63.0h) to D005 (22.5h)
+  [PT-Fix] Swap B1-T1050<->B2R-T955 between D005 and D129. Gain=4.5h
+  [PT-Fix] Transfer B1-T409 from D088 (49.5h) to D018 (9.0h)
+  [PT-Fix] Transfer B1-T529 from D089 (45.0h) to D018 (13.5h)
+  [PT-Fix] Transfer B2R-T727 from D090 (49.5h) to D018 (18.0h)
+  [PT-Fix] Transfer B3-T73 from D092 (58.5h) to D018 (27.0h)
+  [PT-Fix] Transfer B1-T396 from D091 (45.0h) to D019 (9.0h)
+  [PT-Fix] Transfer B1-T784 from D092 (45.0h) to D019 (13.5h)
+  [PT-Fix] Transfer B2R-T570 from D095 (54.0h) to D019 (18.0h)
+  [PT-Fix] Transfer B3-T81 from D100 (58.5h) to D019 (27.0h)
+  [PT-Fix] Swap B2S-T1185<->B3-T1175 between D006 and D042. Gain=4.5h
+  [PT-Fix] Swap B1-T50<->B3-T74 between D014 and D093. Gain=9.0h
+  [PT-Fix] Swap B1-T56<->B3-T77 between D015 and D096. Gain=9.0h
+  [PT-Fix] Swap B1-T328<->B2R-T322 between D034 and D013. Gain=4.5h
+[Heuristic] Phase 3: Final Optimization complete.
+[V2 Integration] Solver returned 145 drivers
+[V2 Integration] Created 1385 V3 assignments
+
+  Results:
+    Assignments: 1385
+    Drivers: 145
+    FTE: 145
+    PT: 0
+    Duration: 0.50s
+    output_hash: d329b1c40b8fc566fa32487db0830d1a2948b61ed72ab30847e39dbf731efd10
+
+======================================================================
+COMPARISON
+======================================================================
+
+Run 1 output_hash: d329b1c40b8fc566fa32487db0830d1a2948b61ed72ab30847e39dbf731efd10
+Run 2 output_hash: d329b1c40b8fc566fa32487db0830d1a2948b61ed72ab30847e39dbf731efd10
+
+[OK] HASHES MATCH - REPRODUCIBILITY VERIFIED!
+
+Both runs produced identical output_hash.
+This proves the solver is deterministic.
+
+Additional Checks:
+  [OK] Assignment counts match: 1385 == 1385
+  [OK] Driver counts match: 145 == 145
+  [OK] FTE counts match: 145 == 145
+  [OK] PT counts match: 0 == 0
+
+======================================================================
+PROOF #3 COMPLETE
+======================================================================
+
+Summary:
+  Hash Match: PASS
+  Run 1 Hash: d329b1c40b8fc566fa32487db0830d1a2948b61ed72ab30847e39dbf731efd10
+  Run 2 Hash: d329b1c40b8fc566fa32487db0830d1a2948b61ed72ab30847e39dbf731efd10
+  Seed: 94
+
+Reproducibility: VERIFIED
+

@@ -1,8 +1,76 @@
 # SOLVEREIGN V3 - Agent Context Handoff
 
-> **Last Updated**: 2026-01-04 (55h Max Fix Applied)
-> **Status**: ✅ V3 MVP COMPLETE | ALL 7 AUDITS PASS | PRODUCTION READY
-> **Next Steps**: Production deployment, Streamlit UI validation
+> **Last Updated**: 2026-01-05 (V3.3a Product Core Implementation)
+> **Status**: ✅ V3 MVP COMPLETE | V3.3a API READY | ALL 7 AUDITS PASS
+> **Next Steps**: Apply migrations, start FastAPI, integration tests
+
+---
+
+## 🆕 V3.3a Product Core (NEW)
+
+V3.3a transforms SOLVEREIGN from internal tool to production-ready multi-tenant API.
+
+### New Migrations (backend_py/db/migrations/)
+| Migration | Description |
+|-----------|-------------|
+| **006_multi_tenant.sql** | tenants table + tenant_id on all tables |
+| **007_idempotency_keys.sql** | Request idempotency with TTL |
+| **008_tour_segments.sql** | Segment Adapter pattern with TIMESTAMPTZ |
+| **009_plan_versions_extended.sql** | Extended state machine + advisory locks |
+
+### FastAPI Application (backend_py/api/)
+```
+api/
+├── main.py              # App Factory + Middleware
+├── config.py            # Pydantic Settings (SOLVEREIGN_* env vars)
+├── database.py          # Async psycopg3 Pool + Advisory Locks
+├── dependencies.py      # Auth (X-API-Key) + Idempotency
+├── exceptions.py        # Structured Exceptions
+├── logging_config.py    # JSON Structured Logging
+├── solver_async.py      # Async wrapper for V2 solver
+├── routers/
+│   ├── health.py        # /health, /health/ready, /health/live
+│   ├── tenants.py       # /api/v1/tenants/me
+│   ├── forecasts.py     # POST/GET /api/v1/forecasts
+│   └── plans.py         # POST /solve, POST /lock, GET /export
+├── repositories/
+│   ├── base.py          # Tenant-scoped Basis
+│   ├── forecasts.py
+│   ├── plans.py
+│   └── tenants.py
+├── tests/
+│   ├── conftest.py      # Pytest fixtures
+│   ├── test_health.py
+│   ├── test_auth.py
+│   ├── test_forecasts.py
+│   └── test_plans.py
+└── ADR-*.md             # Architecture Decision Records
+```
+
+### V3.3a Quick Start
+```bash
+# 1. Apply migrations
+psql $DATABASE_URL < backend_py/db/migrations/006_multi_tenant.sql
+psql $DATABASE_URL < backend_py/db/migrations/007_idempotency_keys.sql
+psql $DATABASE_URL < backend_py/db/migrations/008_tour_segments.sql
+psql $DATABASE_URL < backend_py/db/migrations/009_plan_versions_extended.sql
+
+# 2. Install API dependencies
+pip install -r backend_py/api/requirements.txt
+
+# 3. Start API
+cd backend_py && uvicorn api.main:app --reload
+
+# 4. Test health
+curl http://localhost:8000/health
+```
+
+### Key Features
+- **Multi-Tenant**: tenant_id on all tables, X-API-Key auth
+- **Idempotency**: X-Idempotency-Key header, 24h TTL
+- **Advisory Locks**: pg_try_advisory_lock for concurrent solve prevention
+- **State Machine**: INGESTED → EXPANDED → SOLVING → SOLVED → AUDITED → DRAFT → LOCKED
+- **TIMESTAMPTZ**: tour_segments.start_at/end_at for anchor-aware scheduling
 
 ---
 

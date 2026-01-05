@@ -33,6 +33,8 @@ class ParseStatus(str, Enum):
 class PlanStatus(str, Enum):
     """Plan version lifecycle status."""
     SOLVING = "SOLVING"      # Solver in progress (crash recovery marker)
+    SOLVED = "SOLVED"        # Solver completed, awaiting audit
+    AUDITED = "AUDITED"      # Audit completed, ready for review
     DRAFT = "DRAFT"          # Completed, under review
     LOCKED = "LOCKED"        # Released to operations
     SUPERSEDED = "SUPERSEDED"  # Replaced by newer plan
@@ -55,6 +57,7 @@ class AuditCheckName(str, Enum):
     SPAN_SPLIT = "SPAN_SPLIT"          # ≤16h span + 360min break for splits
     REPRODUCIBILITY = "REPRODUCIBILITY"  # Same inputs → same outputs
     FATIGUE = "FATIGUE"                # No consecutive triple shifts
+    SENSITIVITY = "SENSITIVITY"        # Plan stability against config changes
 
 
 class AuditStatus(str, Enum):

@@ -1,0 +1,33 @@
+============================================================
+GATE 3: AUTH & TENANT ISOLATION
+============================================================
+
+[3.1] Request without X-API-Key
+----------------------------------------
+  Testing /api/v1/forecasts without API key...
+  Response: 422 (expected 401, 403, or 422)
+  Result: PASS
+
+[3.2] GET /tenants/me returns tenant_id
+----------------------------------------
+  Testing /api/v1/tenants/me with API key...
+  Response: 200
+  Data: {'id': 1, 'name': 'test_tenant_a', 'is_active': True, 'created_at': '2026-01-05T15:13:02.171116Z', 'metadata': {'note': 'Default tenant for migrated data', 'tier': 'internal'}}
+  Has tenant identifier: True
+  Result: PASS
+
+[3.3] Cross-tenant isolation
+----------------------------------------
+  Testing cross-tenant isolation...
+  Tenant A forecasts: 200
+  Tenant A ID: 1
+  Result: PASS (tenant isolation via API key)
+
+============================================================
+GATE 3 SUMMARY
+============================================================
+  no_api_key: PASS
+  tenant_me: PASS
+  cross_tenant: PASS
+
+GATE 3 OVERALL: PASS

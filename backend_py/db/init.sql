@@ -22,6 +22,8 @@ CREATE TABLE forecast_versions (
     input_hash          VARCHAR(64) NOT NULL UNIQUE,  -- SHA256 of canonical input
     parser_config_hash  VARCHAR(64) NOT NULL,         -- Version control for parser rules
     status              VARCHAR(10) NOT NULL CHECK (status IN ('PASS', 'WARN', 'FAIL')),
+    week_key            VARCHAR(20),                  -- Week identifier (e.g., "2026-W01")
+    week_anchor_date    DATE,                         -- Monday of the week for datetime computation
     notes               TEXT,
     CONSTRAINT forecast_versions_unique_hash UNIQUE (input_hash)
 );
@@ -104,7 +106,7 @@ CREATE TABLE plan_versions (
     seed                INTEGER NOT NULL,  -- Deterministic solver seed
     solver_config_hash  VARCHAR(64) NOT NULL,  -- Solver parameter version
     output_hash         VARCHAR(64) NOT NULL,  -- SHA256(assignments + kpis)
-    status              VARCHAR(20) NOT NULL CHECK (status IN ('DRAFT', 'LOCKED', 'SUPERSEDED')),
+    status              VARCHAR(20) NOT NULL CHECK (status IN ('DRAFT', 'LOCKED', 'SUPERSEDED', 'SOLVING', 'FAILED')),
     locked_at           TIMESTAMP,
     locked_by           VARCHAR(100),
     notes               TEXT,
@@ -160,13 +162,14 @@ CREATE TABLE audit_log (
     id                  SERIAL PRIMARY KEY,
     plan_version_id     INTEGER NOT NULL REFERENCES plan_versions(id) ON DELETE CASCADE,
     check_name          VARCHAR(100) NOT NULL,  -- 'COVERAGE' | 'REST' | 'OVERLAP' | 'SPAN' | 'REPRODUCIBILITY'
-    status              VARCHAR(10) NOT NULL CHECK (status IN ('PASS', 'FAIL')),
+    status              VARCHAR(10) NOT NULL CHECK (status IN ('PASS', 'FAIL', 'OVERRIDE')),
     count               INTEGER DEFAULT 0,  -- Violation count (0 for PASS)
     details_json        JSONB,  -- Full check details (violations, driver IDs, tour IDs, etc.)
     created_at          TIMESTAMP NOT NULL DEFAULT NOW(),
     CONSTRAINT audit_log_count_integrity CHECK (
         (status = 'PASS' AND count = 0) OR
-        (status = 'FAIL' AND count > 0)
+        (status = 'FAIL' AND count > 0) OR
+        (status = 'OVERRIDE')  -- Override can have any count (number of affected instances)
     )
 );
 
@@ -267,7 +270,7 @@ COMMENT ON VIEW release_ready_plans IS 'DRAFT plans with zero failed audit check
 -- 10. TRIGGERS FOR AUDIT TRAIL
 -- ============================================================================
 
--- Trigger: Update plan_version status from DRAFT to LOCKED
+-- Trigger 1: Prevent status change from LOCKED in plan_versions
 CREATE OR REPLACE FUNCTION prevent_locked_plan_modification()
 RETURNS TRIGGER AS $$
 BEGIN
@@ -285,6 +288,59 @@ EXECUTE FUNCTION prevent_locked_plan_modification();
 
 COMMENT ON FUNCTION prevent_locked_plan_modification() IS 'Enforce immutability of LOCKED plans';
 
+-- Trigger 2: Prevent modifying assignments for LOCKED plans
+CREATE OR REPLACE FUNCTION prevent_locked_assignments_modification()
+RETURNS TRIGGER AS $$
+DECLARE
+    v_plan_status VARCHAR(20);
+BEGIN
+    -- Get plan status
+    SELECT status INTO v_plan_status
+    FROM plan_versions
+    WHERE id = OLD.plan_version_id;
+
+    IF v_plan_status = 'LOCKED' THEN
+        IF TG_OP = 'UPDATE' THEN
+            RAISE EXCEPTION 'Cannot UPDATE assignment % - plan_version % is LOCKED', OLD.id, OLD.plan_version_id;
+        ELSIF TG_OP = 'DELETE' THEN
+            RAISE EXCEPTION 'Cannot DELETE assignment % - plan_version % is LOCKED', OLD.id, OLD.plan_version_id;
+        END IF;
+    END IF;
+
+    IF TG_OP = 'DELETE' THEN
+        RETURN OLD;
+    END IF;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER prevent_locked_assignments_modification_trigger
+BEFORE UPDATE OR DELETE ON assignments
+FOR EACH ROW
+EXECUTE FUNCTION prevent_locked_assignments_modification();
+
+COMMENT ON FUNCTION prevent_locked_assignments_modification() IS 'Prevent modifications to assignments for LOCKED plans';
+
+-- Trigger 3: Make audit_log append-only (no UPDATE/DELETE)
+CREATE OR REPLACE FUNCTION audit_log_append_only()
+RETURNS TRIGGER AS $$
+BEGIN
+    IF TG_OP = 'UPDATE' THEN
+        RAISE EXCEPTION 'audit_log is append-only: UPDATE not allowed on row %', OLD.id;
+    ELSIF TG_OP = 'DELETE' THEN
+        RAISE EXCEPTION 'audit_log is append-only: DELETE not allowed on row %', OLD.id;
+    END IF;
+    RETURN NULL;  -- Never reached
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER audit_log_append_only_trigger
+BEFORE UPDATE OR DELETE ON audit_log
+FOR EACH ROW
+EXECUTE FUNCTION audit_log_append_only();
+
+COMMENT ON FUNCTION audit_log_append_only() IS 'Enforce append-only (write-only) audit log';
+
 -- ============================================================================
 -- INITIALIZATION COMPLETE
 -- ============================================================================
@@ -300,6 +356,9 @@ BEGIN
     RAISE NOTICE '✅ SOLVEREIGN V3 Database Schema Initialized Successfully';
     RAISE NOTICE '📊 Tables Created: forecast_versions, tours_raw, tours_normalized, plan_versions, assignments, audit_log, freeze_windows, diff_results';
     RAISE NOTICE '🔍 Views Created: latest_locked_plans, release_ready_plans';
-    RAISE NOTICE '🛡️ Triggers Created: prevent_locked_plan_modification';
+    RAISE NOTICE '🛡️ Triggers Created:';
+    RAISE NOTICE '   - prevent_locked_plan_modification (plan_versions immutability)';
+    RAISE NOTICE '   - prevent_locked_assignments_modification (assignments for LOCKED plans)';
+    RAISE NOTICE '   - audit_log_append_only (write-only audit log)';
     RAISE NOTICE '🚀 Ready for M2 Testing: docker-compose up -d postgres';
 END $$;

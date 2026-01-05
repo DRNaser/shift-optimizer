@@ -1,0 +1,1398 @@
+[
+  {
+    "id": 1,
+    "category": "basic",
+    "input": "Mo 06:00-14:00",
+    "expected": "PASS",
+    "actual": "PASS",
+    "passed": true,
+    "issues": [],
+    "canonical": "Mo 06:00:00-14:00:00",
+    "note": null,
+    "error": null
+  },
+  {
+    "id": 2,
+    "category": "basic",
+    "input": "Di 08:00-16:00",
+    "expected": "PASS",
+    "actual": "PASS",
+    "passed": true,
+    "issues": [],
+    "canonical": "Di 08:00:00-16:00:00",
+    "note": null,
+    "error": null
+  },
+  {
+    "id": 3,
+    "category": "basic",
+    "input": "Mi 10:00-18:00",
+    "expected": "PASS",
+    "actual": "PASS",
+    "passed": true,
+    "issues": [],
+    "canonical": "Mi 10:00:00-18:00:00",
+    "note": null,
+    "error": null
+  },
+  {
+    "id": 4,
+    "category": "basic",
+    "input": "Do 12:00-20:00",
+    "expected": "PASS",
+    "actual": "PASS",
+    "passed": true,
+    "issues": [],
+    "canonical": "Do 12:00:00-20:00:00",
+    "note": null,
+    "error": null
+  },
+  {
+    "id": 5,
+    "category": "basic",
+    "input": "Fr 14:00-22:00",
+    "expected": "PASS",
+    "actual": "PASS",
+    "passed": true,
+    "issues": [],
+    "canonical": "Fr 14:00:00-22:00:00",
+    "note": null,
+    "error": null
+  },
+  {
+    "id": 6,
+    "category": "basic",
+    "input": "Sa 07:00-15:00",
+    "expected": "PASS",
+    "actual": "PASS",
+    "passed": true,
+    "issues": [],
+    "canonical": "Sa 07:00:00-15:00:00",
+    "note": null,
+    "error": null
+  },
+  {
+    "id": 7,
+    "category": "basic",
+    "input": "So 09:00-17:00",
+    "expected": "PASS",
+    "actual": "PASS",
+    "passed": true,
+    "issues": [],
+    "canonical": "So 09:00:00-17:00:00",
+    "note": null,
+    "error": null
+  },
+  {
+    "id": 8,
+    "category": "basic",
+    "input": "Montag 06:00-14:00",
+    "expected": "PASS",
+    "actual": "PASS",
+    "passed": true,
+    "issues": [],
+    "canonical": "Mo 06:00:00-14:00:00",
+    "note": null,
+    "error": null
+  },
+  {
+    "id": 9,
+    "category": "basic",
+    "input": "Dienstag 08:00-16:00",
+    "expected": "PASS",
+    "actual": "PASS",
+    "passed": true,
+    "issues": [],
+    "canonical": "Di 08:00:00-16:00:00",
+    "note": null,
+    "error": null
+  },
+  {
+    "id": 10,
+    "category": "basic",
+    "input": "Mittwoch 10:00-18:00",
+    "expected": "PASS",
+    "actual": "PASS",
+    "passed": true,
+    "issues": [],
+    "canonical": "Mi 10:00:00-18:00:00",
+    "note": null,
+    "error": null
+  },
+  {
+    "id": 11,
+    "category": "count",
+    "input": "Mo 06:00-14:00 3 Fahrer",
+    "expected": "PASS",
+    "actual": "PASS",
+    "passed": true,
+    "issues": [],
+    "canonical": "Mo 06:00:00-14:00:00 3",
+    "note": null,
+    "error": null
+  },
+  {
+    "id": 12,
+    "category": "count",
+    "input": "Di 08:00-16:00 2 fahrer",
+    "expected": "PASS",
+    "actual": "PASS",
+    "passed": true,
+    "issues": [],
+    "canonical": "Di 08:00:00-16:00:00 2",
+    "note": null,
+    "error": null
+  },
+  {
+    "id": 13,
+    "category": "count",
+    "input": "Mi 10:00-18:00 5",
+    "expected": "PASS",
+    "actual": "PASS",
+    "passed": true,
+    "issues": [],
+    "canonical": "Mi 10:00:00-18:00:00 5",
+    "note": null,
+    "error": null
+  },
+  {
+    "id": 14,
+    "category": "count",
+    "input": "Do 12:00-20:00 1 Driver",
+    "expected": "PASS",
+    "actual": "PASS",
+    "passed": true,
+    "issues": [],
+    "canonical": "Do 12:00:00-20:00:00",
+    "note": null,
+    "error": null
+  },
+  {
+    "id": 15,
+    "category": "count",
+    "input": "Fr 14:00-22:00 4 Fahrer",
+    "expected": "PASS",
+    "actual": "PASS",
+    "passed": true,
+    "issues": [],
+    "canonical": "Fr 14:00:00-22:00:00 4",
+    "note": null,
+    "error": null
+  },
+  {
+    "id": 16,
+    "category": "count",
+    "input": "Sa 07:00-15:00 6 Fahrer",
+    "expected": "PASS",
+    "actual": "PASS",
+    "passed": true,
+    "issues": [],
+    "canonical": "Sa 07:00:00-15:00:00 6",
+    "note": null,
+    "error": null
+  },
+  {
+    "id": 17,
+    "category": "count",
+    "input": "So 09:00-17:00 7 Fahrer",
+    "expected": "PASS",
+    "actual": "PASS",
+    "passed": true,
+    "issues": [],
+    "canonical": "So 09:00:00-17:00:00 7",
+    "note": null,
+    "error": null
+  },
+  {
+    "id": 18,
+    "category": "count",
+    "input": "Mo 05:00-13:00 8",
+    "expected": "PASS",
+    "actual": "PASS",
+    "passed": true,
+    "issues": [],
+    "canonical": "Mo 05:00:00-13:00:00 8",
+    "note": null,
+    "error": null
+  },
+  {
+    "id": 19,
+    "category": "count",
+    "input": "Di 04:00-12:00 9 Fahrer",
+    "expected": "PASS",
+    "actual": "PASS",
+    "passed": true,
+    "issues": [],
+    "canonical": "Di 04:00:00-12:00:00 9",
+    "note": null,
+    "error": null
+  },
+  {
+    "id": 20,
+    "category": "count",
+    "input": "Mi 03:00-11:00 10 Fahrer",
+    "expected": "PASS",
+    "actual": "PASS",
+    "passed": true,
+    "issues": [],
+    "canonical": "Mi 03:00:00-11:00:00 10",
+    "note": null,
+    "error": null
+  },
+  {
+    "id": 21,
+    "category": "depot",
+    "input": "Mo 06:00-14:00 Depot Nord",
+    "expected": "PASS",
+    "actual": "PASS",
+    "passed": true,
+    "issues": [],
+    "canonical": "Mo 06:00:00-14:00:00 Depot Nord",
+    "note": null,
+    "error": null
+  },
+  {
+    "id": 22,
+    "category": "depot",
+    "input": "Di 08:00-16:00 Depot West",
+    "expected": "PASS",
+    "actual": "PASS",
+    "passed": true,
+    "issues": [],
+    "canonical": "Di 08:00:00-16:00:00 Depot West",
+    "note": null,
+    "error": null
+  },
+  {
+    "id": 23,
+    "category": "depot",
+    "input": "Mi 10:00-18:00 Depot Ost",
+    "expected": "PASS",
+    "actual": "PASS",
+    "passed": true,
+    "issues": [],
+    "canonical": "Mi 10:00:00-18:00:00 Depot Ost",
+    "note": null,
+    "error": null
+  },
+  {
+    "id": 24,
+    "category": "depot",
+    "input": "Do 12:00-20:00 Depot Sued",
+    "expected": "PASS",
+    "actual": "PASS",
+    "passed": true,
+    "issues": [],
+    "canonical": "Do 12:00:00-20:00:00 Depot Sued",
+    "note": null,
+    "error": null
+  },
+  {
+    "id": 25,
+    "category": "depot",
+    "input": "Fr 14:00-22:00 3 Fahrer Depot Nord",
+    "expected": "PASS",
+    "actual": "PASS",
+    "passed": true,
+    "issues": [],
+    "canonical": "Fr 14:00:00-22:00:00 3 Depot Nord",
+    "note": null,
+    "error": null
+  },
+  {
+    "id": 26,
+    "category": "depot",
+    "input": "Sa 07:00-15:00 2 Fahrer Depot West",
+    "expected": "PASS",
+    "actual": "PASS",
+    "passed": true,
+    "issues": [],
+    "canonical": "Sa 07:00:00-15:00:00 2 Depot West",
+    "note": null,
+    "error": null
+  },
+  {
+    "id": 27,
+    "category": "depot",
+    "input": "So 09:00-17:00 depot zentral",
+    "expected": "PASS",
+    "actual": "PASS",
+    "passed": true,
+    "issues": [],
+    "canonical": "So 09:00:00-17:00:00 Depot zentral",
+    "note": null,
+    "error": null
+  },
+  {
+    "id": 28,
+    "category": "depot",
+    "input": "Mo 06:00-14:00 5 Fahrer depot HQ",
+    "expected": "PASS",
+    "actual": "PASS",
+    "passed": true,
+    "issues": [],
+    "canonical": "Mo 06:00:00-14:00:00 5 Depot HQ",
+    "note": null,
+    "error": null
+  },
+  {
+    "id": 29,
+    "category": "depot",
+    "input": "Di 08:00-16:00 Depot Lager1",
+    "expected": "PASS",
+    "actual": "PASS",
+    "passed": true,
+    "issues": [],
+    "canonical": "Di 08:00:00-16:00:00 Depot Lager",
+    "note": null,
+    "error": null
+  },
+  {
+    "id": 30,
+    "category": "depot",
+    "input": "Mi 10:00-18:00 4 Fahrer Depot A",
+    "expected": "PASS",
+    "actual": "PASS",
+    "passed": true,
+    "issues": [],
+    "canonical": "Mi 10:00:00-18:00:00 4 Depot A",
+    "note": null,
+    "error": null
+  },
+  {
+    "id": 31,
+    "category": "split",
+    "input": "Mo 06:00-10:00 + 15:00-19:00",
+    "expected": "PASS",
+    "actual": "PASS",
+    "passed": true,
+    "issues": [],
+    "canonical": "Mo 06:00:00-19:00:00 + 15:00:00-19:00:00",
+    "note": null,
+    "error": null
+  },
+  {
+    "id": 32,
+    "category": "split",
+    "input": "Di 05:00-09:00 + 14:00-18:00",
+    "expected": "PASS",
+    "actual": "PASS",
+    "passed": true,
+    "issues": [],
+    "canonical": "Di 05:00:00-18:00:00 + 14:00:00-18:00:00",
+    "note": null,
+    "error": null
+  },
+  {
+    "id": 33,
+    "category": "split",
+    "input": "Mi 07:00-11:00 + 16:00-20:00",
+    "expected": "PASS",
+    "actual": "PASS",
+    "passed": true,
+    "issues": [],
+    "canonical": "Mi 07:00:00-20:00:00 + 16:00:00-20:00:00",
+    "note": null,
+    "error": null
+  },
+  {
+    "id": 34,
+    "category": "split",
+    "input": "Do 04:00-08:00 + 13:00-17:00",
+    "expected": "PASS",
+    "actual": "PASS",
+    "passed": true,
+    "issues": [],
+    "canonical": "Do 04:00:00-17:00:00 + 13:00:00-17:00:00",
+    "note": null,
+    "error": null
+  },
+  {
+    "id": 35,
+    "category": "split",
+    "input": "Fr 06:00-10:00 + 15:00-19:00 2 Fahrer",
+    "expected": "PASS",
+    "actual": "PASS",
+    "passed": true,
+    "issues": [],
+    "canonical": "Fr 06:00:00-19:00:00 + 15:00:00-19:00:00 2",
+    "note": null,
+    "error": null
+  },
+  {
+    "id": 36,
+    "category": "split",
+    "input": "Sa 08:00-12:00 + 17:00-21:00",
+    "expected": "PASS",
+    "actual": "PASS",
+    "passed": true,
+    "issues": [],
+    "canonical": "Sa 08:00:00-21:00:00 + 17:00:00-21:00:00",
+    "note": null,
+    "error": null
+  },
+  {
+    "id": 37,
+    "category": "split",
+    "input": "So 06:00-10:00 + 15:00-19:00 3 Fahrer Depot Nord",
+    "expected": "PASS",
+    "actual": "PASS",
+    "passed": true,
+    "issues": [],
+    "canonical": "So 06:00:00-19:00:00 + 15:00:00-19:00:00 3 Depot Nord",
+    "note": null,
+    "error": null
+  },
+  {
+    "id": 38,
+    "category": "split",
+    "input": "Mo 05:30-09:30 + 14:30-18:30",
+    "expected": "PASS",
+    "actual": "PASS",
+    "passed": true,
+    "issues": [],
+    "canonical": "Mo 05:30:00-18:30:00 + 14:30:00-18:30:00",
+    "note": null,
+    "error": null
+  },
+  {
+    "id": 39,
+    "category": "split",
+    "input": "Di 06:15-10:15 + 15:15-19:15",
+    "expected": "PASS",
+    "actual": "PASS",
+    "passed": true,
+    "issues": [],
+    "canonical": "Di 06:15:00-19:15:00 + 15:15:00-19:15:00",
+    "note": null,
+    "error": null
+  },
+  {
+    "id": 40,
+    "category": "split",
+    "input": "Mi 06:00-10:00+15:00-19:00",
+    "expected": "PASS",
+    "actual": "PASS",
+    "passed": true,
+    "issues": [],
+    "canonical": "Mi 06:00:00-19:00:00 + 15:00:00-19:00:00",
+    "note": "no spaces around +",
+    "error": null
+  },
+  {
+    "id": 41,
+    "category": "midnight",
+    "input": "Mo 22:00-06:00",
+    "expected": "PASS",
+    "actual": "PASS",
+    "passed": true,
+    "issues": [],
+    "canonical": "Mo 22:00:00-06:00:00",
+    "note": null,
+    "error": null
+  },
+  {
+    "id": 42,
+    "category": "midnight",
+    "input": "Di 23:00-07:00",
+    "expected": "PASS",
+    "actual": "PASS",
+    "passed": true,
+    "issues": [],
+    "canonical": "Di 23:00:00-07:00:00",
+    "note": null,
+    "error": null
+  },
+  {
+    "id": 43,
+    "category": "midnight",
+    "input": "Mi 20:00-04:00",
+    "expected": "PASS",
+    "actual": "PASS",
+    "passed": true,
+    "issues": [],
+    "canonical": "Mi 20:00:00-04:00:00",
+    "note": null,
+    "error": null
+  },
+  {
+    "id": 44,
+    "category": "midnight",
+    "input": "Do 21:00-05:00",
+    "expected": "PASS",
+    "actual": "PASS",
+    "passed": true,
+    "issues": [],
+    "canonical": "Do 21:00:00-05:00:00",
+    "note": null,
+    "error": null
+  },
+  {
+    "id": 45,
+    "category": "midnight",
+    "input": "Fr 22:00-06:00 3 Fahrer",
+    "expected": "PASS",
+    "actual": "PASS",
+    "passed": true,
+    "issues": [],
+    "canonical": "Fr 22:00:00-06:00:00 3",
+    "note": null,
+    "error": null
+  },
+  {
+    "id": 46,
+    "category": "midnight",
+    "input": "Sa 23:30-07:30",
+    "expected": "PASS",
+    "actual": "PASS",
+    "passed": true,
+    "issues": [],
+    "canonical": "Sa 23:30:00-07:30:00",
+    "note": null,
+    "error": null
+  },
+  {
+    "id": 47,
+    "category": "midnight",
+    "input": "So 22:00-06:00 Depot Nacht",
+    "expected": "PASS",
+    "actual": "PASS",
+    "passed": true,
+    "issues": [],
+    "canonical": "So 22:00:00-06:00:00 Depot Nacht",
+    "note": null,
+    "error": null
+  },
+  {
+    "id": 48,
+    "category": "midnight",
+    "input": "Mo 19:00-03:00",
+    "expected": "PASS",
+    "actual": "PASS",
+    "passed": true,
+    "issues": [],
+    "canonical": "Mo 19:00:00-03:00:00",
+    "note": null,
+    "error": null
+  },
+  {
+    "id": 49,
+    "category": "midnight",
+    "input": "Di 18:00-02:00 2 Fahrer",
+    "expected": "PASS",
+    "actual": "PASS",
+    "passed": true,
+    "issues": [],
+    "canonical": "Di 18:00:00-02:00:00 2",
+    "note": null,
+    "error": null
+  },
+  {
+    "id": 50,
+    "category": "midnight",
+    "input": "Mi 00:00-08:00",
+    "expected": "PASS",
+    "actual": "PASS",
+    "passed": true,
+    "issues": [],
+    "canonical": "Mi 00:00:00-08:00:00",
+    "note": "starts at midnight",
+    "error": null
+  },
+  {
+    "id": 51,
+    "category": "edge",
+    "input": "Mo 6:00-14:00",
+    "expected": "PASS",
+    "actual": "PASS",
+    "passed": true,
+    "issues": [],
+    "canonical": "Mo 06:00:00-14:00:00",
+    "note": "single digit hour",
+    "error": null
+  },
+  {
+    "id": 52,
+    "category": "edge",
+    "input": "Di 08:00-16:00   ",
+    "expected": "PASS",
+    "actual": "PASS",
+    "passed": true,
+    "issues": [],
+    "canonical": "Di 08:00:00-16:00:00",
+    "note": "trailing spaces",
+    "error": null
+  },
+  {
+    "id": 53,
+    "category": "edge",
+    "input": "   Mi 10:00-18:00",
+    "expected": "PASS",
+    "actual": "PASS",
+    "passed": true,
+    "issues": [],
+    "canonical": "Mi 10:00:00-18:00:00",
+    "note": "leading spaces",
+    "error": null
+  },
+  {
+    "id": 54,
+    "category": "edge",
+    "input": "Do  12:00-20:00",
+    "expected": "PASS",
+    "actual": "PASS",
+    "passed": true,
+    "issues": [],
+    "canonical": "Do 12:00:00-20:00:00",
+    "note": "double space",
+    "error": null
+  },
+  {
+    "id": 55,
+    "category": "edge",
+    "input": "#Kommentar",
+    "expected": "PASS",
+    "actual": "PASS",
+    "passed": true,
+    "issues": [],
+    "canonical": "#Kommentar",
+    "note": "comment line",
+    "error": null
+  },
+  {
+    "id": 56,
+    "category": "edge",
+    "input": "",
+    "expected": "PASS",
+    "actual": "PASS",
+    "passed": true,
+    "issues": [],
+    "canonical": null,
+    "note": "empty line",
+    "error": null
+  },
+  {
+    "id": 57,
+    "category": "edge",
+    "input": "Fr 00:00-23:59",
+    "expected": "WARN",
+    "actual": "WARN",
+    "passed": true,
+    "issues": [
+      {
+        "code": "EXCESSIVE_WORK_HOURS",
+        "message": "Line 57: Work hours 23.98h exceeds 16h limit",
+        "severity": "WARNING"
+      }
+    ],
+    "canonical": "Fr 00:00:00-23:59:00",
+    "note": "full day (24h triggers EXCESSIVE_WORK_HOURS)",
+    "error": null
+  },
+  {
+    "id": 58,
+    "category": "edge",
+    "input": "Sa 12:00-12:30",
+    "expected": "PASS",
+    "actual": "PASS",
+    "passed": true,
+    "issues": [],
+    "canonical": "Sa 12:00:00-12:30:00",
+    "note": "30min shift",
+    "error": null
+  },
+  {
+    "id": 59,
+    "category": "edge",
+    "input": "So 08:00-20:00",
+    "expected": "PASS",
+    "actual": "PASS",
+    "passed": true,
+    "issues": [],
+    "canonical": "So 08:00:00-20:00:00",
+    "note": "12h shift",
+    "error": null
+  },
+  {
+    "id": 60,
+    "category": "edge",
+    "input": "Donnerstag 06:00-14:00",
+    "expected": "PASS",
+    "actual": "PASS",
+    "passed": true,
+    "issues": [],
+    "canonical": "Do 06:00:00-14:00:00",
+    "note": "full day name",
+    "error": null
+  },
+  {
+    "id": 61,
+    "category": "edge",
+    "input": "Freitag 08:00-16:00 3 Fahrer",
+    "expected": "PASS",
+    "actual": "PASS",
+    "passed": true,
+    "issues": [],
+    "canonical": "Fr 08:00:00-16:00:00 3",
+    "note": "full name + count",
+    "error": null
+  },
+  {
+    "id": 62,
+    "category": "edge",
+    "input": "Samstag 10:00-18:00 Depot West",
+    "expected": "PASS",
+    "actual": "PASS",
+    "passed": true,
+    "issues": [],
+    "canonical": "Sa 10:00:00-18:00:00 Depot West",
+    "note": "full name + depot",
+    "error": null
+  },
+  {
+    "id": 63,
+    "category": "edge",
+    "input": "Sonntag 22:00-06:00",
+    "expected": "PASS",
+    "actual": "PASS",
+    "passed": true,
+    "issues": [],
+    "canonical": "So 22:00:00-06:00:00",
+    "note": "full name + midnight",
+    "error": null
+  },
+  {
+    "id": 64,
+    "category": "edge",
+    "input": "Mo 06:00-14:00 1 Fahrer",
+    "expected": "PASS",
+    "actual": "PASS",
+    "passed": true,
+    "issues": [],
+    "canonical": "Mo 06:00:00-14:00:00",
+    "note": "explicit count 1",
+    "error": null
+  },
+  {
+    "id": 65,
+    "category": "edge",
+    "input": "Di 08:00-16:00 0 Fahrer",
+    "expected": "PASS",
+    "actual": "PASS",
+    "passed": true,
+    "issues": [],
+    "canonical": "Di 08:00:00-16:00:00",
+    "note": "zero count allowed (no warning in current parser)",
+    "error": null
+  },
+  {
+    "id": 66,
+    "category": "edge",
+    "input": "Mi 06:00-14:00   3   Fahrer",
+    "expected": "PASS",
+    "actual": "PASS",
+    "passed": true,
+    "issues": [],
+    "canonical": "Mi 06:00:00-14:00:00 3",
+    "note": "spaces around count",
+    "error": null
+  },
+  {
+    "id": 67,
+    "category": "edge",
+    "input": "Do 08:00-16:00 3Fahrer",
+    "expected": "PASS",
+    "actual": "PASS",
+    "passed": true,
+    "issues": [],
+    "canonical": "Do 08:00:00-16:00:00 3",
+    "note": "no space before Fahrer",
+    "error": null
+  },
+  {
+    "id": 68,
+    "category": "edge",
+    "input": "Fr 06:00-14:00 DEPOT NORD",
+    "expected": "PASS",
+    "actual": "PASS",
+    "passed": true,
+    "issues": [],
+    "canonical": "Fr 06:00:00-14:00:00 Depot NORD",
+    "note": "uppercase DEPOT",
+    "error": null
+  },
+  {
+    "id": 69,
+    "category": "edge",
+    "input": "Sa 08:00-16:00 depot nord",
+    "expected": "PASS",
+    "actual": "PASS",
+    "passed": true,
+    "issues": [],
+    "canonical": "Sa 08:00:00-16:00:00 Depot nord",
+    "note": "lowercase depot",
+    "error": null
+  },
+  {
+    "id": 70,
+    "category": "edge",
+    "input": "So 10:00-18:00 3 fahrer depot west",
+    "expected": "PASS",
+    "actual": "PASS",
+    "passed": true,
+    "issues": [],
+    "canonical": "So 10:00:00-18:00:00 3 Depot west",
+    "note": "all lowercase",
+    "error": null
+  },
+  {
+    "id": 71,
+    "category": "warn",
+    "input": "Mo 06:00-14:00 15 Fahrer",
+    "expected": "WARN",
+    "actual": "WARN",
+    "passed": true,
+    "issues": [
+      {
+        "code": "HIGH_COUNT",
+        "message": "Line 71: Unusually high count (15 drivers)",
+        "severity": "WARNING"
+      }
+    ],
+    "canonical": "Mo 06:00:00-14:00:00 15",
+    "note": null,
+    "error": null
+  },
+  {
+    "id": 72,
+    "category": "warn",
+    "input": "Di 06:00-14:00 20 Fahrer",
+    "expected": "WARN",
+    "actual": "WARN",
+    "passed": true,
+    "issues": [
+      {
+        "code": "HIGH_COUNT",
+        "message": "Line 72: Unusually high count (20 drivers)",
+        "severity": "WARNING"
+      }
+    ],
+    "canonical": "Di 06:00:00-14:00:00 20",
+    "note": null,
+    "error": null
+  },
+  {
+    "id": 73,
+    "category": "warn",
+    "input": "Mi 06:00-14:00 50 Fahrer",
+    "expected": "WARN",
+    "actual": "WARN",
+    "passed": true,
+    "issues": [
+      {
+        "code": "HIGH_COUNT",
+        "message": "Line 73: Unusually high count (50 drivers)",
+        "severity": "WARNING"
+      }
+    ],
+    "canonical": "Mi 06:00:00-14:00:00 50",
+    "note": null,
+    "error": null
+  },
+  {
+    "id": 74,
+    "category": "warn",
+    "input": "Do 04:00-22:00",
+    "expected": "WARN",
+    "actual": "WARN",
+    "passed": true,
+    "issues": [
+      {
+        "code": "EXCESSIVE_WORK_HOURS",
+        "message": "Line 74: Work hours 18.0h exceeds 16h limit",
+        "severity": "WARNING"
+      }
+    ],
+    "canonical": "Do 04:00:00-22:00:00",
+    "note": "18h shift",
+    "error": null
+  },
+  {
+    "id": 75,
+    "category": "warn",
+    "input": "Fr 02:00-22:00",
+    "expected": "WARN",
+    "actual": "WARN",
+    "passed": true,
+    "issues": [
+      {
+        "code": "EXCESSIVE_WORK_HOURS",
+        "message": "Line 75: Work hours 20.0h exceeds 16h limit",
+        "severity": "WARNING"
+      }
+    ],
+    "canonical": "Fr 02:00:00-22:00:00",
+    "note": "20h shift",
+    "error": null
+  },
+  {
+    "id": 76,
+    "category": "warn",
+    "input": "Sa 00:00-20:00",
+    "expected": "WARN",
+    "actual": "WARN",
+    "passed": true,
+    "issues": [
+      {
+        "code": "EXCESSIVE_WORK_HOURS",
+        "message": "Line 76: Work hours 20.0h exceeds 16h limit",
+        "severity": "WARNING"
+      }
+    ],
+    "canonical": "Sa 00:00:00-20:00:00",
+    "note": "20h shift",
+    "error": null
+  },
+  {
+    "id": 77,
+    "category": "warn",
+    "input": "So 06:00-14:00 25 Fahrer",
+    "expected": "WARN",
+    "actual": "WARN",
+    "passed": true,
+    "issues": [
+      {
+        "code": "HIGH_COUNT",
+        "message": "Line 77: Unusually high count (25 drivers)",
+        "severity": "WARNING"
+      }
+    ],
+    "canonical": "So 06:00:00-14:00:00 25",
+    "note": null,
+    "error": null
+  },
+  {
+    "id": 78,
+    "category": "warn",
+    "input": "Mo 04:00-21:00",
+    "expected": "WARN",
+    "actual": "WARN",
+    "passed": true,
+    "issues": [
+      {
+        "code": "EXCESSIVE_WORK_HOURS",
+        "message": "Line 78: Work hours 17.0h exceeds 16h limit",
+        "severity": "WARNING"
+      }
+    ],
+    "canonical": "Mo 04:00:00-21:00:00",
+    "note": "17h shift",
+    "error": null
+  },
+  {
+    "id": 79,
+    "category": "warn",
+    "input": "Di 06:00-14:00 11 Fahrer",
+    "expected": "WARN",
+    "actual": "WARN",
+    "passed": true,
+    "issues": [
+      {
+        "code": "HIGH_COUNT",
+        "message": "Line 79: Unusually high count (11 drivers)",
+        "severity": "WARNING"
+      }
+    ],
+    "canonical": "Di 06:00:00-14:00:00 11",
+    "note": null,
+    "error": null
+  },
+  {
+    "id": 80,
+    "category": "warn",
+    "input": "Mi 03:00-20:00",
+    "expected": "WARN",
+    "actual": "WARN",
+    "passed": true,
+    "issues": [
+      {
+        "code": "EXCESSIVE_WORK_HOURS",
+        "message": "Line 80: Work hours 17.0h exceeds 16h limit",
+        "severity": "WARNING"
+      }
+    ],
+    "canonical": "Mi 03:00:00-20:00:00",
+    "note": null,
+    "error": null
+  },
+  {
+    "id": 81,
+    "category": "fail",
+    "input": "Xyz 06:00-14:00",
+    "expected": "FAIL",
+    "actual": "FAIL",
+    "passed": true,
+    "issues": [
+      {
+        "code": "MISSING_DAY",
+        "message": "Line 81: No valid day name found. Expected: Mo, Di, Mi, Do, Fr, Sa, So",
+        "severity": "ERROR"
+      }
+    ],
+    "canonical": "Xyz 06:00-14:00",
+    "note": null,
+    "error": null
+  },
+  {
+    "id": 82,
+    "category": "fail",
+    "input": "Monday 06:00-14:00",
+    "expected": "FAIL",
+    "actual": "FAIL",
+    "passed": true,
+    "issues": [
+      {
+        "code": "MISSING_DAY",
+        "message": "Line 82: No valid day name found. Expected: Mo, Di, Mi, Do, Fr, Sa, So",
+        "severity": "ERROR"
+      }
+    ],
+    "canonical": "Monday 06:00-14:00",
+    "note": "English day name",
+    "error": null
+  },
+  {
+    "id": 83,
+    "category": "fail",
+    "input": "Mo",
+    "expected": "FAIL",
+    "actual": "FAIL",
+    "passed": true,
+    "issues": [
+      {
+        "code": "MISSING_TIME_RANGE",
+        "message": "Line 83: No time range found",
+        "severity": "ERROR"
+      }
+    ],
+    "canonical": "Mo",
+    "note": null,
+    "error": null
+  },
+  {
+    "id": 84,
+    "category": "fail",
+    "input": "Di 25:00-14:00",
+    "expected": "FAIL",
+    "actual": "FAIL",
+    "passed": true,
+    "issues": [
+      {
+        "code": "INVALID_HOUR",
+        "message": "Hour 25 out of range (0-23)",
+        "severity": "ERROR"
+      }
+    ],
+    "canonical": "Di 25:00-14:00",
+    "note": null,
+    "error": null
+  },
+  {
+    "id": 85,
+    "category": "fail",
+    "input": "Mi 06:60-14:00",
+    "expected": "FAIL",
+    "actual": "FAIL",
+    "passed": true,
+    "issues": [
+      {
+        "code": "INVALID_MINUTE",
+        "message": "Minute 60 out of range (0-59)",
+        "severity": "ERROR"
+      }
+    ],
+    "canonical": "Mi 06:60-14:00",
+    "note": null,
+    "error": null
+  },
+  {
+    "id": 86,
+    "category": "fail",
+    "input": "Do 06:00",
+    "expected": "FAIL",
+    "actual": "FAIL",
+    "passed": true,
+    "issues": [
+      {
+        "code": "INVALID_TIME_RANGE",
+        "message": "Line 86: Invalid time range format. Expected HH:MM-HH:MM",
+        "severity": "ERROR"
+      }
+    ],
+    "canonical": "Do 06:00",
+    "note": null,
+    "error": null
+  },
+  {
+    "id": 87,
+    "category": "fail",
+    "input": "Fr -14:00",
+    "expected": "FAIL",
+    "actual": "FAIL",
+    "passed": true,
+    "issues": [
+      {
+        "code": "INVALID_TIME_FORMAT",
+        "message": "Invalid time format: ''. Expected HH:MM",
+        "severity": "ERROR"
+      }
+    ],
+    "canonical": "Fr -14:00",
+    "note": null,
+    "error": null
+  },
+  {
+    "id": 88,
+    "category": "fail",
+    "input": "Sa 06:00-",
+    "expected": "FAIL",
+    "actual": "FAIL",
+    "passed": true,
+    "issues": [
+      {
+        "code": "INVALID_TIME_FORMAT",
+        "message": "Invalid time format: ''. Expected HH:MM",
+        "severity": "ERROR"
+      }
+    ],
+    "canonical": "Sa 06:00-",
+    "note": null,
+    "error": null
+  },
+  {
+    "id": 89,
+    "category": "fail",
+    "input": "So 06-14",
+    "expected": "FAIL",
+    "actual": "FAIL",
+    "passed": true,
+    "issues": [
+      {
+        "code": "INVALID_TIME_FORMAT",
+        "message": "Invalid time format: '06'. Expected HH:MM",
+        "severity": "ERROR"
+      },
+      {
+        "code": "INVALID_TIME_FORMAT",
+        "message": "Invalid time format: '14'. Expected HH:MM",
+        "severity": "ERROR"
+      }
+    ],
+    "canonical": "So 06-14",
+    "note": null,
+    "error": null
+  },
+  {
+    "id": 90,
+    "category": "fail",
+    "input": "Mo six-fourteen",
+    "expected": "FAIL",
+    "actual": "FAIL",
+    "passed": true,
+    "issues": [
+      {
+        "code": "INVALID_TIME_FORMAT",
+        "message": "Invalid time format: 'six'. Expected HH:MM",
+        "severity": "ERROR"
+      },
+      {
+        "code": "INVALID_TIME_FORMAT",
+        "message": "Invalid time format: 'fourteen'. Expected HH:MM",
+        "severity": "ERROR"
+      }
+    ],
+    "canonical": "Mo six-fourteen",
+    "note": null,
+    "error": null
+  },
+  {
+    "id": 91,
+    "category": "fail",
+    "input": "Di 06:00-14:00 + ",
+    "expected": "FAIL",
+    "actual": "FAIL",
+    "passed": true,
+    "issues": [
+      {
+        "code": "INVALID_TIME_RANGE",
+        "message": "Line 91: Missing time range after '+' in split shift",
+        "severity": "ERROR"
+      }
+    ],
+    "canonical": "Di 06:00-14:00 +",
+    "note": "trailing + without second part",
+    "error": null
+  },
+  {
+    "id": 92,
+    "category": "fail",
+    "input": "Mi 06:00-14:00 + 15:00",
+    "expected": "FAIL",
+    "actual": "FAIL",
+    "passed": true,
+    "issues": [
+      {
+        "code": "INVALID_TIME_RANGE",
+        "message": "Line 92: Invalid time range format for split part 2",
+        "severity": "ERROR"
+      }
+    ],
+    "canonical": "Mi 06:00-14:00 + 15:00",
+    "note": null,
+    "error": null
+  },
+  {
+    "id": 93,
+    "category": "fail",
+    "input": "Do 06:00-14:00 + 15:00-19:00 + 20:00-22:00",
+    "expected": "FAIL",
+    "actual": "FAIL",
+    "passed": true,
+    "issues": [
+      {
+        "code": "INVALID_SPLIT_FORMAT",
+        "message": "Line 93: Split shift must have exactly 2 parts separated by '+'",
+        "severity": "ERROR"
+      }
+    ],
+    "canonical": "Do 06:00-14:00 + 15:00-19:00 + 20:00-22:00",
+    "note": "triple split",
+    "error": null
+  },
+  {
+    "id": 94,
+    "category": "fail",
+    "input": "06:00-14:00",
+    "expected": "FAIL",
+    "actual": "FAIL",
+    "passed": true,
+    "issues": [
+      {
+        "code": "MISSING_DAY",
+        "message": "Line 94: No valid day name found. Expected: Mo, Di, Mi, Do, Fr, Sa, So",
+        "severity": "ERROR"
+      }
+    ],
+    "canonical": "06:00-14:00",
+    "note": "no day",
+    "error": null
+  },
+  {
+    "id": 95,
+    "category": "fail",
+    "input": "heute 06:00-14:00",
+    "expected": "FAIL",
+    "actual": "FAIL",
+    "passed": true,
+    "issues": [
+      {
+        "code": "MISSING_DAY",
+        "message": "Line 95: No valid day name found. Expected: Mo, Di, Mi, Do, Fr, Sa, So",
+        "severity": "ERROR"
+      }
+    ],
+    "canonical": "heute 06:00-14:00",
+    "note": null,
+    "error": null
+  },
+  {
+    "id": 96,
+    "category": "fail",
+    "input": "Mo morgens",
+    "expected": "FAIL",
+    "actual": "FAIL",
+    "passed": true,
+    "issues": [
+      {
+        "code": "INVALID_TIME_RANGE",
+        "message": "Line 96: Invalid time range format. Expected HH:MM-HH:MM",
+        "severity": "ERROR"
+      }
+    ],
+    "canonical": "Mo morgens",
+    "note": null,
+    "error": null
+  },
+  {
+    "id": 97,
+    "category": "fail",
+    "input": "Di early shift",
+    "expected": "FAIL",
+    "actual": "FAIL",
+    "passed": true,
+    "issues": [
+      {
+        "code": "INVALID_TIME_RANGE",
+        "message": "Line 97: Invalid time range format. Expected HH:MM-HH:MM",
+        "severity": "ERROR"
+      }
+    ],
+    "canonical": "Di early shift",
+    "note": null,
+    "error": null
+  },
+  {
+    "id": 98,
+    "category": "fail",
+    "input": "Mi -1:00-14:00",
+    "expected": "FAIL",
+    "actual": "FAIL",
+    "passed": true,
+    "issues": [
+      {
+        "code": "INVALID_TIME_RANGE",
+        "message": "Line 98: Invalid time range format. Expected HH:MM-HH:MM",
+        "severity": "ERROR"
+      }
+    ],
+    "canonical": "Mi -1:00-14:00",
+    "note": null,
+    "error": null
+  },
+  {
+    "id": 99,
+    "category": "fail",
+    "input": "Do 06:00--14:00",
+    "expected": "FAIL",
+    "actual": "FAIL",
+    "passed": true,
+    "issues": [
+      {
+        "code": "INVALID_TIME_RANGE",
+        "message": "Line 99: Invalid time range format. Expected HH:MM-HH:MM",
+        "severity": "ERROR"
+      }
+    ],
+    "canonical": "Do 06:00--14:00",
+    "note": null,
+    "error": null
+  },
+  {
+    "id": 100,
+    "category": "fail",
+    "input": "Fr 06:00-14:00-18:00",
+    "expected": "FAIL",
+    "actual": "FAIL",
+    "passed": true,
+    "issues": [
+      {
+        "code": "INVALID_TIME_RANGE",
+        "message": "Line 100: Invalid time range format. Expected HH:MM-HH:MM",
+        "severity": "ERROR"
+      }
+    ],
+    "canonical": "Fr 06:00-14:00-18:00",
+    "note": null,
+    "error": null
+  }
+]
