@@ -1,4 +1,0 @@
-Configuration,Status,Headcount (Incumbent),LP Objective,Notes
-Baseline (12h Window),Optimal (Restricted MIP),1007 (Start),463.4,Originally Infeasible. Fixed via Atomic Columns + Gap Linker.
-Optimized (24h Window),Optimal (Restricted MIP),1012 (Start),604.9 (Early),Better connectivity but similar early convergence. Requires longer run.
-Sweep (12h),Optimal,N/A,687.7 (Short),Confirmed 12h is insufficient for rapid drop.

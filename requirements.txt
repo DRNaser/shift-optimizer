@@ -1,4 +1,4 @@
-# Shift Optimizer - Streamlit Cloud Requirements
+# SOLVEREIGN - Streamlit Cloud Requirements
 streamlit>=1.32.0
 pandas>=2.0.0
 ortools>=9.10.0

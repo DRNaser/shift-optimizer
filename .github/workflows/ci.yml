@@ -1,7 +1,7 @@
-# SHIFT OPTIMIZER - CI/CD Pipeline
+# SOLVEREIGN - CI/CD Pipeline
 # Runs tests and builds Docker images
 
-name: CI/CD
+name: SOLVEREIGN CI/CD
 
 on:
   push:
@@ -81,15 +81,15 @@ jobs:
         with:
           context: ./backend_py
           push: false
-          tags: shift-optimizer-backend:latest
+          tags: solvereign-api:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
-      
+
       - name: Build Frontend
         uses: docker/build-push-action@v5
         with:
           context: ./frontend
           push: false
-          tags: shift-optimizer-frontend:latest
+          tags: solvereign-frontend:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max

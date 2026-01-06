@@ -18,7 +18,7 @@ Signature Tracking:
     No high-cardinality labels - safe for long-running production.
 """
 
-from prometheus_client import Counter, Histogram, Info
+from prometheus_client import Counter, Histogram, Info, REGISTRY
 from collections import OrderedDict
 import hashlib
 import logging
@@ -26,6 +26,51 @@ import threading
 import subprocess
 
 logger = logging.getLogger("PrometheusMetrics")
+
+
+# =============================================================================
+# STREAMLIT RELOAD GUARD - Prevent duplicate metric registration
+# =============================================================================
+def _safe_counter(name, description, labelnames=None):
+    """Create Counter only if not already registered."""
+    try:
+        return Counter(name, description, labelnames or [])
+    except ValueError:
+        # Already registered - return a dummy that does nothing
+        return _get_existing_or_dummy(name)
+
+def _safe_histogram(name, description, labelnames=None, buckets=None):
+    """Create Histogram only if not already registered."""
+    try:
+        kwargs = {}
+        if labelnames:
+            kwargs['labelnames'] = labelnames
+        if buckets:
+            kwargs['buckets'] = buckets
+        return Histogram(name, description, **kwargs)
+    except ValueError:
+        return _get_existing_or_dummy(name)
+
+def _safe_info(name, description):
+    """Create Info only if not already registered."""
+    try:
+        return Info(name, description)
+    except ValueError:
+        return None
+
+def _get_existing_or_dummy(name):
+    """Get existing metric or return a dummy object."""
+    # Try to get from registry
+    for collector in REGISTRY._names_to_collectors.values():
+        if hasattr(collector, '_name') and collector._name == name:
+            return collector
+    # Return dummy that does nothing
+    class DummyMetric:
+        def labels(self, *args, **kwargs): return self
+        def inc(self, *args, **kwargs): pass
+        def observe(self, *args, **kwargs): pass
+        def info(self, *args, **kwargs): pass
+    return DummyMetric()
 
 
 # =============================================================================
@@ -43,13 +88,14 @@ def _get_git_commit_for_metrics() -> str:
         return "unknown"
 
 
-# Initialize build info metric at module load
-build_info = Info('solver_build', 'Shift Optimizer build information')
-build_info.info({
-    'version': '2.0.0',
-    'commit': _get_git_commit_for_metrics(),
-    'ortools': '9.11.4210'
-})
+# Initialize build info metric at module load (handle Streamlit reloads)
+build_info = _safe_info('solver_build', 'Shift Optimizer build information')
+if build_info:
+    build_info.info({
+        'version': '2.0.0',
+        'commit': _get_git_commit_for_metrics(),
+        'ortools': '9.11.4210'
+    })
 
 
 # =============================================================================
@@ -104,32 +150,32 @@ _signature_lru = SignatureLRU(max_size=5000)
 # =============================================================================
 
 # Budget overrun counter - should be 0 in healthy state
-budget_overrun_counter = Counter(
+budget_overrun_counter = _safe_counter(
     'solver_budget_overrun_total',
     'Number of runs with budget overrun reason code',
     ['phase']  # phase1, phase2, lns, total
 )
 
 # Infeasible run counter
-infeasible_counter = Counter(
+infeasible_counter = _safe_counter(
     'solver_infeasible_total',
     'Number of runs that returned INFEASIBLE status'
 )
 
 # Signature tracking (NO LABELS - uses LRU window)
-signature_runs_total = Counter(
+signature_runs_total = _safe_counter(
     'solver_signature_runs_total',
     'Total number of completed solver runs'
 )
 
-signature_unique_total = Counter(
+signature_unique_total = _safe_counter(
     'solver_signature_unique_total',
     'Number of unique signatures seen (within LRU window)'
     # NO labels - safe for production
 )
 
 # Error counter
-api_error_counter = Counter(
+api_error_counter = _safe_counter(
     'solver_api_error_total',
     'Number of API errors',
     ['endpoint', 'error_type']
@@ -141,42 +187,42 @@ api_error_counter = Counter(
 # =============================================================================
 
 # Phase duration histograms
-phase_duration = Histogram(
+phase_duration = _safe_histogram(
     'solver_phase_duration_seconds',
     'Duration of each solver phase',
-    ['phase'],  # profiling, phase1, phase2, lns, total
+    labelnames=['phase'],  # profiling, phase1, phase2, lns, total
     buckets=[0.5, 1, 2, 5, 10, 15, 20, 30, 45, 60, 90, 120, 180, 300]
 )
 
 # Path selection counter
-path_selection_counter = Counter(
+path_selection_counter = _safe_counter(
     'solver_path_selection_total',
     'Path selection counts by path type',
     ['path', 'reason']  # path: A/B/C, reason: NORMAL_INSTANCE, PEAKY_HIGH, etc.
 )
 
 # Fallback counter
-fallback_counter = Counter(
+fallback_counter = _safe_counter(
     'solver_fallback_total',
     'Number of fallback triggers',
     ['from_path', 'to_path']  # A->B, B->C
 )
 
 # SetPartitioning metrics
-set_partitioning_counter = Counter(
+set_partitioning_counter = _safe_counter(
     'solver_set_partitioning_total',
     'Set partitioning activation counts',
     ['status']  # success, fallback, timeout
 )
 
 # Candidate block counts (for 2-tour starvation monitoring)
-candidates_kept_counter = Counter(
+candidates_kept_counter = _safe_counter(
     'solver_candidates_kept_total',
     'Number of candidate blocks kept after capping, by size',
     ['size']  # 1er, 2er, 3er
 )
 
-candidates_raw_counter = Counter(
+candidates_raw_counter = _safe_counter(
     'solver_candidates_raw_total',
     'Number of candidate blocks generated before filtering, by size',
     ['size']  # 1er, 2er, 3er
@@ -188,28 +234,28 @@ candidates_raw_counter = Counter(
 # =============================================================================
 
 # Driver counts histogram
-driver_count = Histogram(
+driver_count = _safe_histogram(
     'solver_driver_count',
     'Number of drivers in solution',
-    ['driver_type'],  # fte, pt, total
+    labelnames=['driver_type'],  # fte, pt, total
     buckets=[50, 75, 100, 125, 150, 175, 200, 250, 300]
 )
 
 # Ratio metrics (as histograms for distribution)
-pt_ratio_histogram = Histogram(
+pt_ratio_histogram = _safe_histogram(
     'solver_pt_ratio',
     'Ratio of PT drivers to total drivers',
     buckets=[0.05, 0.1, 0.15, 0.2, 0.25, 0.3, 0.4, 0.5]
 )
 
-underfull_ratio_histogram = Histogram(
+underfull_ratio_histogram = _safe_histogram(
     'solver_underfull_ratio',
     'Ratio of underfull FTE drivers',
     buckets=[0.05, 0.1, 0.15, 0.2, 0.25, 0.3, 0.4, 0.5]
 )
 
 # Coverage rate histogram
-coverage_rate_histogram = Histogram(
+coverage_rate_histogram = _safe_histogram(
     'solver_coverage_rate',
     'Tour coverage rate (assigned / total)',
     buckets=[0.9, 0.92, 0.94, 0.96, 0.98, 0.99, 0.995, 1.0]

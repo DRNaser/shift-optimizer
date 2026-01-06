@@ -1,5 +1,5 @@
-# Docker Compose for Shift Optimizer Production
-# =============================================
+# Docker Compose for SOLVEREIGN Production
+# =========================================
 #
 # Usage:
 #   docker-compose up -d       # Start all services
@@ -8,11 +8,10 @@
 #
 # Endpoints:
 #   - API: http://localhost:8000
-#   - Metrics: http://localhost:8000/api/v1/metrics
+#   - Health: http://localhost:8000/health
+#   - Metrics: http://localhost:8000/metrics
 #   - Prometheus: http://localhost:9090
 #   - Grafana: http://localhost:3000 (admin/admin)
-
-version: "3.8"
 
 services:
   # =========================================================================
@@ -39,17 +38,24 @@ services:
     restart: unless-stopped
 
   # =========================================================================
-  # Shift Optimizer Backend
+  # SOLVEREIGN API Backend (V3.3b Enterprise)
   # =========================================================================
   api:
     build:
       context: ./backend_py
       dockerfile: Dockerfile
-    container_name: shift-optimizer-api
+    container_name: solvereign-api
     ports:
       - "8000:8000"
     environment:
       - PYTHONUNBUFFERED=1
+      # Database connection (postgres = Docker service name)
+      - SOLVEREIGN_DATABASE_URL=postgresql://solvereign:dev_password_change_in_production@postgres:5432/solvereign
+      - SOLVEREIGN_ENVIRONMENT=development
+      - SOLVEREIGN_LOG_LEVEL=INFO
+    depends_on:
+      postgres:
+        condition: service_healthy
     deploy:
       resources:
         limits:
@@ -59,11 +65,11 @@ services:
           cpus: "1.0"
           memory: 2G
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/v1/healthz')"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 10s
+      start_period: 30s
     restart: unless-stopped
 
   # =========================================================================
@@ -71,7 +77,7 @@ services:
   # =========================================================================
   prometheus:
     image: prom/prometheus:v2.47.0
-    container_name: shift-optimizer-prometheus
+    container_name: solvereign-prometheus
     ports:
       - "9090:9090"
     volumes:
@@ -90,7 +96,7 @@ services:
   # =========================================================================
   grafana:
     image: grafana/grafana:10.1.0
-    container_name: shift-optimizer-grafana
+    container_name: solvereign-grafana
     ports:
       - "3000:3000"
     environment:
@@ -112,4 +118,4 @@ volumes:
 
 networks:
   default:
-    name: shift-optimizer-network
+    name: solvereign-network

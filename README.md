@@ -1,151 +1,142 @@
-# ⚡ Shift Optimizer
+# SOLVEREIGN
 
-**Optimal weekly shift assignment for Last-Mile-Delivery drivers**
+**Enterprise Shift Scheduling Platform for Last-Mile Delivery**
 
 [![Python](https://img.shields.io/badge/Python-3.12+-blue.svg)](https://python.org)
-[![FastAPI](https://img.shields.io/badge/FastAPI-0.104+-green.svg)](https://fastapi.tiangolo.com)
-[![React](https://img.shields.io/badge/React-18+-blue.svg)](https://react.dev)
+[![FastAPI](https://img.shields.io/badge/FastAPI-0.109+-green.svg)](https://fastapi.tiangolo.com)
+[![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16+-blue.svg)](https://www.postgresql.org)
 [![OR-Tools](https://img.shields.io/badge/OR--Tools-CP--SAT-red.svg)](https://developers.google.com/optimization)
 
 ## Overview
 
-Shift Optimizer transforms daily tour forecasts into optimal weekly driver assignments using OR-Tools CP-SAT constraint programming. It combines tours into 1er, 2er, or 3er blocks to minimize driver count while respecting all hard constraints.
+SOLVEREIGN is an event-sourced, version-controlled shift scheduling platform that transforms tour forecasts into optimal weekly driver assignments. Built for LTS Transport & Logistik GmbH.
 
-### Features
+### Key Features
 
-- ⚡ **Three Solvers**: Greedy baseline, CP-SAT optimal, CP-SAT+LNS best
-- 📊 **Hard Constraints**: Weekly hours, daily span, rest time, qualifications
-- 🎯 **Optimization**: Maximize tours, prefer larger blocks, minimize drivers
-- 📝 **Explainability**: Reason codes for every unassigned tour
-- 🔒 **User Locks**: Lock assignments during refinement
-- 🖥️ **Modern UI**: React frontend with week overview grid
+- **Multi-Tenant Architecture**: PostgreSQL RLS with tenant isolation
+- **Enterprise Security**: Microsoft Entra ID OIDC authentication
+- **OR-Tools Solver**: Heuristic block solver (145 drivers, 100% coverage)
+- **7 Compliance Audits**: Coverage, Overlap, Rest, Span, Split, Fatigue, Freeze
+- **Event Sourcing**: Immutable versions with diff engine
+- **Structured Logging**: JSON logs with correlation IDs
 
 ---
 
 ## Quick Start
 
-### Option 1: Docker (Recommended)
+### Docker Compose (Recommended)
 
 ```bash
-# Clone and run
+# Clone and start
 git clone <repo-url>
-cd shift-optimizer
-docker compose up --build
+cd solvereign
+docker compose up -d
 
-# Access
-# Frontend: http://localhost:3000
-# Backend:  http://localhost:8000/docs
+# Verify health
+curl http://localhost:8000/health
 ```
 
-### Option 2: Local Development
+### Endpoints
 
-**Backend:**
+| Service | URL |
+|---------|-----|
+| API | http://localhost:8000 |
+| Health | http://localhost:8000/health |
+| Metrics | http://localhost:8000/metrics |
+| Prometheus | http://localhost:9090 |
+| Grafana | http://localhost:3000 (admin/admin) |
+
+---
+
+## API Endpoints
+
+### Health Checks
+
 ```bash
+# Liveness (API is running)
+curl http://localhost:8000/health
+
+# Readiness (DB connected)
+curl http://localhost:8000/health/ready
+```
+
+### Solver
+
+```bash
+# Solve forecast
+curl -X POST http://localhost:8000/api/v1/plans/solve \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{"forecast_version_id": 1, "seed": 94}'
+```
+
+---
+
+## Architecture
+
+```
+solvereign/
+├── backend_py/
+│   ├── api/              # Enterprise API (V3.3b)
+│   │   ├── main.py       # FastAPI application
+│   │   ├── routers/      # HTTP endpoints
+│   │   ├── security/     # Entra ID, JWT, encryption
+│   │   └── repositories/ # Database access
+│   ├── v3/               # Core business logic
+│   │   ├── solver_v2_integration.py
+│   │   ├── audit_fixed.py
+│   │   └── parser.py
+│   └── db/               # PostgreSQL schema
+├── monitoring/           # Prometheus + Grafana
+└── docker-compose.yml
+```
+
+---
+
+## Compliance Audits
+
+| Audit | Description |
+|-------|-------------|
+| Coverage | Every tour assigned exactly once |
+| Overlap | No concurrent tours per driver |
+| Rest | >= 11h rest between work days |
+| Span Regular | 1er/2er blocks <= 14h span |
+| Span Split | 3er/split blocks <= 16h span |
+| Fatigue | No consecutive 3er blocks |
+| Freeze | No changes within 12h of start |
+
+---
+
+## Configuration
+
+Environment variables (prefix: `SOLVEREIGN_`):
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DATABASE_URL` | - | PostgreSQL connection string |
+| `ENVIRONMENT` | development | Environment name |
+| `LOG_LEVEL` | INFO | Logging level |
+| `ENTRA_TENANT_ID` | - | Microsoft Entra tenant |
+| `ENTRA_CLIENT_ID` | - | Entra application ID |
+
+---
+
+## Development
+
+```bash
+# Install dependencies
 cd backend_py
 pip install -r requirements.txt
-python -m uvicorn src.main:app --reload
-```
 
-**Frontend:**
-```bash
-cd frontend
-npm install
-npm run dev
-```
+# Run API locally
+uvicorn api.main:app --reload
 
----
-
-## API Usage
-
-### Create Schedule
-
-```bash
-curl -X POST http://localhost:8000/api/v1/schedule \
-  -H "Content-Type: application/json" \
-  -d '{
-    "tours": [
-      {"id": "T1", "day": "MONDAY", "start_time": "08:00", "end_time": "12:00"},
-      {"id": "T2", "day": "MONDAY", "start_time": "12:30", "end_time": "16:30"}
-    ],
-    "drivers": [
-      {"id": "D1", "name": "Max Mustermann"}
-    ],
-    "week_start": "2024-01-01",
-    "solver_type": "cpsat"
-  }'
-```
-
-### Solver Options
-
-| Solver | Speed | Quality | Use Case |
-|--------|-------|---------|----------|
-| `greedy` | ~10ms | Good | Quick previews |
-| `cpsat` | ~1-30s | Optimal | Production |
-| `cpsat+lns` | ~5-60s | Best | Refinement |
-
----
-
-## Hard Constraints
-
-| Constraint | Default | Description |
-|-----------|---------|-------------|
-| `MAX_WEEKLY_HOURS` | 55h | Max hours per driver per week |
-| `MAX_DAILY_SPAN_HOURS` | 15.5h | Max span first→last tour |
-| `MIN_REST_HOURS` | 11h | Min rest between days |
-| `MAX_TOURS_PER_DAY` | 3 | Max tours per driver per day |
-
-### Rest Time Enforcement (v3.1+)
-
-The solver enforces a **hard 11-hour minimum rest** between consecutive work days.
-This is a legal requirement and cannot be overridden.
-
-**Example:**
-- Driver ends at 22:00 Monday
-- Driver cannot start before 09:00 Tuesday (22:00 + 11h = 09:00)
-
-### Soft Penalties (Fatigue Prevention)
-
-To promote driver well-being, the solver applies soft penalties:
-
-| Pattern | Penalty | Description |
-|---------|---------|-------------|
-| **Triple blocks** | -50 | 3-tour blocks are physically demanding |
-| **Early starts** | -30 | Blocks starting before 06:00 |
-| **Late ends** | -30 | Blocks ending at/after 21:00 |
-| **Tight rest** | -20 | Legal (11-13h) but uncomfortable rest |
-
-Configure via `SoftPenaltyConfig` in `src/domain/constraints.py`.
-
----
-
-## Project Structure
-
-```
-shift-optimizer/
-├── backend_py/              # Python FastAPI + OR-Tools
-│   ├── src/
-│   │   ├── domain/          # Models, Constraints, Validator
-│   │   ├── services/        # Scheduler, CP-SAT, LNS
-│   │   └── api/             # Routes, Schemas
-│   └── tests/               # 116 unit tests
-├── frontend/                # React + Vite + TailwindCSS
-│   ├── components/          # UI components
-│   └── services/            # API client
-└── docker-compose.yml       # Container orchestration
-```
-
----
-
-## Testing
-
-```bash
-cd backend_py
+# Run tests
 python -m pytest tests/ -v
-# ============================= 116 passed =============================
 ```
 
 ---
 
 ## License
 
-MIT
+Proprietary - LTS Transport & Logistik GmbH

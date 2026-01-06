@@ -5,10 +5,10 @@
 apiVersion: 1
 
 providers:
-  - name: 'Shift Optimizer Dashboards'
+  - name: 'SOLVEREIGN Dashboards'
     orgId: 1
-    folder: 'Shift Optimizer'
-    folderUid: 'shift-optimizer'
+    folder: 'SOLVEREIGN'
+    folderUid: 'solvereign'
     type: file
     disableDeletion: false
     updateIntervalSeconds: 30

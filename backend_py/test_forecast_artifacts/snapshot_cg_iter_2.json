@@ -1,9 +1,0 @@
-{
-  "iteration": 2,
-  "lp_objective": 12051.590156893937,
-  "pool_size": 4500,
-  "incumbent_drivers": 9999,
-  "wall_time": 20.169140815734863,
-  "new_cols_added": 1500,
-  "artificial_used": 0
-}

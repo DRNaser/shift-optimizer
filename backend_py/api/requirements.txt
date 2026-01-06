@@ -1,4 +1,4 @@
-# SOLVEREIGN V3.3a API Dependencies
+# SOLVEREIGN V3.3b API Dependencies
 # ==================================
 
 # Core Framework
@@ -16,8 +16,10 @@ pydantic-settings>=2.1.0
 structlog>=24.1.0
 prometheus-client>=0.19.0
 
-# Security
-python-multipart>=0.0.6
+# Authentication & Security
+PyJWT[crypto]>=2.8.0          # JWT validation with RS256/JWKS
+cryptography>=41.0.0          # AES-256-GCM encryption
+python-multipart>=0.0.6       # Form data parsing
 
 # Development
 httpx>=0.26.0  # For testing

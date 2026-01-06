@@ -1,7 +1,7 @@
 [project]
-name = "shift-optimizer"
-version = "2.0.0"
-description = "Deterministic weekly shift optimizer for Last-Mile-Delivery"
+name = "solvereign"
+version = "3.3.0"
+description = "Enterprise shift scheduling platform for Last-Mile Delivery"
 requires-python = ">=3.11"
 dependencies = [
     "fastapi>=0.104.0",

@@ -144,7 +144,7 @@ def configure_middleware(app: FastAPI) -> None:
     )
 
     # 1. Security headers - outermost, always runs
-    app.add_middleware(SecurityHeadersMiddleware, environment=settings.environment)
+    app.add_middleware(SecurityHeadersMiddleware, is_production=settings.is_production)
 
     # Request ID, timing, and metrics middleware
     @app.middleware("http")

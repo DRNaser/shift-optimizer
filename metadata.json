@@ -1,5 +1,0 @@
-{
-  "name": "Shift Combination Optimizer",
-  "description": "A tool to generate optimal shift block combinations for drivers from a list of forecast shifts, minimizing the required driver count.",
-  "requestFramePermissions": []
-}

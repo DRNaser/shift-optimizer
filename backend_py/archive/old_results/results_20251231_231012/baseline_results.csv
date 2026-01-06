@@ -1,3 +1,0 @@
-timestamp,config_id,status,headcount,pt_share,mip_obj,lp_lb,linker_time,restricted_time,final_time
-2025-12-31 18:27:33,baseline_locked_v1,SUCCESS,959,99.89572471324296,25930.716666666667,,,,
-2025-12-31 19:15:33,baseline_locked_v1,SUCCESS,698,98.42406876790831,17463.216666666667,,,,

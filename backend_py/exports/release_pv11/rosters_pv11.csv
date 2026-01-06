@@ -1,9 +1,0 @@
-# plan_version_id: 11
-# exported_at: 2026-01-04T11:35:09.731440
-
-Driver,Day,Block,Start,End,Duration (min),Work Hours,Depot,Cross-Midnight
-D001,1,D1_B1,06:00,14:00,480,8.0,Depot Nord,No
-D002,1,D1_B1,06:00,14:00,480,8.0,Depot Nord,No
-D003,1,D1_B1,06:00,14:00,480,8.0,Depot Nord,No
-D004,2,D2_B2,07:00,15:00,480,8.0,Depot Süd,No
-D005,2,D2_B2,07:00,15:00,480,8.0,Depot Süd,No

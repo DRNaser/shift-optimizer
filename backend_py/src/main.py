@@ -1,9 +1,10 @@
 """
-SHIFT OPTIMIZER - FastAPI Application
-======================================
-Main entry point for the backend API.
+SOLVEREIGN - Legacy API (V6)
+============================
+Main entry point for the legacy backend API.
 
-This is the production API server (v6.0 - Streamlined).
+Note: Enterprise API is at api/main.py (V3.3b)
+This legacy API is kept for backwards compatibility.
 """
 
 import os
@@ -13,6 +14,9 @@ from fastapi.middleware.cors import CORSMiddleware
 
 # v6.0: Only routes_v2 is used (legacy routes.py and forecast_router.py removed)
 from src.api.routes_v2 import router_v2
+
+# V3.3b: Repair API for driver absences
+from src.api.repair_router import repair_router
 
 # Structured logging for production observability
 from src.utils.structured_logging import get_logger, StructuredFormatter
@@ -35,7 +39,7 @@ def configure_logging():
     
     handler = logging.StreamHandler()
     if log_format == "json":
-        handler.setFormatter(StructuredFormatter(service_name="shift-optimizer"))
+        handler.setFormatter(StructuredFormatter(service_name="solvereign"))
     else:
         handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s [%(name)s] %(message)s"))
     
@@ -58,24 +62,18 @@ CORS_ORIGINS = os.getenv("CORS_ORIGINS", "*").split(",")
 # =============================================================================
 
 app = FastAPI(
-    title="SHIFT OPTIMIZER API",
+    title="SOLVEREIGN API (Legacy)",
     description="""
-    Deterministic weekly shift optimizer for Last-Mile-Delivery.
-    
-    ## Features
-    - Set Partitioning via Column Generation (optimal crew scheduling)
-    - Rule-based scheduling with hard constraints
-    - Full explainability with reason codes
-    - Reproducible results with deterministic seeding
-    
-    ## Hard Constraints (Always Enforced)
+    SOLVEREIGN Legacy API - Deterministic shift scheduler for Last-Mile-Delivery.
+
+    Note: Use Enterprise API (api/main.py) for production with auth.
+
+    ## Hard Constraints
     - Max 55h/week per driver
     - Max 15.5h daily span
     - Max 3 tours per day
     - Min 11h rest between days
     - No tour overlaps
-    - Qualification requirements
-    - Availability requirements
     """,
     version="6.0.0",
     docs_url="/docs",
@@ -103,11 +101,14 @@ app.add_middleware(
 # v6.0: Single unified API (routes_v2 only)
 app.include_router(router_v2, prefix="/api/v1", tags=["runs"])
 
+# V3.3b: Repair API for driver absences
+app.include_router(repair_router, prefix="/api/v1", tags=["repair"])
+
 
 @app.on_event("startup")
 async def startup_event():
-    logging.info("SHIFT OPTIMIZER API v6.0 started (Set Partitioning Engine)")
-    print("MATCHING_LOG: Using routes_v2 as canonical source", flush=True)
+    logging.info("SOLVEREIGN Legacy API v6.0 started")
+    print("INFO: Legacy API started. For Enterprise API, use api.main:app", flush=True)
 
 
 # =============================================================================
@@ -118,11 +119,12 @@ async def startup_event():
 async def root():
     """Root endpoint with API information."""
     return {
-        "name": "SHIFT OPTIMIZER API",
-        "version": "1.0.0",
+        "name": "SOLVEREIGN Legacy API",
+        "version": "6.0.0",
         "status": "running",
         "docs": "/docs",
-        "api_base": "/api/v1"
+        "api_base": "/api/v1",
+        "note": "Use Enterprise API (api.main:app) for production"
     }
 
 
@@ -132,7 +134,5 @@ async def root():
 
 if __name__ == "__main__":
     import uvicorn
-    # Log startup explicitly for verification
-    print("Starting ShiftOptimizer API (RC0 Mode: routes_v2 canonical)...", flush=True)
+    print("Starting SOLVEREIGN Legacy API...", flush=True)
     uvicorn.run(app, host="0.0.0.0", port=8000)
-    # Force reload trigger

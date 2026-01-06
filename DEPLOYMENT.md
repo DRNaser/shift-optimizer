@@ -1,6 +1,19 @@
-# Shift Optimizer - Deployment Guide
+# SOLVEREIGN - Deployment Guide
 
 ## Quick Start
+
+### Docker Compose (Recommended)
+
+```bash
+# Start all services
+docker compose up -d
+
+# Check health
+curl http://localhost:8000/health
+
+# View logs
+docker compose logs -f api
+```
 
 ### Local Development
 
@@ -10,29 +23,222 @@ cd backend_py
 # Install dependencies
 pip install -r requirements.txt
 
-# Run development server
-python -m uvicorn src.main:app --reload --port 8000
+# Run Enterprise API (recommended)
+uvicorn api.main:app --reload --port 8000
+
+# Or run Legacy API
+uvicorn src.main:app --reload --port 8000
 ```
 
-### Docker
+---
 
-```bash
-# Build image
-docker build -t shift-optimizer:2.0.0 ./backend_py
+## Services
 
-# Run container
-docker run -p 8000:8000 shift-optimizer:2.0.0
+| Service | Port | Description |
+|---------|------|-------------|
+| API | 8000 | SOLVEREIGN Enterprise API |
+| PostgreSQL | 5432 | Database |
+| Prometheus | 9090 | Metrics collection |
+| Grafana | 3000 | Dashboards (admin/admin) |
 
-# Run with environment overrides
-docker run -p 8000:8000 \
-  -e PYTHONUNBUFFERED=1 \
-  shift-optimizer:2.0.0
+---
+
+## Secrets Management
+
+### Development
+
+Secrets via Environment Variables in `docker-compose.yml`:
+
+```yaml
+environment:
+  - SOLVEREIGN_DATABASE_URL=postgresql://...
+  - SOLVEREIGN_ENTRA_TENANT_ID=...
+  - SOLVEREIGN_ENTRA_CLIENT_ID=...
 ```
 
-### Docker Compose
+### Production
+
+| Secret | Location | Notes |
+|--------|----------|-------|
+| `DATABASE_URL` | Azure Key Vault / k8s Secret | PostgreSQL connection string |
+| `ENTRA_TENANT_ID` | Azure Key Vault | Microsoft Entra tenant GUID |
+| `ENTRA_CLIENT_ID` | Azure Key Vault | Entra application ID |
+| `ENCRYPTION_KEY` | Azure Key Vault | AES-256 key for PII encryption |
+
+**Never commit secrets to git.** Use `.env.local` for local dev (gitignored).
+
+---
+
+## Database Migrations
+
+### Automatic (on container start)
+
+PostgreSQL init script runs automatically on first start:
+
+```
+backend_py/db/init.sql          # Base schema (runs via docker-entrypoint-initdb.d)
+```
+
+### Manual Migrations (V3.3b)
+
+Run in order:
 
 ```bash
-docker-compose up --build
+# Connect to PostgreSQL
+docker exec -it solvereign-db psql -U solvereign -d solvereign
+
+# Apply migrations
+\i /docker-entrypoint-initdb.d/01-init.sql
+
+# Or via psql from host
+psql $DATABASE_URL < backend_py/db/migrations/006_multi_tenant.sql
+psql $DATABASE_URL < backend_py/db/migrations/007_idempotency_keys.sql
+psql $DATABASE_URL < backend_py/db/migrations/008_tour_segments.sql
+psql $DATABASE_URL < backend_py/db/migrations/009_plan_versions_extended.sql
+psql $DATABASE_URL < backend_py/db/migrations/010_encryption_keys.sql
+psql $DATABASE_URL < backend_py/db/migrations/011_rls_policies.sql
+```
+
+Migration order is critical - run sequentially, not in parallel.
+
+---
+
+## Tenant Setup (LTS Mapping)
+
+### Initial Tenant Creation
+
+```sql
+-- In PostgreSQL
+INSERT INTO tenants (id, name, slug, entra_tenant_id, settings)
+VALUES (
+  gen_random_uuid(),
+  'LTS Transport & Logistik GmbH',
+  'lts',
+  'YOUR_ENTRA_TENANT_ID',  -- From Azure Portal
+  '{"timezone": "Europe/Berlin", "locale": "de-DE"}'
+);
+```
+
+### Tenant Identity Mapping
+
+Users are mapped via Entra ID token claims:
+
+```sql
+-- Map Entra user to tenant
+INSERT INTO tenant_identities (tenant_id, entra_object_id, role, email)
+VALUES (
+  (SELECT id FROM tenants WHERE slug = 'lts'),
+  'USER_ENTRA_OBJECT_ID',  -- From Entra ID
+  'ADMIN',                  -- PLANNER, APPROVER, or ADMIN
+  'user@lts.de'
+);
+```
+
+See `docs/ENTRA_SETUP_LTS.md` for complete Entra configuration.
+
+---
+
+## Rollback Procedures
+
+### API Rollback (Docker)
+
+```bash
+# Tag current as backup
+docker tag solvereign-api:latest solvereign-api:backup
+
+# Stop current
+docker compose stop api
+
+# Roll back to previous version
+docker compose up -d api --build  # Uses git checkout to previous commit
+
+# Or pull specific tag
+docker pull solvereign-api:3.2.0
+docker compose up -d api
+```
+
+### API Rollback (Kubernetes)
+
+```bash
+# View history
+kubectl rollout history deployment/solvereign-api
+
+# Rollback to previous
+kubectl rollout undo deployment/solvereign-api
+
+# Rollback to specific revision
+kubectl rollout undo deployment/solvereign-api --to-revision=2
+```
+
+### Database Rollback
+
+**CAUTION: Data migrations may not be reversible.**
+
+```bash
+# 1. Stop API to prevent writes
+docker compose stop api
+
+# 2. Create backup
+docker exec solvereign-db pg_dump -U solvereign solvereign > backup_$(date +%Y%m%d).sql
+
+# 3. Restore from backup
+docker exec -i solvereign-db psql -U solvereign solvereign < backup_YYYYMMDD.sql
+
+# 4. Restart API
+docker compose up -d api
+```
+
+For schema-only rollback, apply reverse migration scripts (if available).
+
+---
+
+## Monitoring & Alerting
+
+### Health Endpoints
+
+| Endpoint | Purpose | Alert if |
+|----------|---------|----------|
+| `GET /health` | Liveness | Returns non-200 |
+| `GET /health/ready` | Readiness | `database != "healthy"` |
+| `GET /metrics` | Prometheus | N/A (scrape target) |
+
+### Prometheus Metrics (What's Red?)
+
+| Metric | Alert Threshold | Meaning |
+|--------|----------------|---------|
+| `http_requests_total{status="5xx"}` | > 10/min | API errors |
+| `solver_duration_seconds` | > 300s | Solver timeout |
+| `db_pool_available_connections` | < 2 | Pool exhaustion |
+| `http_request_duration_seconds_p99` | > 5s | Slow responses |
+
+### Grafana Dashboards
+
+Pre-configured at http://localhost:3000 (admin/admin):
+
+- **SOLVEREIGN Overview**: Request rate, error rate, latency
+- **Solver Performance**: Solve times, coverage, driver counts
+- **Database Health**: Connection pool, query latency
+
+### Alerting Setup
+
+```yaml
+# prometheus/alerts.yml (example)
+groups:
+  - name: solvereign
+    rules:
+      - alert: APIDown
+        expr: up{job="solvereign"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "SOLVEREIGN API is down"
+
+      - alert: HighErrorRate
+        expr: rate(http_requests_total{status=~"5.."}[5m]) > 0.1
+        for: 5m
+        labels:
+          severity: warning
 ```
 
 ---
@@ -41,125 +247,42 @@ docker-compose up --build
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `PYTHONUNBUFFERED` | `1` | Disable output buffering |
-| `HOST` | `0.0.0.0` | Server bind address |
-| `PORT` | `8000` | Server port |
+| `SOLVEREIGN_DATABASE_URL` | - | PostgreSQL connection string |
+| `SOLVEREIGN_ENVIRONMENT` | development | Environment name |
+| `SOLVEREIGN_LOG_LEVEL` | INFO | Logging level |
+| `SOLVEREIGN_ENTRA_TENANT_ID` | - | Microsoft Entra tenant |
+| `SOLVEREIGN_ENTRA_CLIENT_ID` | - | Entra application ID |
+| `API_MODULE` | api.main:app | Which API to run |
 
 ---
 
-## Healthcheck Endpoints
+## Frontend (Optional)
 
-| Endpoint | Purpose | Expected Response |
-|----------|---------|-------------------|
-| `GET /api/v1/healthz` | Liveness probe | `{"status": "alive"}` |
-| `GET /api/v1/readyz` | Readiness probe | `{"status": "ready", "solver": "warm"}` |
-
-### Kubernetes Probe Configuration
-
-```yaml
-livenessProbe:
-  httpGet:
-    path: /api/v1/healthz
-    port: 8000
-  initialDelaySeconds: 10
-  periodSeconds: 30
-  timeoutSeconds: 10
-
-readinessProbe:
-  httpGet:
-    path: /api/v1/readyz
-    port: 8000
-  initialDelaySeconds: 5
-  periodSeconds: 10
-  timeoutSeconds: 5
-```
-
----
-
-## Rollback Procedure
-
-### Docker Rollback
+The `frontend_v5/` folder contains a Next.js frontend (not required for API-only deployment):
 
 ```bash
-# List available images
-docker images shift-optimizer
-
-# Rollback to previous version
-docker stop shift-optimizer-prod
-docker run -d --name shift-optimizer-prod -p 8000:8000 shift-optimizer:1.9.0
+cd frontend_v5
+npm install
+npm run build
+npm start
 ```
 
-### Kubernetes Rollback
-
-```bash
-# Rollback to previous revision
-kubectl rollout undo deployment/shift-optimizer
-
-# Rollback to specific revision
-kubectl rollout undo deployment/shift-optimizer --to-revision=2
-```
-
----
-
-## Monitoring
-
-### Prometheus Metrics Endpoint
-
-Metrics are exposed at `/metrics` (if Prometheus middleware is enabled).
-
-Key metrics:
-- `solver_budget_overrun_total` - Should be 0
-- `solver_phase_duration_seconds` - Phase timing histograms
-- `solver_path_selection_total` - Path A/B/C distribution
-
-### Log Streaming
-
-Real-time solver logs via SSE:
-```
-GET /api/v1/logs/stream
-```
-
----
-
-## Canary Deployment
-
-### Stage 0 (Flags OFF)
-
-```bash
-# Deploy with default config
-docker run -p 8000:8000 shift-optimizer:2.0.0
-```
-
-Exit criteria: No budget overruns, stable signatures.
-
-### Stage 1 (Flags ON)
-
-```bash
-# Deploy with feature flags enabled
-docker run -p 8000:8000 \
-  -e ENABLE_FILL_TO_TARGET=true \
-  -e ENABLE_BAD_BLOCK_MIX_RERUN=true \
-  shift-optimizer:2.0.0
-```
-
-Exit criteria: KPI improvement, no regressions.
+Note: `node_modules/` is gitignored and must be regenerated via `npm install`.
 
 ---
 
 ## Troubleshooting
 
-### Common Issues
-
 | Issue | Cause | Solution |
 |-------|-------|----------|
-| `BUDGET_OVERRUN` in reason_codes | Solver exceeded time budget | Check instance size, increase budget |
-| Signature instability | Non-deterministic behavior | Verify `seed` is set, `num_workers=1` |
-| High PT ratio | Peak demand exceeds FTE capacity | Enable Path B, increase time budget |
+| DB connection timeout | Wrong DATABASE_URL | Use Docker service name `postgres` |
+| Health check fails | Wrong endpoint | Use `/health` not `/api/v1/healthz` |
+| Import errors | Missing deps | Check requirements.txt |
+| 401 Unauthorized | Invalid/expired token | Check Entra configuration |
+| 403 Forbidden | Insufficient permissions | Check tenant_identities role |
 
 ### Debug Logging
 
 ```bash
-# Enable verbose logging
-export LOGLEVEL=DEBUG
-python -m uvicorn src.main:app --log-level debug
+SOLVEREIGN_LOG_LEVEL=DEBUG uvicorn api.main:app --reload
 ```

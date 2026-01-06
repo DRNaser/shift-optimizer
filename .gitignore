@@ -1,28 +1,6 @@
-# Logs
-logs
-*.log
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-pnpm-debug.log*
-lerna-debug.log*
-
-node_modules
-dist
-dist-ssr
-dist_*/
-*.local
-
-# Editor directories and files
-.vscode/*
-!.vscode/extensions.json
-.idea
-.DS_Store
-*.suo
-*.ntvs*
-*.njsproj
-*.sln
-*.sw?
+# =============================================================================
+# SOLVEREIGN .gitignore
+# =============================================================================
 
 # Python
 __pycache__/
@@ -30,53 +8,71 @@ __pycache__/
 *$py.class
 *.so
 .Python
-env/
-build/
-develop-eggs/
-dist/
-downloads/
-eggs/
-.eggs/
-lib/
-!frontend_next/lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
-*.egg-info/
-.installed.cfg
-*.egg
 .pytest_cache/
 .coverage
+*.egg-info/
+*.egg
 
-# Environments
+# Virtual environments
 .env
 .venv
 env/
 venv/
 ENV/
 
-# Large log files
-backend_py/server_log*.txt
-backend_py/debug_log.txt
-backend_py/*.json
-!backend_py/pyproject.json
-# Temporary artifacts
+# Build artifacts
+build/
+dist/
+dist_*/
+*.local
+
+# Node.js (if frontend is ever added back)
+node_modules/
+npm-debug.log*
+
+# IDE
+.vscode/*
+!.vscode/extensions.json
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+.DS_Store
+
+# Logs
+logs/
+*.log
+debug_log.txt
+server_log*.txt
+
+# Temporary files
+*.tmp
+*.temp
+NUL
+
+# Data/Export artifacts (keep in .gitignore, generate fresh)
+*.csv
+*.xlsx
+!backend_py/data/*.csv
+artifacts/
+exports/
+
+# Backend temp files
 backend_py/artifacts/
-backend_py/lns_*.json
-backend_py/rc*.json
+backend_py/*.json
+!backend_py/pyproject.toml
 backend_py/server.err
 
-# Frontend V5 Exceptions
-!frontend_v5/
-!frontend_v5/lib/
-
-
-# Execution Artifacts (Root)
+# Test artifacts
 snapshot_iter_*.json
 diag_run_result*.json
 test_report.json
-server_log.txt
-solver_logs_export.txt
 baseline_metrics_raw.txt
+proof_*.txt
+*_evidence.txt
+
+# Desktop builds (not used anymore)
+ShiftOptimizer.spec
+*.spec
