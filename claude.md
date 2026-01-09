@@ -1,8 +1,8 @@
 # SOLVEREIGN V4 - Agent Context Handoff
 
 > **Last Updated**: 2026-01-09
-> **Status**: V4.3.1 COMPLETE | Frontend Session Hardening | Staging 92/100 Ready
-> **Next Milestone**: Wien Pilot Launch + Production Deployment
+> **Status**: V4.3.1 COMPLETE | Wien Pilot: 4 P0 Blockers, 2 P1 Warnings | NOT READY
+> **Next Milestone**: Wien Pilot Pre-Flight Gates (A-F) → Production Launch
 
 ---
 
@@ -320,6 +320,166 @@ Routes updated:
 - [x] SKIPPED reasons visible in driver drawer
 - [x] TypeScript check passes
 - [x] Next.js build passes
+- [x] E2E mock test passes (5/5 gates)
+
+---
+
+## Wien Pilot Pre-Flight Gates (Jan 9, 2026)
+
+### Overview
+
+Pre-flight verification gates before Wien Pilot launch. Engineering complete, staging verification pending.
+
+**Current Status**: NOT READY (4 P0 Blockers, 2 P1 Warnings)
+
+**Reference**: [docs/WIEN_PILOT_BLOCKERS.md](docs/WIEN_PILOT_BLOCKERS.md)
+
+### P0 Blockers (Pilot = Tot ohne diese)
+
+| Gate | Blocker | Status | Evidence Required |
+|------|---------|--------|-------------------|
+| **A** | Entra ID aud/iss Verification | NOT TESTED | `staging_preflight.py` PASS |
+| **B** | Security Headers per curl | NOT TESTED | curl output with all headers |
+| **C** | Real Provider E2E | NOT TESTED | Email + WhatsApp screenshots |
+| **D** | Prod Migrations (037/037a/038) | NOT APPLIED | `verify_notify_integration()` PASS |
+
+### P1 Warnings (Pilot riskant ohne diese)
+
+| Gate | Warning | Status | Evidence Required |
+|------|---------|--------|-------------------|
+| **E** | Feature Flag + Rollback | NOT TESTED | Rollback procedure executed |
+| **F** | Cookie Flags + Refresh Test | NOT TESTED | Live test on staging |
+
+### Gate A: Entra ID aud/iss Verification
+
+**Problem**: Wrong `OIDC_AUDIENCE` or `OIDC_ISSUER` → random 401 on all API calls.
+
+**Pre-Flight Script**:
+```bash
+export STAGING_URL=https://staging.solvereign.com
+export STAGING_TOKEN=<entra_bearer_token>
+python scripts/staging_preflight.py
+```
+
+**Checklist**:
+- [ ] `OIDC_AUDIENCE` = `api://<client-id>` (from Azure AD App Registration)
+- [ ] `OIDC_ISSUER` = `https://login.microsoftonline.com/<tenant-id>/v2.0`
+- [ ] `tenant_identities` has mapping for LTS Entra tid
+
+### Gate B: Security Headers per curl
+
+**Problem**: `next.config.ts` has headers, but CDN/proxy can override.
+
+**Verification**:
+```bash
+curl -I https://staging.solvereign.com/my-plan | grep -i "referrer\|cache-control\|frame-options\|csp"
+
+# Expected:
+# referrer-policy: no-referrer
+# cache-control: no-store, no-cache, must-revalidate, proxy-revalidate
+# x-frame-options: DENY
+# content-security-policy: default-src 'self'; ...
+```
+
+### Gate C: Real Provider E2E
+
+**Problem**: E2E with `--mock-provider` only proves code exists, not that WhatsApp/SendGrid work.
+
+**Verification**:
+```bash
+export STAGING_URL=https://staging.solvereign.com
+export SENDGRID_API_KEY=<real_key>
+export WHATSAPP_ACCESS_TOKEN=<real_token>
+python scripts/e2e_portal_notify_evidence.py --env staging
+```
+
+**Evidence Required**:
+- [ ] Email lands in inbox (screenshot)
+- [ ] WhatsApp message received (screenshot)
+- [ ] Webhook events visible in DB
+
+### Gate D: Production Migrations
+
+**Migrations Required** (in order):
+```bash
+# Pre-Gate (MUST be green)
+python scripts/prod_migration_gate.py --env prod --phase pre
+
+# Apply
+psql $DATABASE_URL_PROD < backend_py/db/migrations/037_portal_notify_integration.sql
+psql $DATABASE_URL_PROD < backend_py/db/migrations/037a_portal_notify_hardening.sql
+psql $DATABASE_URL_PROD < backend_py/db/migrations/038_bounce_dnc.sql
+
+# Post-Gate (MUST be green)
+python scripts/prod_migration_gate.py --env prod --phase post
+
+# Verify
+psql $DATABASE_URL_PROD -c "SELECT * FROM portal.verify_notify_integration();"
+psql $DATABASE_URL_PROD -c "SELECT * FROM notify.verify_notification_integrity();"
+```
+
+### Gate E: Feature Flag + Rollback
+
+**Activation**:
+```sql
+UPDATE tenants SET features = features || '{"portal_enabled": true}'::jsonb WHERE id = 1;
+```
+
+**Rollback** (Airbag):
+```sql
+UPDATE tenants SET features = features - 'portal_enabled' WHERE id = 1;
+docker stop notify-worker
+```
+
+### Gate F: Cookie Flags + Refresh Test
+
+**Cookie Verification**:
+```bash
+# Check cookie attributes
+curl -c - https://staging.solvereign.com/api/portal/session -X POST -d '{"token":"test"}'
+# Must show: HttpOnly, Secure, SameSite=Strict
+```
+
+**Live Test**:
+1. Click magic link: `/my-plan?t=<jwt>`
+2. Verify plan loads
+3. Press F5 (refresh) → plan still visible
+4. Press Back → plan still visible
+5. Close browser, reopen → session expired (expected)
+
+### New Pre-Flight Scripts
+
+| Script | Purpose |
+|--------|---------|
+| `scripts/staging_preflight.py` | Automated staging checks (headers, auth, health) |
+| `docs/WIEN_PILOT_BLOCKERS.md` | Detailed blocker documentation |
+
+### What Already Works
+
+| Check | Status | Evidence |
+|-------|--------|----------|
+| Security Headers (Code) | PASS | `next.config.ts` correct |
+| Rate Limit (Code) | PASS | 10/h in `portal_admin.py` |
+| Session Cookie Pattern | PASS | Build + E2E mock passed |
+| SKIPPED Visibility | PASS | `getSkippedReasonLabel()` + UI |
+| E2E Script (Mock) | PASS | 5/5 gates passed |
+| Feature Flag | READY | `features.portal_enabled` |
+
+### Monitoring (Post-Launch)
+
+```sql
+-- Token issuance rate
+SELECT date_trunc('hour', created_at), count(*) FROM portal.portal_tokens GROUP BY 1;
+
+-- Notification delivery rate
+SELECT status, count(*) FROM notify.notification_outbox GROUP BY 1;
+
+-- Read rate
+SELECT date_trunc('hour', first_read_at), count(*) FROM portal.read_receipts GROUP BY 1;
+
+-- Ack completion rate
+SELECT status, count(*) FROM portal.driver_ack GROUP BY 1;
+```
 
 ---
 
@@ -1323,44 +1483,61 @@ curl -X POST http://localhost:5000/api/v1/notify/requeue \
 
 ---
 
-## Next Steps: Staging Verification
+## Next Steps: Wien Pilot Launch
 
-### Immediate Actions
+### Immediate Actions (Gate-Based)
 
-1. **Push to Remote**
+**Reference**: See "Wien Pilot Pre-Flight Gates" section above for full details.
+
+1. **Gate A: Entra ID Verification** (Needs staging token)
    ```bash
-   git push origin main
+   export STAGING_URL=https://staging.solvereign.com
+   export STAGING_TOKEN=<entra_bearer_token>
+   python scripts/staging_preflight.py
    ```
-   Branch is 1 commit ahead of origin/main.
 
-2. **Staging Environment Verification**
-   - Deploy to staging
-   - Verify Entra ID token audience (`api://<client-id>`)
-   - Run staging E2E tests: `npx playwright test e2e/staging-publish.spec.ts`
-   - Get evidence screenshot from live solver run
-
-3. **Production DB Migration**
-   - Apply migrations 025-027a to production DB
-   - Run `SELECT * FROM verify_final_hardening();` - all 17 PASS required
-   - Run `SELECT * FROM verify_snapshot_integrity();` - all checks PASS
-
-4. **Wien Pilot Smoke Test**
+2. **Gate B: Security Headers** (Needs staging access)
    ```bash
-   python scripts/wien_pilot_smoke_test.py --env staging
+   curl -I https://staging.solvereign.com/my-plan | grep -i "referrer\|cache-control\|frame-options\|csp"
    ```
-   - Tests: Auth → Solve → Approve → Publish → Snapshot → Repair
+
+3. **Gate C: Real Provider E2E** (Needs real API keys)
+   ```bash
+   python scripts/e2e_portal_notify_evidence.py --env staging
+   ```
+
+4. **Gate D: Production Migrations** (After Gates A-C pass)
+   ```bash
+   psql $DATABASE_URL_PROD < backend_py/db/migrations/037_portal_notify_integration.sql
+   psql $DATABASE_URL_PROD < backend_py/db/migrations/037a_portal_notify_hardening.sql
+   ```
+
+### Wien Pilot Launch Sequence
+
+```
+Gate A (Entra ID) ──┐
+Gate B (Headers) ───┼──► Gate D (Migrations) ──► Gate E (Feature Flag) ──► LAUNCH
+Gate C (Providers) ─┘                          └──► Gate F (Cookie Test)
+```
 
 ### Pending Work Items
 
-| Priority | Task | Status |
-|----------|------|--------|
-| **P0** | **Push V3.7 commit to remote** | **Ready** |
-| **P0** | **Staging Entra ID verification** | **Blocking** |
-| P1 | Production DB migration (025-027a) | Ready to apply |
-| P1 | Evidence screenshot from live run | Blocking for 100/100 |
-| P2 | ArtifactStore Production Mode (KeyVault) | Planned |
-| P2 | Ops Runbook + Incident Drill | Planned |
-| P3 | Messaging integration (SMS/WhatsApp) | Backlog |
+| Priority | Gate | Task | Status |
+|----------|------|------|--------|
+| **P0** | **A** | **Entra ID aud/iss verification** | **Needs staging token** |
+| **P0** | **B** | **Security headers per curl** | **Needs staging access** |
+| **P0** | **C** | **Real Provider E2E** | **Needs API keys** |
+| **P0** | **D** | **Prod migrations (037/037a/038)** | **Blocked by A-C** |
+| P1 | E | Feature flag + rollback test | Ready to test |
+| P1 | F | Cookie flags + refresh test | Ready to test |
+
+### Contacts
+
+| Role | Name | Status |
+|------|------|--------|
+| Platform Lead | TBD | - |
+| DBA | TBD | - |
+| On-Call | TBD | - |
 
 ---
 
@@ -1689,6 +1866,9 @@ kpi_tuple = (unassigned_count, tw_violations, overtime_min, travel_km, vehicles_
 | **Driver Table Component** | `frontend_v5/components/portal/driver-table.tsx` | ~255 |
 | **Driver Drawer Component** | `frontend_v5/components/portal/driver-drawer.tsx` | ~220 |
 | **Dispatcher Dashboard** | `frontend_v5/app/(platform)/portal-admin/dashboard/page.tsx` | ~350 |
+| **Staging Pre-Flight** | `scripts/staging_preflight.py` | ~465 |
+| **Wien Pilot Blockers** | `docs/WIEN_PILOT_BLOCKERS.md` | ~210 |
+| **E2E Evidence Script** | `scripts/e2e_portal_notify_evidence.py` | ~600 |
 
 ### Key Commands
 
@@ -1756,6 +1936,14 @@ cd backend_dotnet/Solvereign.Notify.Tests && dotnet test
 
 # Wien Pilot smoke test
 python scripts/wien_pilot_smoke_test.py --env staging
+
+# Staging pre-flight checks (Gate A, B verification)
+export STAGING_URL=https://staging.solvereign.com
+export STAGING_TOKEN=<entra_bearer_token>
+python scripts/staging_preflight.py
+
+# E2E portal-notify evidence (Gate C verification)
+python scripts/e2e_portal_notify_evidence.py --env staging
 
 # Frontend TypeScript check
 cd frontend_v5 && npx tsc --noEmit
