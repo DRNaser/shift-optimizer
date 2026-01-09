@@ -1,0 +1,120 @@
+{
+  "$comment": "Expected canonical output from wien_pilot_small.json. Used for regression testing.",
+  "$schema_version": "1.0.0",
+  "expected_stats": {
+    "total_orders": 10,
+    "orders_with_coords": 8,
+    "orders_with_zone": 1,
+    "orders_with_h3": 1,
+    "orders_needing_resolution": 2,
+    "duplicate_order_ids": 0
+  },
+  "expected_verdicts": {
+    "validation": {
+      "verdict": "OK",
+      "reason": "All hard gates pass, all orders have location (coords, zone, or h3)"
+    },
+    "coords_quality": {
+      "verdict": "WARN",
+      "missing_latlng_rate": 0.20,
+      "fallback_rate": 0.20,
+      "unresolved_count": 0,
+      "allows_osrm_finalize": true,
+      "reason": "2 orders use zone/h3 fallback but all are resolvable"
+    }
+  },
+  "expected_order_canonicalization": {
+    "ORD-001": {
+      "tw_start_utc": "2026-01-08T07:00:00Z",
+      "tw_end_utc": "2026-01-08T09:00:00Z",
+      "service_seconds": 300,
+      "lat": 48.2082,
+      "lng": 16.3738,
+      "coords_source": "DIRECT"
+    },
+    "ORD-002": {
+      "tw_start_utc": "2026-01-08T08:00:00Z",
+      "tw_end_utc": "2026-01-08T11:00:00Z",
+      "service_seconds": 600,
+      "lat": 48.1986,
+      "lng": 16.3478,
+      "coords_source": "DIRECT"
+    },
+    "ORD-003": {
+      "tw_start_utc": "2026-01-08T13:00:00Z",
+      "tw_end_utc": "2026-01-08T15:00:00Z",
+      "service_seconds": 1800,
+      "lat": 48.2116,
+      "lng": 16.3632,
+      "coords_source": "DIRECT"
+    },
+    "ORD-004": {
+      "tw_start_utc": "2026-01-08T09:00:00Z",
+      "tw_end_utc": "2026-01-08T13:00:00Z",
+      "service_seconds": 300,
+      "lat": 48.2206,
+      "lng": 16.31,
+      "coords_source": "DIRECT"
+    },
+    "ORD-005": {
+      "tw_start_utc": "2026-01-08T10:00:00Z",
+      "tw_end_utc": "2026-01-08T12:00:00Z",
+      "service_seconds": 300,
+      "lat": 48.1858,
+      "lng": 16.3126,
+      "coords_source": "DIRECT"
+    },
+    "ORD-006": {
+      "tw_start_utc": "2026-01-08T07:30:00Z",
+      "tw_end_utc": "2026-01-08T10:30:00Z",
+      "service_seconds": 300,
+      "lat": null,
+      "lng": null,
+      "zone_id": "1220",
+      "coords_source": "ZONE_FALLBACK"
+    },
+    "ORD-007": {
+      "tw_start_utc": "2026-01-08T14:00:00Z",
+      "tw_end_utc": "2026-01-08T17:00:00Z",
+      "service_seconds": 300,
+      "lat": null,
+      "lng": null,
+      "h3_index": "881f1d4813fffff",
+      "coords_source": "H3_FALLBACK"
+    },
+    "ORD-008": {
+      "tw_start_utc": "2026-01-08T08:30:00Z",
+      "tw_end_utc": "2026-01-08T11:30:00Z",
+      "service_seconds": 300,
+      "lat": 48.23,
+      "lng": 16.42,
+      "coords_source": "DIRECT"
+    },
+    "ORD-009": {
+      "tw_start_utc": "2026-01-08T12:00:00Z",
+      "tw_end_utc": "2026-01-08T14:00:00Z",
+      "service_seconds": 300,
+      "lat": 48.175,
+      "lng": 16.385,
+      "coords_source": "DIRECT"
+    },
+    "ORD-010": {
+      "tw_start_utc": "2026-01-08T15:00:00Z",
+      "tw_end_utc": "2026-01-08T18:00:00Z",
+      "service_seconds": 2400,
+      "lat": 48.245,
+      "lng": 16.355,
+      "coords_source": "DIRECT"
+    }
+  },
+  "determinism_requirements": {
+    "same_input_same_raw_hash": true,
+    "same_input_same_canonical_hash": true,
+    "description": "Given identical raw FLS input, the raw_hash and canonical_hash MUST be identical across runs"
+  },
+  "expected_hash_prefix": {
+    "description": "First 8 chars of SHA256 hash for quick verification (full hash computed at runtime)",
+    "raw_hash_prefix_expected": "will_vary_on_whitespace",
+    "canonical_hash_stable": true
+  }
+}

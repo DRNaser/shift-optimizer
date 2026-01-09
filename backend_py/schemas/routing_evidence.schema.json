@@ -1,0 +1,191 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://solvereign.com/schemas/routing_evidence.schema.json",
+  "version": "1.0.0",
+  "title": "Routing Evidence",
+  "description": "Schema for routing provider chain evidence in plan manifest",
+  "type": "object",
+  "required": [
+    "matrix",
+    "osrm",
+    "finalize"
+  ],
+  "properties": {
+    "matrix": {
+      "type": "object",
+      "required": ["version", "hash"],
+      "properties": {
+        "version": {
+          "type": "string",
+          "description": "Version ID of static matrix (e.g., wien_2026w02_v1)"
+        },
+        "hash": {
+          "type": "string",
+          "description": "SHA256 content hash of matrix data"
+        }
+      }
+    },
+    "osrm": {
+      "type": "object",
+      "required": ["enabled"],
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Whether OSRM validation was enabled"
+        },
+        "map": {
+          "type": "object",
+          "description": "OSRM map information (audit-safe, path-neutral)",
+          "required": ["status"],
+          "properties": {
+            "status": {
+              "type": "string",
+              "enum": ["OK", "NOT_FOUND", "MISSING_REQUIRED", "NOT_CONFIGURED", "DOCKER_ERROR", "TIMEOUT", "ERROR"],
+              "description": "Status of map hash computation"
+            },
+            "hash": {
+              "type": ["string", "null"],
+              "description": "SHA256 hash of OSRM map data (null if status != OK)"
+            },
+            "hash_algorithm": {
+              "type": "string",
+              "description": "Hash algorithm used (SHA256)",
+              "default": "SHA256"
+            },
+            "hash_scope": {
+              "type": "string",
+              "enum": ["FULL_SET", "REQUIRED_ONLY", "MAIN_FILE"],
+              "description": "Scope of files included in hash"
+            },
+            "profile": {
+              "type": "string",
+              "description": "OSRM routing profile (car, truck, etc.)"
+            },
+            "files_hashed": {
+              "type": "array",
+              "items": {"type": "string"},
+              "description": "List of file extensions included in hash"
+            },
+            "total_size_bytes": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Total size of hashed files in bytes"
+            },
+            "newest_mtime": {
+              "type": ["string", "null"],
+              "format": "date-time",
+              "description": "Modification time of newest file (UTC)"
+            },
+            "computed_at": {
+              "type": "string",
+              "format": "date-time",
+              "description": "When hash was computed (UTC)"
+            }
+          }
+        },
+        "map_hash": {
+          "type": ["string", "null"],
+          "description": "DEPRECATED: Use osrm.map.hash instead"
+        },
+        "profile": {
+          "type": ["string", "null"],
+          "description": "DEPRECATED: Use osrm.map.profile instead"
+        }
+      }
+    },
+    "finalize": {
+      "type": "object",
+      "required": ["verdict"],
+      "properties": {
+        "verdict": {
+          "type": "string",
+          "enum": ["OK", "WARN", "BLOCK", "N/A"],
+          "description": "Finalize stage verdict"
+        },
+        "time_seconds": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Time spent in finalize stage"
+        },
+        "verdict_reasons": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Reasons for WARN or BLOCK verdict"
+        }
+      }
+    },
+    "drift": {
+      "type": "object",
+      "properties": {
+        "p95_ratio": {
+          "type": ["number", "null"],
+          "description": "95th percentile of drift ratios"
+        },
+        "max_ratio": {
+          "type": ["number", "null"],
+          "description": "Maximum drift ratio"
+        },
+        "mean_ratio": {
+          "type": ["number", "null"],
+          "description": "Mean drift ratio"
+        }
+      }
+    },
+    "tw_validation": {
+      "type": "object",
+      "properties": {
+        "violations_count": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Number of time window violations"
+        },
+        "max_violation_seconds": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Maximum violation duration in seconds"
+        }
+      }
+    },
+    "rates": {
+      "type": "object",
+      "properties": {
+        "timeout_rate": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "OSRM timeout rate"
+        },
+        "fallback_rate": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Fallback usage rate"
+        },
+        "total_legs": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Total route legs analyzed"
+        }
+      }
+    },
+    "artifacts": {
+      "type": "object",
+      "properties": {
+        "drift_report": {
+          "type": ["string", "null"],
+          "description": "Artifact ID for full drift report"
+        },
+        "fallback_report": {
+          "type": ["string", "null"],
+          "description": "Artifact ID for fallback report"
+        },
+        "tw_validation": {
+          "type": ["string", "null"],
+          "description": "Artifact ID for TW validation report"
+        }
+      }
+    }
+  }
+}

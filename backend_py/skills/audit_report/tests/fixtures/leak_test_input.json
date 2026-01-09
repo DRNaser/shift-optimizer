@@ -1,0 +1,85 @@
+{
+  "description": "INTENTIONAL LEAK TEST FIXTURE - Contains sensitive data that MUST be redacted",
+  "test_purpose": "Verify 113 audit report redaction works correctly",
+  "expected_customer_safe_matches": 0,
+
+  "sensitive_data": {
+    "internal_headers": {
+      "X-SV-Signature": "hmac-sha256:abc123def456:1704067200:tenant-001",
+      "X-SV-Tenant-ID": "tenant-secret-001",
+      "X-SV-Request-ID": "req-internal-12345",
+      "X-SV-Admin-Token": "admin-bearer-token-secret"
+    },
+
+    "secrets": {
+      "api_key": "sk-live-abcdef123456789",
+      "password": "SuperSecret123!",
+      "secret": "internal-secret-value",
+      "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U",
+      "credential": "user:password123",
+      "INTERNAL_SECRET": "never-show-to-customer"
+    },
+
+    "pii": {
+      "email_addresses": [
+        "john.doe@example.com",
+        "admin@solvereign.internal",
+        "support+test@lts-transport.de"
+      ],
+      "phone_numbers": [
+        "+49 170 1234567",
+        "+43 664 9876543",
+        "0800-555-0123"
+      ],
+      "ip_addresses": [
+        "192.168.1.100",
+        "10.0.0.50",
+        "172.16.254.1"
+      ]
+    },
+
+    "stack_traces": {
+      "python_traceback": "Traceback (most recent call last):\n  File \"/app/backend_py/api/main.py\", line 42, in handle_request\n    result = await process(data)\n  File \"/app/backend_py/api/services/solver.py\", line 156, in process\n    raise ValueError(\"Invalid tenant configuration\")\nValueError: Invalid tenant configuration",
+      "internal_paths": [
+        "/app/backend_py/api/security/internal_signature.py:698",
+        "/home/deploy/.secrets/credentials.json",
+        "C:\\Users\\admin\\AppData\\Local\\solvereign\\config.ini"
+      ]
+    }
+  },
+
+  "test_patterns": {
+    "must_be_redacted": [
+      "X-SV-Signature",
+      "X-SV-Tenant-ID",
+      "X-SV-Request-ID",
+      "X-SV-Admin-Token",
+      "sk-live-",
+      "password",
+      "secret",
+      "token",
+      "credential",
+      "INTERNAL_SECRET",
+      "@example.com",
+      "@solvereign.internal",
+      "@lts-transport.de",
+      "+49 170",
+      "+43 664",
+      "192.168.",
+      "10.0.0.",
+      "172.16.",
+      "Traceback (most recent call last)",
+      "/app/backend_py/",
+      ".secrets/"
+    ],
+    "allowed_replacements": [
+      "[INTERNAL_HEADER]",
+      "[REDACTED]",
+      "[EMAIL_REDACTED]",
+      "[PHONE_REDACTED]",
+      "[IP_REDACTED]",
+      "[STACK_TRACE_REDACTED]",
+      "[PATH_REDACTED]"
+    ]
+  }
+}

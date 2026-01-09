@@ -1,0 +1,10 @@
+{
+  "status": "SOLVED",
+  "routes": [],
+  "unassigned": [],
+  "kpis": {
+    "total_distance_km": 0,
+    "total_duration_min": 0,
+    "vehicles_used": 0
+  }
+}

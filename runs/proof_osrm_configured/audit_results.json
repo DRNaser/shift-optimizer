@@ -1,0 +1,21 @@
+{
+  "audited_at": "2026-01-08T06:33:39.661804",
+  "all_passed": true,
+  "results": {
+    "COVERAGE": {
+      "status": "PASS"
+    },
+    "TIME_WINDOW": {
+      "status": "PASS"
+    },
+    "SHIFT_FEASIBILITY": {
+      "status": "PASS"
+    },
+    "SKILLS_COMPLIANCE": {
+      "status": "PASS"
+    },
+    "OVERLAP": {
+      "status": "PASS"
+    }
+  }
+}

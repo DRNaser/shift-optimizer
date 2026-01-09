@@ -1,0 +1,117 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://solvereign.com/schemas/drift-baselines.json",
+  "version": "1.0.0",
+  "title": "KPI Drift Baselines Schema",
+  "description": "Schema for performance and KPI drift baselines",
+  "type": "object",
+  "required": ["api_p95_ms", "solver_p95_s", "solver_peak_rss_mb"],
+  "additionalProperties": false,
+  "properties": {
+    "api_p95_ms": {
+      "type": "number",
+      "minimum": 0,
+      "description": "API response time p95 in milliseconds"
+    },
+    "solver_p95_s": {
+      "type": "number",
+      "minimum": 0,
+      "description": "Solver execution time p95 in seconds"
+    },
+    "solver_peak_rss_mb": {
+      "type": "number",
+      "minimum": 0,
+      "description": "Solver peak RSS memory in megabytes"
+    },
+    "last_updated": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Timestamp of last baseline update"
+    },
+    "updated_by": {
+      "type": ["string", "null"],
+      "description": "User or system that updated baselines"
+    },
+    "roster": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "total_drivers": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Baseline driver count"
+          },
+          "fte_ratio": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 100,
+            "description": "Baseline FTE ratio (0-100 percent)"
+          },
+          "coverage_pct": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 100,
+            "description": "Baseline coverage percentage (0-100)"
+          },
+          "max_weekly_hours": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Baseline max weekly hours"
+          },
+          "baseline_seed": {
+            "type": "integer",
+            "description": "Seed used for baseline"
+          },
+          "baseline_output_hash": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$",
+            "description": "Output hash at baseline"
+          }
+        }
+      },
+      "description": "Per-tenant roster pack baselines"
+    },
+    "routing": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "coverage_pct": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 100,
+            "description": "Baseline coverage percentage (0-100)"
+          },
+          "tw_violations": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Baseline time window violations"
+          },
+          "routes_used": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Baseline route count"
+          },
+          "total_distance_km": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Baseline total distance in km"
+          },
+          "baseline_seed": {
+            "type": "integer",
+            "description": "Seed used for baseline"
+          },
+          "baseline_output_hash": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$",
+            "description": "Output hash at baseline"
+          }
+        }
+      },
+      "description": "Per-tenant routing pack baselines"
+    }
+  }
+}

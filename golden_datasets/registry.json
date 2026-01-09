@@ -1,0 +1,28 @@
+{
+  "version": "1.0.0",
+  "updated_at": "2026-01-07T12:00:00Z",
+  "datasets": {
+    "routing": {
+      "happy_path": [
+        {
+          "name": "wien_small",
+          "path": "routing/wien_small",
+          "description": "Minimal routing test (10 stops, 3 vehicles)",
+          "version": "1.0.0"
+        }
+      ],
+      "known_failures": []
+    },
+    "roster": {
+      "happy_path": [
+        {
+          "name": "gurkerl_small",
+          "path": "roster/gurkerl_small",
+          "description": "Minimal roster test (50 tours)",
+          "version": "1.0.0"
+        }
+      ],
+      "known_failures": []
+    }
+  }
+}

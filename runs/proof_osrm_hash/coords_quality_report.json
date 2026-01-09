@@ -1,0 +1,46 @@
+{
+  "verdict": "OK",
+  "evaluated_at": "2026-01-08T06:33:06.117204",
+  "metrics": {
+    "total_orders": 5,
+    "orders_with_latlng": 5,
+    "orders_resolved_by_zone": 0,
+    "orders_resolved_by_h3": 0,
+    "orders_unresolved": 0
+  },
+  "rates": {
+    "missing_latlng_rate": 0.0,
+    "fallback_rate": 0.0,
+    "unresolved_rate": 0.0
+  },
+  "reasons": [
+    "All coords present or resolvable"
+  ],
+  "warnings": [],
+  "unresolved_orders": [],
+  "unresolved_count": 0,
+  "allows_osrm_finalize": true,
+  "policy": {
+    "ok_thresholds": {
+      "missing_latlng_max": 0.0,
+      "fallback_rate_max": 0.0,
+      "unresolved_max": 0
+    },
+    "warn_thresholds": {
+      "missing_latlng_max": 0.1,
+      "fallback_rate_max": 0.1,
+      "unresolved_max": 0
+    },
+    "block_thresholds": {
+      "missing_latlng_max": 0.25,
+      "fallback_rate_max": 0.25,
+      "unresolved_max": 0
+    },
+    "feature_flags": {
+      "allow_zone_fallback": true,
+      "allow_h3_fallback": true,
+      "allow_geocoding": false,
+      "strict_mode": true
+    }
+  }
+}

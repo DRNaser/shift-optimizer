@@ -1,0 +1,205 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://solvereign.com/schemas/security-enforcement.json",
+  "version": "1.0.0",
+  "description": "Security enforcement checklist with evidence requirements for Wien Pilot",
+  "enforcement_level": "STRICT",
+  "last_audit": "2026-01-07T00:00:00Z",
+  "audit_documents": {
+    "chain_proof": "SECURITY_AUDIT_PILOT_CHAIN.md",
+    "bff_proof": "frontend_v5/SECURITY_AUDIT_PLATFORM_AUTH.md",
+    "backend_proof": "backend_py/SECURITY_AUDIT_BACKEND.md",
+    "runbook": "RUNBOOK_WIEN_PILOT.md"
+  },
+  "hard_gates": {
+    "description": "MUST pass - no exceptions, no overrides",
+    "gates": {
+      "RLS_ENFORCEMENT": {
+        "id": "HG-001",
+        "description": "Row-Level Security must be enforced on all tenant tables",
+        "evidence_required": [
+          "SQL policy definitions in migrations",
+          "set_config call in every transaction",
+          "Cross-tenant query test proof"
+        ],
+        "verification_command": "python -m backend_py.tests.test_rls_isolation",
+        "evidence_artifact": "rls_enforcement_PASS.json",
+        "failure_action": "BLOCK_DEPLOYMENT"
+      },
+      "HMAC_SIGNATURE": {
+        "id": "HG-002",
+        "description": "All internal requests must be HMAC-signed with V2 protocol",
+        "evidence_required": [
+          "Signature format: METHOD|PATH|TIMESTAMP|NONCE|TENANT|SITE|IS_ADMIN|BODY_HASH",
+          "Timestamp window: +/- 120 seconds",
+          "Nonce tracking in core.used_signatures (5min TTL)"
+        ],
+        "verification_command": "python -m backend_py.tests.test_hmac_signature",
+        "evidence_artifact": "hmac_signature_PASS.json",
+        "failure_action": "BLOCK_DEPLOYMENT"
+      },
+      "REPLAY_PROTECTION": {
+        "id": "HG-003",
+        "description": "Replay attacks must be blocked via nonce tracking",
+        "evidence_required": [
+          "Nonce stored in core.used_signatures",
+          "Same nonce rejected within 5 minutes",
+          "Audit event logged for replay attempts"
+        ],
+        "verification_command": "python -m backend_py.tests.test_replay_protection",
+        "evidence_artifact": "replay_protection_PASS.json",
+        "failure_action": "BLOCK_DEPLOYMENT"
+      },
+      "AUDIT_GATING": {
+        "id": "HG-004",
+        "description": "Plan lock must fail (HTTP 409) if audit checks fail",
+        "evidence_required": [
+          "Coverage check: all stops assigned",
+          "Time window check: no violations",
+          "Overlap check: no double assignments"
+        ],
+        "verification_command": "python -m backend_py.packs.routing.tests.test_audit_gate",
+        "evidence_artifact": "audit_gating_PASS.json",
+        "failure_action": "BLOCK_PLAN_LOCK"
+      },
+      "FREEZE_LOCK": {
+        "id": "HG-005",
+        "description": "Frozen stops must reject modifications (exception-based)",
+        "evidence_required": [
+          "is_locked=TRUE blocks vehicle change",
+          "Time-based freeze (60min before start) blocks changes",
+          "FreezeLockViolationError raised on violation"
+        ],
+        "verification_command": "python -m backend_py.packs.routing.tests.test_freeze_lock_enforcer",
+        "evidence_artifact": "freeze_lock_PASS.json",
+        "failure_action": "BLOCK_REPAIR"
+      }
+    }
+  },
+  "soft_gates": {
+    "description": "SHOULD pass - can override with documented reason and PR approval",
+    "gates": {
+      "DETERMINISM": {
+        "id": "SG-001",
+        "description": "Same inputs + seed should produce identical output_hash",
+        "evidence_required": [
+          "3 consecutive runs with same seed",
+          "output_hash matches across all runs"
+        ],
+        "verification_command": "python -m backend_py.tests.test_reproducibility",
+        "evidence_artifact": "determinism_PASS.json",
+        "override_requires": ["reason", "actor", "pr_number"]
+      },
+      "COVERAGE_100": {
+        "id": "SG-002",
+        "description": "All stops/tours should be assigned (100% coverage)",
+        "evidence_required": [
+          "coverage_pct == 100.0 in solve result",
+          "No unassigned stops in output"
+        ],
+        "verification_command": "python -m backend_py.v3.solver_wrapper --check-coverage",
+        "evidence_artifact": "coverage_PASS.json",
+        "override_requires": ["reason", "actor"]
+      },
+      "CLEAN_WORKTREE": {
+        "id": "SG-003",
+        "description": "Git worktree should be clean for audit-grade results",
+        "evidence_required": [
+          "git status --porcelain returns empty"
+        ],
+        "verification_command": "git status --porcelain",
+        "evidence_artifact": null,
+        "override_flag": "--allow-dirty",
+        "override_requires": ["override_reason", "override_actor", "override_pr"]
+      }
+    }
+  },
+  "stop_conditions": {
+    "description": "IMMEDIATE STOP - evidence capture before ANY action",
+    "conditions": [
+      {
+        "id": "STOP-001",
+        "trigger": "Cross-tenant data visible in response",
+        "severity": "S0",
+        "action": [
+          "1. STOP all writes (set SOLVEREIGN_PLATFORM_WRITES_DISABLED=true)",
+          "2. Capture evidence: request_id, tenant_id, response body hash",
+          "3. Create INC-YYYYMMDD-XXXXXX incident",
+          "4. Route to security/rls-enforcement.md"
+        ]
+      },
+      {
+        "id": "STOP-002",
+        "trigger": "Invalid HMAC signature accepted",
+        "severity": "S0",
+        "action": [
+          "1. STOP all writes",
+          "2. Capture: request_id, signature, expected canonical string",
+          "3. Check core.security_events for SIGNATURE_INVALID",
+          "4. Create S0 incident"
+        ]
+      },
+      {
+        "id": "STOP-003",
+        "trigger": "Replay attack not blocked",
+        "severity": "S1",
+        "action": [
+          "1. Block writes for affected tenant",
+          "2. Check core.used_signatures for nonce",
+          "3. Verify TTL configuration",
+          "4. Create S1 incident"
+        ]
+      }
+    ]
+  },
+  "evidence_storage": {
+    "local_path": ".claude/telemetry/",
+    "artifact_store": {
+      "type": "azure_blob",
+      "container": "security-evidence",
+      "retention_days": 365
+    },
+    "hash_algorithm": "sha256",
+    "format": {
+      "filename": "{gate_id}_{timestamp}_{result}.json",
+      "content": {
+        "gate_id": "string",
+        "timestamp": "ISO8601",
+        "result": "PASS|FAIL",
+        "git_sha": "string",
+        "evidence_hash": "sha256:...",
+        "verification_output": "string"
+      }
+    }
+  },
+  "ci_integration": {
+    "pr_checks": [
+      "HG-001",
+      "HG-002",
+      "HG-003"
+    ],
+    "nightly_checks": [
+      "HG-001",
+      "HG-002",
+      "HG-003",
+      "HG-004",
+      "HG-005",
+      "SG-001",
+      "SG-002"
+    ],
+    "pre_deploy_checks": [
+      "HG-001",
+      "HG-002",
+      "HG-003",
+      "HG-004",
+      "HG-005",
+      "SG-001",
+      "SG-002",
+      "SG-003"
+    ],
+    "failure_behavior": {
+      "hard_gate_failure": "BLOCK_MERGE",
+      "soft_gate_failure": "WARN_ALLOW_OVERRIDE"
+    }
+  }
+}

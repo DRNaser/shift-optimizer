@@ -10,6 +10,7 @@ Key Features:
 - Seed sweep mode (1-100 seeds)
 - Churn calculation vs baseline
 - Scenario comparison report
+- **Telemetry integration** for solve_time/peak_rss tracking
 """
 
 from dataclasses import dataclass, field
@@ -25,6 +26,15 @@ from .models import (
     PlanStatus,
 )
 from .compose import get_baseline_plan
+
+# Optional telemetry integration
+try:
+    from backend_py.tools.solver_telemetry import SolverTelemetry, get_peak_rss_mb
+    TELEMETRY_AVAILABLE = True
+except ImportError:
+    TELEMETRY_AVAILABLE = False
+    def get_peak_rss_mb():
+        return 0.0
 
 
 # ============================================================================
@@ -186,6 +196,7 @@ class ScenarioRunner:
             ScenarioResult
         """
         start_time = time_module.time()
+        start_rss = get_peak_rss_mb()
 
         # Run solver
         solver_result = self._solver_fn(
@@ -195,6 +206,8 @@ class ScenarioRunner:
         )
 
         solve_time = time_module.time() - start_time
+        end_rss = get_peak_rss_mb()
+        peak_rss = max(end_rss - start_rss, end_rss)
 
         # Calculate churn vs baseline
         churn_count = 0
@@ -214,7 +227,7 @@ class ScenarioRunner:
         audits_passed = solver_result.get('audits_passed', 0)
         audits_total = solver_result.get('audits_total', 7)
 
-        return ScenarioResult(
+        result = ScenarioResult(
             plan_version_id=solver_result.get('plan_version_id', 0),
             scenario_label=label,
             forecast_version_id=forecast_version_id,
@@ -232,6 +245,25 @@ class ScenarioRunner:
             audits_total=audits_total,
             solve_time_seconds=solve_time,
         )
+
+        # Record telemetry (if available)
+        if TELEMETRY_AVAILABLE:
+            try:
+                telemetry = SolverTelemetry()
+                telemetry.record_solve(
+                    solve_time_s=solve_time,
+                    peak_rss_mb=peak_rss,
+                    label=label,
+                    seed=config.seed,
+                    drivers_total=result.drivers_total,
+                    coverage_percent=100.0 if audits_passed == audits_total else None,
+                    audits_passed=audits_passed,
+                    audits_total=audits_total,
+                )
+            except Exception:
+                pass  # Telemetry is non-critical
+
+        return result
 
     def _calculate_churn(
         self,

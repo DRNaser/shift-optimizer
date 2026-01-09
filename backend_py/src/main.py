@@ -1,10 +1,19 @@
 """
-SOLVEREIGN - Legacy API (V6)
-============================
-Main entry point for the legacy backend API.
+SOLVEREIGN - Legacy API (V6) - DEPRECATED
+==========================================
 
-Note: Enterprise API is at api/main.py (V3.3b)
-This legacy API is kept for backwards compatibility.
+⚠️  DEPRECATED: This API is deprecated in favor of the Enterprise API.
+    Please use: uvicorn api.main:app --reload
+
+The Enterprise API (api/main.py) includes ALL features:
+- /api/v1/runs/*        - Async optimization with SSE streaming
+- /api/v1/plans/*       - Solve, audit, lock, export
+- /api/v1/simulations/* - What-If scenarios (8 types)
+- /api/v1/config/*      - Configuration schema and validation
+- /api/v1/forecasts/*   - Forecast ingest and status
+
+This legacy API is kept ONLY for backwards compatibility during migration.
+It will be removed in the next major release.
 """
 
 import os
@@ -107,8 +116,15 @@ app.include_router(repair_router, prefix="/api/v1", tags=["repair"])
 
 @app.on_event("startup")
 async def startup_event():
-    logging.info("SOLVEREIGN Legacy API v6.0 started")
-    print("INFO: Legacy API started. For Enterprise API, use api.main:app", flush=True)
+    logging.warning("⚠️  DEPRECATED: SOLVEREIGN Legacy API v6.0 started")
+    logging.warning("⚠️  Please migrate to Enterprise API: uvicorn api.main:app")
+    print("", flush=True)
+    print("=" * 70, flush=True)
+    print("⚠️  DEPRECATED: Legacy API is deprecated!", flush=True)
+    print("   Please use Enterprise API instead:", flush=True)
+    print("   uvicorn api.main:app --reload", flush=True)
+    print("=" * 70, flush=True)
+    print("", flush=True)
 
 
 # =============================================================================

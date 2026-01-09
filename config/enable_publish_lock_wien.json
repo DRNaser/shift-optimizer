@@ -1,0 +1,74 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "version": "1.0.0",
+  "description": "Wien Pilot publish/lock enablement configuration",
+  "effective_date": "2026-02-03",
+  "last_updated": "2026-01-08",
+
+  "global_defaults": {
+    "publish_enabled": false,
+    "lock_enabled": false,
+    "shadow_mode_only": true,
+    "require_human_approval": true,
+    "notes": "All sites default to shadow-only mode"
+  },
+
+  "site_overrides": {
+    "wien_pilot": {
+      "tenant_code": "lts",
+      "site_code": "wien",
+      "pack": "roster",
+      "publish_enabled": true,
+      "lock_enabled": true,
+      "shadow_mode_only": false,
+      "require_human_approval": true,
+      "approval_config": {
+        "min_approvers": 1,
+        "allowed_approver_roles": ["dispatcher", "ops_lead", "platform_admin"],
+        "require_reason": true,
+        "min_reason_length": 10
+      },
+      "burn_in_config": {
+        "start_date": "2026-02-03",
+        "end_date": "2026-03-05",
+        "heightened_monitoring": true,
+        "daily_review_required": true,
+        "weekly_report_required": true
+      },
+      "effective_date": "2026-02-03",
+      "notes": "Wien pilot GO - publish/lock enabled after go/no-go approval"
+    }
+  },
+
+  "rollback_toggle": {
+    "description": "Emergency toggle to disable publish/lock without deployment",
+    "enabled": false,
+    "kill_switch_active": false,
+    "kill_switch_reason": null,
+    "kill_switch_activated_by": null,
+    "kill_switch_activated_at": null,
+    "notes": "Set kill_switch_active=true to immediately disable all publish/lock operations"
+  },
+
+  "audit_requirements": {
+    "log_all_publish_attempts": true,
+    "log_all_lock_attempts": true,
+    "log_blocked_attempts": true,
+    "evidence_hash_required": true,
+    "evidence_retention_days": 90
+  },
+
+  "validation_rules": {
+    "pre_publish_checks": [
+      "audit_all_pass",
+      "no_block_kpi_drift",
+      "coverage_100_percent",
+      "determinism_verified"
+    ],
+    "pre_lock_checks": [
+      "human_approval_recorded",
+      "evidence_hash_computed",
+      "audit_event_written"
+    ]
+  }
+}

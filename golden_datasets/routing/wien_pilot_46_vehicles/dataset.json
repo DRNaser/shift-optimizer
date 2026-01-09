@@ -1,0 +1,58 @@
+{
+  "$schema": "https://solvereign.com/schemas/golden_dataset.schema.json",
+  "dataset_id": "wien_pilot_46_vehicles",
+  "version": "1.0.0",
+  "name": "Wien Pilot - 46 Vehicles",
+  "description": "Golden dataset for Wien pilot regression testing with 10 sample orders",
+  "pack": "routing",
+  "created_at": "2026-01-08T00:00:00Z",
+  "created_by": "system",
+  "tenant_context": {
+    "tenant_id": 1,
+    "site_id": 1,
+    "tenant_name": "LTS Wien",
+    "site_name": "Wien Hauptdepot"
+  },
+  "files": {
+    "input": {
+      "path": "wien_pilot_small.json",
+      "type": "fls_import",
+      "description": "10-order FLS export with mixed location types"
+    },
+    "expected_canonical": {
+      "path": "expected_canonical.json",
+      "type": "expectation",
+      "description": "Expected canonicalization stats and order details"
+    },
+    "expected_manifest": {
+      "path": "expected_manifest.json",
+      "type": "expectation",
+      "description": "Expected manifest structure and required keys"
+    }
+  },
+  "characteristics": {
+    "order_count": 10,
+    "depot_count": 2,
+    "location_types": {
+      "direct_coords": 8,
+      "zone_fallback": 1,
+      "h3_fallback": 1
+    },
+    "service_types": {
+      "DELIVERY": 7,
+      "PICKUP": 1,
+      "SERVICE": 2
+    },
+    "special_requirements": {
+      "two_person": 2,
+      "skills_required": 2
+    }
+  },
+  "expected_verdicts": {
+    "import": "OK",
+    "coords_quality": "WARN",
+    "osrm_finalize_enabled": true
+  },
+  "test_file": "backend_py/packs/routing/tests/test_golden_dataset_regression.py",
+  "tags": ["pilot", "wien", "regression", "routing"]
+}

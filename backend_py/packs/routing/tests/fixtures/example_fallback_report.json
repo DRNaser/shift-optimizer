@@ -1,0 +1,56 @@
+{
+  "plan_id": "plan-wien-2026w02-001",
+  "generated_at": "2026-01-08T14:30:00Z",
+  "total_legs": 847,
+  "fallback_count": 27,
+  "statistics": {
+    "total_legs": 847,
+    "fallback_count": 27,
+    "timeout_count": 12,
+    "error_count": 3,
+    "fallback_rate": 0.0319,
+    "timeout_rate": 0.0142,
+    "error_rate": 0.0035
+  },
+  "fallback_by_level": {
+    "HAVERSINE": 22,
+    "H3": 5
+  },
+  "fallback_by_reason": {
+    "OSRM_TIMEOUT": 12,
+    "MATRIX_MISS": 12,
+    "OSRM_ERROR": 3
+  },
+  "sample_events": [
+    {
+      "from_stop_id": "stop-X001",
+      "to_stop_id": "stop-X002",
+      "fallback_level": "HAVERSINE",
+      "reason": "OSRM_TIMEOUT",
+      "occurred_at": "2026-01-08T14:29:15Z",
+      "duration_computed": 480,
+      "distance_computed": 8500,
+      "request_time_ms": 5012.5
+    },
+    {
+      "from_stop_id": "stop-Y003",
+      "to_stop_id": "stop-Y004",
+      "fallback_level": "HAVERSINE",
+      "reason": "MATRIX_MISS",
+      "occurred_at": "2026-01-08T14:29:22Z",
+      "duration_computed": 360,
+      "distance_computed": 6200,
+      "request_time_ms": 0
+    },
+    {
+      "from_stop_id": "stop-Z005",
+      "to_stop_id": "stop-Z006",
+      "fallback_level": "H3",
+      "reason": "OSRM_ERROR",
+      "occurred_at": "2026-01-08T14:29:35Z",
+      "duration_computed": 720,
+      "distance_computed": 12000,
+      "request_time_ms": 1205.3
+    }
+  ]
+}

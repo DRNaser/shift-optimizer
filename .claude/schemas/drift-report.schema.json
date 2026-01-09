@@ -1,0 +1,179 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://solvereign.com/schemas/drift-report.json",
+  "version": "1.0.0",
+  "title": "Drift Report",
+  "description": "Performance and accuracy drift report (matrix/OSRM ratios, TW violations)",
+  "type": "object",
+  "required": ["report_id", "tenant_code", "site_code", "created_at"],
+  "additionalProperties": false,
+  "properties": {
+    "report_id": {
+      "type": "string",
+      "pattern": "^DRIFT-[0-9]{8}-[A-Z0-9]{6}$",
+      "description": "Unique drift report ID"
+    },
+    "tenant_code": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 50
+    },
+    "site_code": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 50
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "period_start": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Start of analysis period"
+    },
+    "period_end": {
+      "type": "string",
+      "format": "date-time",
+      "description": "End of analysis period"
+    },
+    "matrix_osrm_ratio": {
+      "type": "object",
+      "description": "Matrix vs OSRM distance ratio analysis",
+      "properties": {
+        "sample_size": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Number of route pairs compared"
+        },
+        "mean_ratio": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Mean ratio (matrix_distance / osrm_distance)"
+        },
+        "p95_ratio": {
+          "type": "number",
+          "minimum": 0,
+          "description": "95th percentile ratio"
+        },
+        "max_deviation_pct": {
+          "type": "number",
+          "description": "Maximum deviation percentage"
+        },
+        "outliers_count": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Number of pairs with >20% deviation"
+        }
+      }
+    },
+    "time_window_violations": {
+      "type": "object",
+      "description": "Time window compliance analysis",
+      "properties": {
+        "total_stops": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "early_arrivals": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Stops arrived before TW start"
+        },
+        "late_arrivals": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Stops arrived after TW end"
+        },
+        "avg_early_minutes": {
+          "type": "number",
+          "minimum": 0
+        },
+        "avg_late_minutes": {
+          "type": "number",
+          "minimum": 0
+        },
+        "max_late_minutes": {
+          "type": "number",
+          "minimum": 0
+        }
+      }
+    },
+    "eta_accuracy": {
+      "type": "object",
+      "description": "Estimated vs actual arrival time accuracy",
+      "properties": {
+        "sample_size": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "mae_minutes": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Mean Absolute Error in minutes"
+        },
+        "rmse_minutes": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Root Mean Square Error in minutes"
+        },
+        "within_5min_pct": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100,
+          "description": "Percentage of ETAs within 5 minutes"
+        },
+        "within_15min_pct": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100,
+          "description": "Percentage of ETAs within 15 minutes"
+        }
+      }
+    },
+    "fallback_stats": {
+      "type": "object",
+      "description": "Fallback distance estimation usage",
+      "properties": {
+        "total_routes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "fallback_used_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "fallback_percentage": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100
+        },
+        "fallback_reasons": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "integer"
+          },
+          "description": "Count by reason (OSRM_TIMEOUT, MATRIX_MISSING, etc.)"
+        }
+      }
+    },
+    "drift_score": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 100,
+      "description": "Overall drift score (0=no drift, 100=critical)"
+    },
+    "alert_level": {
+      "type": "string",
+      "enum": ["OK", "WARNING", "ALERT", "CRITICAL"],
+      "description": "Alert level based on drift score thresholds"
+    },
+    "recommendations": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Automated recommendations based on drift analysis"
+    }
+  }
+}

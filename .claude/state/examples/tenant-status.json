@@ -1,0 +1,43 @@
+{
+  "tenants": {
+    "gurkerl": {
+      "rls_mode": "enforced",
+      "auth_mode": "hmac_v2",
+      "status": "active",
+      "packs": ["roster"],
+      "last_security_smoke": {
+        "ts": "2026-01-07T09:00:00Z",
+        "result": "PASS",
+        "details": null
+      },
+      "last_perf_smoke": {
+        "ts": "2026-01-07T09:00:00Z",
+        "result": "PASS",
+        "p95_ms": 85
+      },
+      "last_solve": {
+        "ts": "2026-01-07T08:30:00Z",
+        "plan_version_id": "latest",
+        "status": "success"
+      }
+    },
+    "mediamarkt": {
+      "rls_mode": "enforced",
+      "auth_mode": "hmac_v2",
+      "status": "onboarding",
+      "packs": ["routing"],
+      "last_security_smoke": {
+        "ts": "2026-01-07T09:00:00Z",
+        "result": "PASS",
+        "details": null
+      },
+      "last_perf_smoke": {
+        "ts": "2026-01-07T09:00:00Z",
+        "result": "PASS",
+        "p95_ms": 95
+      },
+      "last_solve": null
+    }
+  },
+  "last_updated": "2026-01-07T09:00:00Z"
+}

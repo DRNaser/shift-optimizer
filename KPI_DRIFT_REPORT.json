@@ -1,0 +1,54 @@
+{
+  "tenant_code": "gurkerl",
+  "pack": "roster",
+  "solve_id": null,
+  "timestamp": "2026-01-07T14:29:53.155714+00:00",
+  "drift_score": 34.98,
+  "drift_level": "ALERT",
+  "top_drifters": [
+    "total_drivers",
+    "coverage_pct",
+    "fte_ratio"
+  ],
+  "baseline_sample_count": 1,
+  "baseline_computed_at": "N/A",
+  "exit_code": 2,
+  "metric_drifts": {
+    "total_drivers": {
+      "current": 250,
+      "baseline_mean": 145.0,
+      "baseline_std_dev": 0,
+      "percent_change": 72.4,
+      "z_score": 3,
+      "is_anomaly": true,
+      "direction": "higher"
+    },
+    "coverage_pct": {
+      "current": 50.0,
+      "baseline_mean": 100.0,
+      "baseline_std_dev": 0,
+      "percent_change": -50.0,
+      "z_score": 3,
+      "is_anomaly": true,
+      "direction": "lower"
+    },
+    "fte_ratio": {
+      "current": 1.0,
+      "baseline_mean": 1.0,
+      "baseline_std_dev": 0,
+      "percent_change": 0.0,
+      "z_score": 0,
+      "is_anomaly": false,
+      "direction": "stable"
+    },
+    "max_weekly_hours": {
+      "current": 54.0,
+      "baseline_mean": 54.0,
+      "baseline_std_dev": 0,
+      "percent_change": 0.0,
+      "z_score": 0,
+      "is_anomaly": false,
+      "direction": "stable"
+    }
+  }
+}

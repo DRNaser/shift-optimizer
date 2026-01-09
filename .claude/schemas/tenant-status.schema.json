@@ -1,0 +1,112 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://solvereign.com/schemas/tenant-status.json",
+  "version": "1.0.0",
+  "title": "Tenant Status Schema",
+  "description": "Schema for per-tenant health and configuration status",
+  "type": "object",
+  "required": ["tenants"],
+  "additionalProperties": false,
+  "properties": {
+    "tenants": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "required": ["rls_mode", "auth_mode"],
+        "additionalProperties": false,
+        "properties": {
+          "rls_mode": {
+            "type": "string",
+            "enum": ["enforced", "mixed", "disabled", "unknown"],
+            "description": "Row-Level Security enforcement mode"
+          },
+          "auth_mode": {
+            "type": "string",
+            "enum": ["hmac_v2", "api_key", "entra_id", "mixed", "unknown"],
+            "description": "Primary authentication method"
+          },
+          "status": {
+            "type": "string",
+            "enum": ["active", "onboarding", "suspended", "archived"],
+            "default": "active",
+            "description": "Tenant operational status"
+          },
+          "packs": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": ["roster", "routing"]
+            },
+            "description": "Active packs for this tenant"
+          },
+          "last_security_smoke": {
+            "type": ["object", "null"],
+            "required": ["ts", "result"],
+            "additionalProperties": false,
+            "properties": {
+              "ts": {
+                "type": "string",
+                "format": "date-time",
+                "description": "Timestamp of last security smoke test"
+              },
+              "result": {
+                "type": "string",
+                "enum": ["PASS", "FAIL", "SKIP"],
+                "description": "Result of security smoke test"
+              },
+              "details": {
+                "type": ["string", "null"],
+                "description": "Additional details or error message"
+              }
+            }
+          },
+          "last_perf_smoke": {
+            "type": ["object", "null"],
+            "required": ["ts", "result"],
+            "additionalProperties": false,
+            "properties": {
+              "ts": {
+                "type": "string",
+                "format": "date-time",
+                "description": "Timestamp of last performance smoke test"
+              },
+              "result": {
+                "type": "string",
+                "enum": ["PASS", "FAIL", "SKIP"],
+                "description": "Result of performance smoke test"
+              },
+              "p95_ms": {
+                "type": ["number", "null"],
+                "minimum": 0,
+                "description": "API p95 latency in milliseconds"
+              }
+            }
+          },
+          "last_solve": {
+            "type": ["object", "null"],
+            "additionalProperties": false,
+            "properties": {
+              "ts": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "plan_version_id": {
+                "type": ["string", "integer", "null"]
+              },
+              "status": {
+                "type": "string",
+                "enum": ["success", "failed", "timeout"]
+              }
+            }
+          }
+        }
+      },
+      "description": "Map of tenant code to tenant status"
+    },
+    "last_updated": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Timestamp of last status update"
+    }
+  }
+}

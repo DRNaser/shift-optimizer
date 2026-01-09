@@ -1,0 +1,52 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "version": "1.0.0",
+  "description": "Allowlist for PUBLIC grants on database objects. Objects not in this list with PUBLIC grants = FAIL.",
+
+  "allowed_public_execute_functions": {
+    "description": "Functions that may have PUBLIC EXECUTE (e.g., extension functions, utility functions)",
+    "public": [],
+    "core": []
+  },
+
+  "allowed_public_select_tables": {
+    "description": "Tables that may have PUBLIC SELECT (should be empty for tenant data)",
+    "public": [],
+    "core": []
+  },
+
+  "extension_patterns": {
+    "description": "Patterns for extension-created objects (excluded from checks)",
+    "function_prefixes": [
+      "pg_",
+      "pgp_",
+      "armor",
+      "dearmor",
+      "crypt",
+      "gen_random",
+      "gen_salt",
+      "digest",
+      "hmac",
+      "encrypt",
+      "decrypt",
+      "uuid_",
+      "st_",
+      "geography_",
+      "geometry_",
+      "box2d",
+      "box3d",
+      "postgis_"
+    ],
+    "table_prefixes": [
+      "pg_",
+      "spatial_ref_sys"
+    ]
+  },
+
+  "notes": [
+    "Extension functions (pgcrypto, PostGIS, uuid-ossp) are excluded via extension_patterns",
+    "Any user-defined function/table with PUBLIC grants not in allowlist = FAIL",
+    "To add an exception, add the object name to the appropriate list above",
+    "Review this file during security audits"
+  ]
+}

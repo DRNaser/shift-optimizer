@@ -1,0 +1,117 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "version": "1.0.0",
+  "description": "Contract version registry for Wien Pilot burn-in period",
+  "effective_date": "2026-02-03",
+  "freeze_end_date": "2026-03-05",
+  "last_updated": "2026-01-08",
+
+  "contracts": {
+    "import_contract_roster": {
+      "version": "1.0.0",
+      "file": "docs/IMPORT_CONTRACT_ROSTER.md",
+      "schema_file": "contracts/roster_import.schema.json",
+      "frozen": true,
+      "freeze_reason": "Wien Pilot burn-in - no breaking changes allowed",
+      "last_change": "2026-01-08",
+      "owner": "Platform Lead",
+      "change_requires": [
+        "version_bump",
+        "ga_readiness_review",
+        "migration_path",
+        "test_fixtures_update"
+      ]
+    },
+    "kpi_thresholds": {
+      "version": "1.0.0",
+      "file": "config/pilot_kpi_thresholds.json",
+      "frozen": true,
+      "freeze_reason": "Wien Pilot burn-in - baseline values locked",
+      "last_change": "2026-01-08",
+      "owner": "Platform Lead",
+      "change_requires": [
+        "version_bump",
+        "justification",
+        "impact_analysis"
+      ]
+    },
+    "publish_gate_config": {
+      "version": "1.0.0",
+      "file": "config/enable_publish_lock_wien.json",
+      "frozen": true,
+      "freeze_reason": "Wien Pilot burn-in - site enablement locked",
+      "last_change": "2026-01-08",
+      "owner": "Platform Lead",
+      "exceptions": [
+        "kill_switch_toggle"
+      ],
+      "change_requires": [
+        "version_bump",
+        "security_review"
+      ]
+    }
+  },
+
+  "dependencies": {
+    "python": {
+      "psycopg[binary]": "3.1.12",
+      "fastapi": "0.109.0",
+      "pydantic": "2.5.3",
+      "ortools": "9.8.3296",
+      "uvicorn": "0.27.0"
+    },
+    "system": {
+      "postgresql": "16-alpine",
+      "python_runtime": "3.11-slim"
+    }
+  },
+
+  "change_control": {
+    "burn_in_mode": true,
+    "expedited_review_enabled": true,
+    "expedited_approvers": ["platform_lead", "ops_lead"],
+    "regular_changes_deferred": true,
+    "ci_gates_required": [
+      "unit_tests",
+      "integration_tests",
+      "rls_security_tests",
+      "audit_gate_tests",
+      "golden_dataset_regression",
+      "schema_validation"
+    ]
+  },
+
+  "version_bump_rules": {
+    "PATCH": [
+      "bug_fix",
+      "validation_fix",
+      "documentation_update"
+    ],
+    "MINOR": [
+      "optional_field_addition",
+      "new_soft_gate",
+      "threshold_relaxation"
+    ],
+    "MAJOR": [
+      "required_field_removal",
+      "required_field_addition",
+      "field_type_change",
+      "hard_gate_removal",
+      "threshold_tightening"
+    ]
+  },
+
+  "exceptions": {
+    "kill_switch": {
+      "requires_change_request": false,
+      "creates_incident": true,
+      "allowed_during_burn_in": true
+    },
+    "security_hotfix": {
+      "requires_change_request": "post_hoc_24h",
+      "bypass_normal_review": true,
+      "requires_security_lead_approval": true,
+      "severity_threshold": ["S0", "S1"]
+    }
+  }
+}

@@ -207,3 +207,37 @@ class ConnectionError(DatabaseError):
 class TransactionError(DatabaseError):
     """Raised when transaction fails."""
     pass
+
+
+# =============================================================================
+# Service Status Errors (Escalation)
+# =============================================================================
+
+class ServiceBlockedError(SolvereIgnError):
+    """
+    Raised when scope has active S0/S1 escalation blocking writes.
+
+    HTTP 503: Service Unavailable
+    """
+
+    def __init__(
+        self,
+        scope_type: str,
+        scope_id: Optional[str] = None,
+        reason_code: Optional[str] = None
+    ):
+        message = f"Write operations blocked due to active escalation on {scope_type}"
+        if scope_id:
+            message += f" ({scope_id})"
+        super().__init__(
+            message,
+            {
+                "scope_type": scope_type,
+                "scope_id": scope_id,
+                "reason_code": reason_code,
+                "action": "Contact platform administrator to resolve escalation"
+            }
+        )
+        self.scope_type = scope_type
+        self.scope_id = scope_id
+        self.reason_code = reason_code

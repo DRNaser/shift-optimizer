@@ -1,0 +1,239 @@
+{
+  "$schema": "https://solvereign.com/schemas/fls_import_contract.schema.json",
+  "import_metadata": {
+    "source": "FLS",
+    "export_timestamp": "2026-01-08T06:00:00+01:00",
+    "tenant_id": 1,
+    "site_id": 1,
+    "plan_date": "2026-01-08",
+    "fls_export_id": "FLS-WIEN-2026W02-001"
+  },
+  "orders": [
+    {
+      "order_id": "ORD-001",
+      "service_code": "DELIVERY",
+      "tw_start": "2026-01-08T08:00:00+01:00",
+      "tw_end": "2026-01-08T10:00:00+01:00",
+      "tw_is_hard": true,
+      "lat": 48.2082,
+      "lng": 16.3738,
+      "service_seconds": 300,
+      "priority": 80,
+      "customer_name": "Kunde Alpha",
+      "address": {
+        "street": "Stephansplatz",
+        "house_number": "1",
+        "postal_code": "1010",
+        "city": "Wien",
+        "country": "AT"
+      },
+      "notes": "Lieferung vor 10 Uhr",
+      "fls_internal_id": "FLS-INT-001"
+    },
+    {
+      "order_id": "ORD-002",
+      "service_code": "DELIVERY",
+      "tw_start": "2026-01-08T09:00:00+01:00",
+      "tw_end": "2026-01-08T12:00:00+01:00",
+      "tw_is_hard": true,
+      "lat": 48.1986,
+      "lng": 16.3478,
+      "service_seconds": 600,
+      "priority": 50,
+      "customer_name": "Kunde Beta",
+      "address": {
+        "street": "Mariahilfer Strasse",
+        "house_number": "45",
+        "postal_code": "1060",
+        "city": "Wien",
+        "country": "AT"
+      },
+      "fls_internal_id": "FLS-INT-002"
+    },
+    {
+      "order_id": "ORD-003",
+      "service_code": "SERVICE",
+      "tw_start": "2026-01-08T14:00:00+01:00",
+      "tw_end": "2026-01-08T16:00:00+01:00",
+      "tw_is_hard": false,
+      "lat": 48.2116,
+      "lng": 16.3632,
+      "service_seconds": 1800,
+      "priority": 90,
+      "required_skills": ["INSTALLATION"],
+      "customer_name": "Kunde Gamma",
+      "address": {
+        "street": "Karntner Ring",
+        "house_number": "12",
+        "postal_code": "1010",
+        "city": "Wien",
+        "country": "AT"
+      },
+      "fls_internal_id": "FLS-INT-003"
+    },
+    {
+      "order_id": "ORD-004",
+      "service_code": "PICKUP",
+      "tw_start": "2026-01-08T10:00:00+01:00",
+      "tw_end": "2026-01-08T14:00:00+01:00",
+      "tw_is_hard": true,
+      "lat": 48.2206,
+      "lng": 16.3100,
+      "service_seconds": 300,
+      "priority": 60,
+      "weight_kg": 25.5,
+      "customer_name": "Kunde Delta",
+      "address": {
+        "street": "Ottakringer Strasse",
+        "house_number": "100",
+        "postal_code": "1160",
+        "city": "Wien",
+        "country": "AT"
+      },
+      "fls_internal_id": "FLS-INT-004"
+    },
+    {
+      "order_id": "ORD-005",
+      "service_code": "DELIVERY",
+      "tw_start": "2026-01-08T11:00:00+01:00",
+      "tw_end": "2026-01-08T13:00:00+01:00",
+      "tw_is_hard": true,
+      "lat": 48.1858,
+      "lng": 16.3126,
+      "service_seconds": 300,
+      "priority": 70,
+      "customer_name": "Kunde Epsilon",
+      "address": {
+        "street": "Schonbrunner Strasse",
+        "house_number": "250",
+        "postal_code": "1120",
+        "city": "Wien",
+        "country": "AT"
+      },
+      "fls_internal_id": "FLS-INT-005"
+    },
+    {
+      "order_id": "ORD-006",
+      "service_code": "DELIVERY",
+      "tw_start": "2026-01-08T08:30:00+01:00",
+      "tw_end": "2026-01-08T11:30:00+01:00",
+      "tw_is_hard": true,
+      "zone_id": "1220",
+      "service_seconds": 300,
+      "priority": 40,
+      "customer_name": "Kunde Zeta (Zone Only)",
+      "address": {
+        "street": "Wagramer Strasse",
+        "postal_code": "1220",
+        "city": "Wien",
+        "country": "AT"
+      },
+      "notes": "Zone-based location",
+      "fls_internal_id": "FLS-INT-006"
+    },
+    {
+      "order_id": "ORD-007",
+      "service_code": "DELIVERY",
+      "tw_start": "2026-01-08T15:00:00+01:00",
+      "tw_end": "2026-01-08T18:00:00+01:00",
+      "tw_is_hard": true,
+      "h3_index": "881f1d4813fffff",
+      "service_seconds": 300,
+      "priority": 55,
+      "customer_name": "Kunde Eta (H3 Only)",
+      "address": {
+        "postal_code": "1030",
+        "city": "Wien",
+        "country": "AT"
+      },
+      "notes": "H3-based location",
+      "fls_internal_id": "FLS-INT-007"
+    },
+    {
+      "order_id": "ORD-008",
+      "service_code": "DELIVERY",
+      "tw_start": "2026-01-08T09:30:00+01:00",
+      "tw_end": "2026-01-08T12:30:00+01:00",
+      "tw_is_hard": true,
+      "lat": 48.2300,
+      "lng": 16.4200,
+      "service_seconds": 300,
+      "priority": 45,
+      "requires_two_person": true,
+      "weight_kg": 80.0,
+      "volume_m3": 1.5,
+      "customer_name": "Kunde Theta (2-Person)",
+      "address": {
+        "street": "Stadlauer Strasse",
+        "house_number": "50",
+        "postal_code": "1220",
+        "city": "Wien",
+        "country": "AT"
+      },
+      "fls_internal_id": "FLS-INT-008"
+    },
+    {
+      "order_id": "ORD-009",
+      "service_code": "DELIVERY",
+      "tw_start": "2026-01-08T13:00:00+01:00",
+      "tw_end": "2026-01-08T15:00:00+01:00",
+      "tw_is_hard": true,
+      "lat": 48.1750,
+      "lng": 16.3850,
+      "service_seconds": 300,
+      "priority": 65,
+      "depot_id": "DEPOT-SOUTH",
+      "customer_name": "Kunde Iota",
+      "address": {
+        "street": "Favoritenstrasse",
+        "house_number": "200",
+        "postal_code": "1100",
+        "city": "Wien",
+        "country": "AT"
+      },
+      "fls_internal_id": "FLS-INT-009"
+    },
+    {
+      "order_id": "ORD-010",
+      "service_code": "SERVICE",
+      "tw_start": "2026-01-08T16:00:00+01:00",
+      "tw_end": "2026-01-08T19:00:00+01:00",
+      "tw_is_hard": false,
+      "lat": 48.2450,
+      "lng": 16.3550,
+      "service_seconds": 2400,
+      "priority": 85,
+      "required_skills": ["HEAVY_LIFT", "INSTALLATION"],
+      "requires_two_person": true,
+      "weight_kg": 150.0,
+      "customer_name": "Kunde Kappa (Complex)",
+      "address": {
+        "street": "Floridsdorfer Hauptstrasse",
+        "house_number": "30",
+        "postal_code": "1210",
+        "city": "Wien",
+        "country": "AT"
+      },
+      "notes": "Schwere Installation, 2 Personen erforderlich",
+      "fls_internal_id": "FLS-INT-010"
+    }
+  ],
+  "depots": [
+    {
+      "depot_id": "DEPOT-MAIN",
+      "name": "Wien Hauptdepot",
+      "lat": 48.2000,
+      "lng": 16.3600,
+      "open_time": "06:00",
+      "close_time": "22:00"
+    },
+    {
+      "depot_id": "DEPOT-SOUTH",
+      "name": "Wien Sud Depot",
+      "lat": 48.1650,
+      "lng": 16.3400,
+      "open_time": "07:00",
+      "close_time": "20:00"
+    }
+  ]
+}

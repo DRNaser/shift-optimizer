@@ -1,0 +1,239 @@
+# PR-PROOF: Determinism & Security Proofs (5-15 min)
+# Runs on: PRs touching solver, security, or auth code
+# Purpose: Verify core invariants before merge
+
+name: PR Proof Gates
+
+on:
+  pull_request:
+    branches: [main, develop]
+    paths:
+      - 'backend_py/packs/routing/services/solver/**'
+      - 'backend_py/src/services/*solver*'
+      - 'backend_py/v3/solver*'
+      - 'backend_py/api/security/**'
+      - 'backend_py/db/migrations/**'
+      - 'frontend_v5/lib/*-api.ts'
+
+concurrency:
+  group: pr-proof-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ============================================
+  # DETERMINISM PROOF (Quick Mode)
+  # ============================================
+  determinism-quick:
+    name: 🔐 Determinism Proof (Quick)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: solvereign_test
+          POSTGRES_USER: test
+          POSTGRES_PASSWORD: test
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          pip install -r backend_py/requirements.txt
+          pip install ortools==9.11.4210
+
+      - name: Apply migrations
+        run: |
+          for f in backend_py/db/migrations/*.sql; do
+            psql $DATABASE_URL < "$f" || true
+          done
+        env:
+          DATABASE_URL: postgresql://test:test@localhost:5432/solvereign_test
+
+      - name: 🔐 Run Determinism Proof (Quick)
+        run: |
+          python -m backend_py.skills.determinism_proof \
+            --mode quick \
+            --runs 3 \
+            --output determinism_proof.json
+        env:
+          DATABASE_URL: postgresql://test:test@localhost:5432/solvereign_test
+
+      - name: Verify determinism passed
+        run: |
+          PASSED=$(jq '.passed' determinism_proof.json)
+          if [ "$PASSED" != "true" ]; then
+            echo "❌ DETERMINISM FAILED!"
+            jq '.' determinism_proof.json
+            exit 1
+          fi
+          echo "✅ Determinism verified (3 identical runs)"
+
+      - name: Upload proof artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: determinism-proof
+          path: determinism_proof.json
+          retention-days: 30
+
+  # ============================================
+  # SIGNATURE & IDEMPOTENCY PROOFS
+  # ============================================
+  signature-proof:
+    name: 🔏 Signature & Idempotency
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -r backend_py/requirements.txt
+
+      - name: Test HMAC signature generation
+        run: |
+          pytest backend_py/api/tests/test_security_guards.py \
+            -v -k "signature" --tb=short
+
+      - name: Test idempotency key handling
+        run: |
+          pytest backend_py/api/tests/ \
+            -v -k "idempotency" --tb=short
+
+      - name: Test replay protection
+        run: |
+          pytest backend_py/tests/test_replay_protection_unit.py \
+            -v --tb=short
+
+  # ============================================
+  # MIGRATION CONTRACT CHECK
+  # ============================================
+  migration-contract:
+    name: 📋 Migration Contract
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: solvereign_test
+          POSTGRES_USER: test
+          POSTGRES_PASSWORD: test
+        ports:
+          - 5432:5432
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Need full history for diff
+
+      - name: Get changed migrations
+        id: migrations
+        run: |
+          CHANGED=$(git diff --name-only origin/main... -- 'backend_py/db/migrations/*.sql' || echo "")
+          echo "changed=$CHANGED" >> $GITHUB_OUTPUT
+          echo "Changed migrations: $CHANGED"
+
+      - name: Check tenant_id in new tables
+        if: steps.migrations.outputs.changed != ''
+        run: |
+          for f in ${{ steps.migrations.outputs.changed }}; do
+            echo "Checking $f..."
+
+            # Check for CREATE TABLE without tenant_id
+            if grep -q "CREATE TABLE" "$f"; then
+              TABLE_NAME=$(grep -oP 'CREATE TABLE \K\S+' "$f" | head -1)
+
+              # Skip core schema (uses RLS differently)
+              if [[ "$TABLE_NAME" == core.* ]]; then
+                echo "  ✓ $TABLE_NAME is in core schema (RLS via policy)"
+                continue
+              fi
+
+              if ! grep -q "tenant_id" "$f"; then
+                echo "  ❌ $TABLE_NAME missing tenant_id column!"
+                exit 1
+              fi
+              echo "  ✓ $TABLE_NAME has tenant_id"
+
+              # Check for RLS
+              if ! grep -q "ENABLE ROW LEVEL SECURITY" "$f" && \
+                 ! grep -q "CREATE POLICY" "$f"; then
+                echo "  ⚠️ $TABLE_NAME may need RLS policy"
+              fi
+
+              # Check for index on tenant_id
+              if ! grep -q "CREATE INDEX.*tenant_id" "$f"; then
+                echo "  ⚠️ $TABLE_NAME should have index on tenant_id"
+              fi
+            fi
+          done
+
+      - name: Apply all migrations
+        run: |
+          for f in backend_py/db/migrations/*.sql; do
+            psql $DATABASE_URL < "$f" || true
+          done
+        env:
+          DATABASE_URL: postgresql://test:test@localhost:5432/solvereign_test
+
+      - name: Verify RLS coverage
+        run: |
+          psql $DATABASE_URL -c "
+            SELECT
+              t.tablename,
+              t.rowsecurity as rls_enabled,
+              COUNT(p.polname) as policy_count
+            FROM pg_tables t
+            LEFT JOIN pg_policies p ON p.tablename = t.tablename
+            WHERE t.schemaname = 'public'
+            GROUP BY t.tablename, t.rowsecurity
+            ORDER BY t.tablename;
+          "
+        env:
+          DATABASE_URL: postgresql://test:test@localhost:5432/solvereign_test
+
+  # ============================================
+  # SUMMARY
+  # ============================================
+  summary:
+    name: ✅ PR Proof Summary
+    runs-on: ubuntu-latest
+    needs: [determinism-quick, signature-proof, migration-contract]
+    if: always()
+
+    steps:
+      - name: Check all proofs passed
+        run: |
+          if [ "${{ needs.determinism-quick.result }}" == "failure" ]; then
+            echo "❌ Determinism proof failed"
+            exit 1
+          fi
+          if [ "${{ needs.signature-proof.result }}" == "failure" ]; then
+            echo "❌ Signature proof failed"
+            exit 1
+          fi
+          if [ "${{ needs.migration-contract.result }}" == "failure" ]; then
+            echo "❌ Migration contract check failed"
+            exit 1
+          fi
+          echo "✅ All proof gates passed"

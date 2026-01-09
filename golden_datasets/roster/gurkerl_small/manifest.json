@@ -1,0 +1,25 @@
+{
+  "name": "gurkerl_small",
+  "pack": "roster",
+  "type": "happy_path",
+  "version": "1.0.0",
+  "created_at": "2026-01-07T12:00:00Z",
+  "updated_at": "2026-01-07T12:00:00Z",
+  "created_by": "golden_dataset_manager",
+  "description": "Minimal roster test (50 tours)",
+  "scenario": "Basic shift scheduling with 50 tours",
+  "input_size": {
+    "tours": 50,
+    "days": 7
+  },
+  "solver_seed": 94,
+  "input_hash": "15f587fbbfe6f4215d5e82456cbd782bfdb60a6aa80740c14a979b1247947f77",
+  "expected_output_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "expected_kpis": {
+    "total_drivers": 10,
+    "coverage_percent": 100.0,
+    "fte_ratio": 1.0,
+    "max_weekly_hours": 48
+  },
+  "expected_failure": null
+}

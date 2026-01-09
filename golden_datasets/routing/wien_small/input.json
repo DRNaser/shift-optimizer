@@ -1,0 +1,23 @@
+{
+  "stops": [
+    {"id": 1, "lat": 48.2082, "lng": 16.3738, "tw_start": "08:00", "tw_end": "12:00"},
+    {"id": 2, "lat": 48.2100, "lng": 16.3800, "tw_start": "08:00", "tw_end": "12:00"},
+    {"id": 3, "lat": 48.2050, "lng": 16.3700, "tw_start": "08:00", "tw_end": "12:00"},
+    {"id": 4, "lat": 48.2120, "lng": 16.3850, "tw_start": "09:00", "tw_end": "13:00"},
+    {"id": 5, "lat": 48.2000, "lng": 16.3600, "tw_start": "09:00", "tw_end": "13:00"},
+    {"id": 6, "lat": 48.2150, "lng": 16.3900, "tw_start": "10:00", "tw_end": "14:00"},
+    {"id": 7, "lat": 48.1950, "lng": 16.3550, "tw_start": "10:00", "tw_end": "14:00"},
+    {"id": 8, "lat": 48.2180, "lng": 16.3950, "tw_start": "11:00", "tw_end": "15:00"},
+    {"id": 9, "lat": 48.1900, "lng": 16.3500, "tw_start": "11:00", "tw_end": "15:00"},
+    {"id": 10, "lat": 48.2200, "lng": 16.4000, "tw_start": "12:00", "tw_end": "16:00"}
+  ],
+  "vehicles": [
+    {"id": 1, "capacity": 100, "depot_lat": 48.2082, "depot_lng": 16.3738},
+    {"id": 2, "capacity": 100, "depot_lat": 48.2082, "depot_lng": 16.3738},
+    {"id": 3, "capacity": 100, "depot_lat": 48.2082, "depot_lng": 16.3738}
+  ],
+  "config": {
+    "time_limit_s": 30,
+    "distance_matrix": "euclidean"
+  }
+}

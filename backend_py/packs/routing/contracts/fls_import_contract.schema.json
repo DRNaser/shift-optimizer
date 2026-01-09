@@ -1,0 +1,339 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://solvereign.com/schemas/fls_import_contract.schema.json",
+  "version": "1.0.0",
+  "title": "FLS Import Contract",
+  "description": "Schema for FLS order data import into SOLVEREIGN routing pack. Defines required fields, validation rules, and hard gates.",
+  "type": "object",
+  "required": [
+    "orders",
+    "import_metadata"
+  ],
+  "properties": {
+    "import_metadata": {
+      "type": "object",
+      "description": "Metadata about the import batch",
+      "required": ["source", "export_timestamp", "tenant_id", "site_id"],
+      "properties": {
+        "source": {
+          "type": "string",
+          "enum": ["FLS", "FLS_V2", "MANUAL"],
+          "description": "Source system identifier"
+        },
+        "export_timestamp": {
+          "type": "string",
+          "format": "date-time",
+          "description": "When FLS exported this data (ISO 8601, Europe/Vienna)"
+        },
+        "tenant_id": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "SOLVEREIGN tenant ID"
+        },
+        "site_id": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "SOLVEREIGN site ID"
+        },
+        "plan_date": {
+          "type": "string",
+          "format": "date",
+          "description": "Target planning date (YYYY-MM-DD)"
+        },
+        "fls_export_id": {
+          "type": "string",
+          "description": "FLS internal export batch ID for traceability"
+        }
+      }
+    },
+    "orders": {
+      "type": "array",
+      "description": "List of orders/stops to import",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/definitions/Order"
+      }
+    },
+    "depots": {
+      "type": "array",
+      "description": "Optional depot definitions (if not using site defaults)",
+      "items": {
+        "$ref": "#/definitions/Depot"
+      }
+    },
+    "vehicles": {
+      "type": "array",
+      "description": "Optional vehicle overrides (if not using site defaults)",
+      "items": {
+        "$ref": "#/definitions/Vehicle"
+      }
+    }
+  },
+  "definitions": {
+    "Order": {
+      "type": "object",
+      "description": "Single order/stop for routing",
+      "required": [
+        "order_id",
+        "tw_start",
+        "tw_end"
+      ],
+      "properties": {
+        "order_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "description": "Unique order identifier from FLS (HARD GATE: required)"
+        },
+        "service_code": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 50,
+          "description": "Service type code (e.g., DELIVERY, PICKUP, SERVICE)"
+        },
+        "tw_start": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Time window start (HARD GATE: required, ISO 8601)"
+        },
+        "tw_end": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Time window end (HARD GATE: required, ISO 8601)"
+        },
+        "tw_is_hard": {
+          "type": "boolean",
+          "default": true,
+          "description": "Whether TW is hard (violation = fail) or soft"
+        },
+        "lat": {
+          "type": "number",
+          "minimum": -90,
+          "maximum": 90,
+          "description": "Latitude (WGS84). Required unless zone_id or h3_index provided"
+        },
+        "lng": {
+          "type": "number",
+          "minimum": -180,
+          "maximum": 180,
+          "description": "Longitude (WGS84). Required unless zone_id or h3_index provided"
+        },
+        "service_seconds": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 86400,
+          "default": 300,
+          "description": "Service duration in seconds (default 5 min)"
+        },
+        "zone_id": {
+          "type": "string",
+          "description": "Zone identifier (PLZ, district). Alternative to lat/lng"
+        },
+        "h3_index": {
+          "type": "string",
+          "pattern": "^[0-9a-fA-F]{15}$",
+          "description": "H3 index at resolution 9. Alternative to lat/lng"
+        },
+        "depot_id": {
+          "type": "string",
+          "description": "Assigned depot ID (if pre-assigned)"
+        },
+        "priority": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 100,
+          "default": 50,
+          "description": "Priority score (higher = more important, 0-100)"
+        },
+        "required_skills": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Skills required for this order"
+        },
+        "requires_two_person": {
+          "type": "boolean",
+          "default": false,
+          "description": "Whether order requires 2-person team"
+        },
+        "weight_kg": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Weight in kg (for capacity constraints)"
+        },
+        "volume_m3": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Volume in m3 (for capacity constraints)"
+        },
+        "customer_name": {
+          "type": "string",
+          "maxLength": 200,
+          "description": "Customer name (for display)"
+        },
+        "address": {
+          "type": "object",
+          "properties": {
+            "street": {"type": "string"},
+            "house_number": {"type": "string"},
+            "postal_code": {"type": "string"},
+            "city": {"type": "string"},
+            "country": {"type": "string", "default": "AT"}
+          },
+          "description": "Structured address"
+        },
+        "notes": {
+          "type": "string",
+          "maxLength": 1000,
+          "description": "Special instructions"
+        },
+        "fls_internal_id": {
+          "type": "string",
+          "description": "FLS internal ID for reference"
+        }
+      },
+      "allOf": [
+        {
+          "description": "COORDS GATE: Must have either (lat+lng) OR (zone_id) OR (h3_index)",
+          "anyOf": [
+            {
+              "required": ["lat", "lng"]
+            },
+            {
+              "required": ["zone_id"]
+            },
+            {
+              "required": ["h3_index"]
+            }
+          ]
+        }
+      ]
+    },
+    "Depot": {
+      "type": "object",
+      "required": ["depot_id", "name", "lat", "lng"],
+      "properties": {
+        "depot_id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Unique depot identifier"
+        },
+        "name": {
+          "type": "string",
+          "description": "Depot name"
+        },
+        "lat": {
+          "type": "number",
+          "minimum": -90,
+          "maximum": 90
+        },
+        "lng": {
+          "type": "number",
+          "minimum": -180,
+          "maximum": 180
+        },
+        "open_time": {
+          "type": "string",
+          "pattern": "^[0-2][0-9]:[0-5][0-9]$",
+          "description": "Opening time (HH:MM)"
+        },
+        "close_time": {
+          "type": "string",
+          "pattern": "^[0-2][0-9]:[0-5][0-9]$",
+          "description": "Closing time (HH:MM)"
+        }
+      }
+    },
+    "Vehicle": {
+      "type": "object",
+      "required": ["vehicle_id"],
+      "properties": {
+        "vehicle_id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Unique vehicle identifier"
+        },
+        "depot_id": {
+          "type": "string",
+          "description": "Home depot ID"
+        },
+        "capacity_kg": {
+          "type": "number",
+          "minimum": 0
+        },
+        "capacity_m3": {
+          "type": "number",
+          "minimum": 0
+        },
+        "skills": {
+          "type": "array",
+          "items": {"type": "string"},
+          "description": "Vehicle/driver skills"
+        },
+        "team_size": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 3,
+          "default": 1
+        },
+        "shift_start": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "shift_end": {
+          "type": "string",
+          "format": "date-time"
+        }
+      }
+    }
+  },
+  "x-solvereign-gates": {
+    "description": "Hard gates that cause BLOCK if violated",
+    "hard_gates": [
+      {
+        "gate_id": "GATE_ORDER_ID",
+        "rule": "Every order MUST have order_id",
+        "violation": "BLOCK"
+      },
+      {
+        "gate_id": "GATE_TIME_WINDOW",
+        "rule": "Every order MUST have tw_start AND tw_end",
+        "violation": "BLOCK"
+      },
+      {
+        "gate_id": "GATE_TW_VALID",
+        "rule": "tw_end MUST be after tw_start",
+        "violation": "BLOCK"
+      },
+      {
+        "gate_id": "GATE_COORDS_OR_ZONE",
+        "rule": "Every order MUST have (lat+lng) OR zone_id OR h3_index",
+        "violation": "BLOCK"
+      },
+      {
+        "gate_id": "GATE_COORDS_RANGE",
+        "rule": "If lat/lng provided, must be within Austria bounding box (extended)",
+        "bounds": {
+          "lat_min": 46.0,
+          "lat_max": 49.5,
+          "lng_min": 9.0,
+          "lng_max": 18.0
+        },
+        "violation": "WARN"
+      }
+    ],
+    "soft_gates": [
+      {
+        "gate_id": "GATE_SERVICE_CODE",
+        "rule": "service_code should be in known list",
+        "violation": "WARN"
+      },
+      {
+        "gate_id": "GATE_DUPLICATE_ORDER_ID",
+        "rule": "order_id should be unique within batch",
+        "violation": "WARN"
+      }
+    ]
+  }
+}

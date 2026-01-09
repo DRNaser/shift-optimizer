@@ -94,10 +94,10 @@ class DatabaseManager:
 
         async with self._pool.connection() as conn:
             # Set RLS context IMMEDIATELY on this connection
-            # Uses SET LOCAL so it's transaction-scoped and cleared on commit/rollback
+            # P0-2 FIX: Uses true (transaction-scoped) not false (session-scoped)
             async with conn.cursor() as cur:
                 await cur.execute(
-                    "SELECT set_config('app.current_tenant_id', %s, false)",
+                    "SELECT set_config('app.current_tenant_id', %s, true)",
                     (str(tenant_id),)
                 )
             logger.debug(
@@ -106,6 +106,46 @@ class DatabaseManager:
             )
             yield conn
             # Connection returns to pool - RLS setting is cleared on next use
+
+    @asynccontextmanager
+    async def core_tenant_transaction(
+        self,
+        tenant_id: str,
+        site_id: Optional[str] = None,
+        is_platform_admin: bool = False
+    ) -> AsyncGenerator[psycopg.AsyncConnection, None]:
+        """
+        Get a connection with transaction and core.tenants RLS context.
+
+        Uses core.set_tenant_context() to set UUID-based tenant context
+        for the new core schema tables.
+
+        Usage:
+            async with db.core_tenant_transaction(tenant_uuid, site_uuid) as conn:
+                await conn.execute("SELECT * FROM core.sites")
+                # Only sees current tenant's data
+        """
+        if not self._pool:
+            raise RuntimeError("Database pool not initialized")
+
+        async with self._pool.connection() as conn:
+            async with conn.transaction():
+                # Set core RLS context within transaction
+                async with conn.cursor() as cur:
+                    await cur.execute(
+                        "SELECT core.set_tenant_context(%s, %s, %s)",
+                        (tenant_id, site_id, is_platform_admin)
+                    )
+                logger.debug(
+                    "core_rls_context_set",
+                    extra={
+                        "tenant_id": tenant_id,
+                        "site_id": site_id,
+                        "is_platform_admin": is_platform_admin,
+                        "connection_id": id(conn)
+                    }
+                )
+                yield conn
 
     @asynccontextmanager
     async def tenant_transaction(
@@ -148,23 +188,30 @@ async def get_tenant_by_api_key(db: DatabaseManager, api_key: str) -> Optional[d
     """
     Look up tenant by API key hash.
 
+    Uses SECURITY DEFINER function to bypass RLS (required for auth).
+    The function is defined in migration 025 (025_tenants_rls_fix.sql).
+
     Args:
         db: Database manager
         api_key: Raw API key (will be hashed)
 
     Returns:
         Tenant dict or None if not found
+
+    Security Note:
+        This is called BEFORE tenant context is established.
+        The get_tenant_by_api_key_hash() function uses SECURITY DEFINER
+        to bypass RLS and allow authentication lookups.
     """
     api_key_hash = hashlib.sha256(api_key.encode()).hexdigest()
 
     async with db.connection() as conn:
         async with conn.cursor() as cur:
+            # Use SECURITY DEFINER function to bypass RLS for auth lookup
+            # This function is defined in migration 025 and returns:
+            # (id, name, is_active, metadata, created_at)
             await cur.execute(
-                """
-                SELECT id, name, is_active, metadata, created_at
-                FROM tenants
-                WHERE api_key_hash = %s
-                """,
+                "SELECT * FROM get_tenant_by_api_key_hash(%s)",
                 (api_key_hash,)
             )
             return await cur.fetchone()
@@ -179,6 +226,373 @@ async def get_tenant_by_id(db: DatabaseManager, tenant_id: int) -> Optional[dict
                 (tenant_id,)
             )
             return await cur.fetchone()
+
+
+# =============================================================================
+# CORE TENANT OPERATIONS (UUID-based from core.tenants)
+# =============================================================================
+
+async def get_core_tenant_by_code(db: DatabaseManager, tenant_code: str) -> Optional[dict]:
+    """
+    Get tenant from core.tenants by code.
+
+    Args:
+        db: Database manager
+        tenant_code: URL-safe tenant code (e.g., 'rohlik', 'mediamarkt')
+
+    Returns:
+        Tenant dict with UUID id, or None if not found
+    """
+    async with db.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT id, tenant_code, name, is_active, metadata, created_at, updated_at
+                FROM core.tenants
+                WHERE tenant_code = %s AND is_active = TRUE
+                """,
+                (tenant_code,)
+            )
+            return await cur.fetchone()
+
+
+async def get_core_tenant_by_id(db: DatabaseManager, tenant_id: str) -> Optional[dict]:
+    """Get tenant from core.tenants by UUID."""
+    async with db.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT id, tenant_code, name, is_active, metadata, created_at, updated_at
+                FROM core.tenants
+                WHERE id = %s AND is_active = TRUE
+                """,
+                (tenant_id,)
+            )
+            return await cur.fetchone()
+
+
+async def get_core_sites_for_tenant(db: DatabaseManager, tenant_id: str) -> list[dict]:
+    """Get all active sites for a tenant."""
+    async with db.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT id, site_code, name, timezone, is_active, metadata, created_at, updated_at
+                FROM core.sites
+                WHERE tenant_id = %s AND is_active = TRUE
+                ORDER BY site_code
+                """,
+                (tenant_id,)
+            )
+            return await cur.fetchall()
+
+
+async def get_core_site_by_code(
+    db: DatabaseManager, tenant_id: str, site_code: str
+) -> Optional[dict]:
+    """Get a specific site by tenant and site code."""
+    async with db.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT id, site_code, name, timezone, is_active, metadata, created_at, updated_at
+                FROM core.sites
+                WHERE tenant_id = %s AND site_code = %s AND is_active = TRUE
+                """,
+                (tenant_id, site_code)
+            )
+            return await cur.fetchone()
+
+
+async def get_core_entitlements_for_tenant(db: DatabaseManager, tenant_id: str) -> list[dict]:
+    """Get all entitlements for a tenant."""
+    async with db.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT id, pack_id, is_enabled, config, valid_from, valid_until,
+                       created_at, updated_at
+                FROM core.tenant_entitlements
+                WHERE tenant_id = %s
+                ORDER BY pack_id
+                """,
+                (tenant_id,)
+            )
+            return await cur.fetchall()
+
+
+async def check_core_entitlement(
+    db: DatabaseManager, tenant_id: str, pack_id: str
+) -> bool:
+    """Check if tenant has active entitlement for a pack."""
+    async with db.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "SELECT core.has_entitlement(%s, %s)",
+                (tenant_id, pack_id)
+            )
+            result = await cur.fetchone()
+            return result["has_entitlement"] if result else False
+
+
+async def set_core_tenant_context(
+    conn: psycopg.AsyncConnection,
+    tenant_id: str,
+    site_id: Optional[str] = None,
+    is_platform_admin: bool = False
+) -> None:
+    """
+    Set transaction-local tenant context using core.set_tenant_context.
+
+    CRITICAL: This uses SET LOCAL (transaction-scoped) for RLS security.
+    Must be called at the start of each request within a transaction.
+
+    Args:
+        conn: Active connection (should be in a transaction)
+        tenant_id: UUID of tenant (from core.tenants)
+        site_id: Optional UUID of site (from core.sites)
+        is_platform_admin: If True, bypasses tenant RLS policies
+    """
+    async with conn.cursor() as cur:
+        await cur.execute(
+            "SELECT core.set_tenant_context(%s, %s, %s)",
+            (tenant_id, site_id, is_platform_admin)
+        )
+    logger.debug(
+        "core_rls_context_set",
+        extra={
+            "tenant_id": tenant_id,
+            "site_id": site_id,
+            "is_platform_admin": is_platform_admin,
+            "connection_id": id(conn)
+        }
+    )
+
+
+# =============================================================================
+# ORGANIZATION OPERATIONS (from core.organizations)
+# =============================================================================
+
+async def get_organization_by_code(db: DatabaseManager, org_code: str) -> Optional[dict]:
+    """
+    Get organization from core.organizations by code.
+
+    Args:
+        db: Database manager
+        org_code: URL-safe org code (e.g., 'lts')
+
+    Returns:
+        Organization dict with UUID id, or None if not found
+    """
+    async with db.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT id, org_code, name, is_active, metadata, created_at, updated_at
+                FROM core.organizations
+                WHERE org_code = %s AND is_active = TRUE
+                """,
+                (org_code,)
+            )
+            return await cur.fetchone()
+
+
+async def get_organization_by_id(db: DatabaseManager, org_id: str) -> Optional[dict]:
+    """Get organization from core.organizations by UUID."""
+    async with db.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT id, org_code, name, is_active, metadata, created_at, updated_at
+                FROM core.organizations
+                WHERE id = %s AND is_active = TRUE
+                """,
+                (org_id,)
+            )
+            return await cur.fetchone()
+
+
+async def get_tenants_for_organization(db: DatabaseManager, org_id: str) -> list[dict]:
+    """Get all tenants belonging to an organization."""
+    async with db.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT id, tenant_code, name, is_active, metadata, created_at, updated_at
+                FROM core.tenants
+                WHERE owner_org_id = %s
+                ORDER BY tenant_code
+                """,
+                (org_id,)
+            )
+            return await cur.fetchall()
+
+
+async def get_organization_for_tenant(db: DatabaseManager, tenant_id: str) -> Optional[dict]:
+    """Get the organization that owns a tenant."""
+    async with db.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT o.id, o.org_code, o.name, o.is_active, o.metadata, o.created_at, o.updated_at
+                FROM core.organizations o
+                JOIN core.tenants t ON t.owner_org_id = o.id
+                WHERE t.id = %s
+                """,
+                (tenant_id,)
+            )
+            return await cur.fetchone()
+
+
+# =============================================================================
+# ESCALATION OPERATIONS (from core.service_status)
+# =============================================================================
+
+async def record_escalation(
+    db: DatabaseManager,
+    scope_type: str,
+    scope_id: Optional[str],
+    reason_code: str,
+    details: Optional[dict] = None
+) -> str:
+    """
+    Record a new escalation event.
+
+    Args:
+        db: Database manager
+        scope_type: platform|org|tenant|site
+        scope_id: UUID of scope (None for platform)
+        reason_code: Reason code from registry
+        details: Additional context
+
+    Returns:
+        UUID of created escalation
+    """
+    async with db.transaction() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "SELECT core.set_tenant_context(NULL, NULL, TRUE)"
+            )
+            await cur.execute(
+                """
+                SELECT core.record_escalation(%s::core.scope_type, %s, %s, %s)
+                """,
+                (scope_type, scope_id, reason_code, details or {})
+            )
+            result = await cur.fetchone()
+            return str(result["record_escalation"])
+
+
+async def resolve_escalation(
+    db: DatabaseManager,
+    scope_type: str,
+    scope_id: Optional[str],
+    reason_code: str,
+    resolved_by: str = "system"
+) -> int:
+    """
+    Resolve an escalation event.
+
+    Returns:
+        Number of resolved escalations
+    """
+    async with db.transaction() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "SELECT core.set_tenant_context(NULL, NULL, TRUE)"
+            )
+            await cur.execute(
+                """
+                SELECT core.resolve_escalation(%s::core.scope_type, %s, %s, %s)
+                """,
+                (scope_type, scope_id, reason_code, resolved_by)
+            )
+            result = await cur.fetchone()
+            return result["resolve_escalation"]
+
+
+async def is_scope_blocked(
+    db: DatabaseManager,
+    scope_type: str,
+    scope_id: Optional[str] = None
+) -> bool:
+    """Check if a scope has active S0/S1 blocks."""
+    async with db.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT core.is_scope_blocked(%s::core.scope_type, %s)
+                """,
+                (scope_type, scope_id)
+            )
+            result = await cur.fetchone()
+            return result["is_scope_blocked"] if result else False
+
+
+async def is_scope_degraded(
+    db: DatabaseManager,
+    scope_type: str,
+    scope_id: Optional[str] = None
+) -> bool:
+    """Check if a scope has any degradation (S0-S2)."""
+    async with db.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT core.is_scope_degraded(%s::core.scope_type, %s)
+                """,
+                (scope_type, scope_id)
+            )
+            result = await cur.fetchone()
+            return result["is_scope_degraded"] if result else False
+
+
+async def record_security_event(
+    db: DatabaseManager,
+    event_type: str,
+    severity: str,
+    source_ip: Optional[str] = None,
+    tenant_id: Optional[str] = None,
+    user_id: Optional[str] = None,
+    request_path: Optional[str] = None,
+    request_method: Optional[str] = None,
+    details: Optional[dict] = None
+) -> str:
+    """
+    Record a security event to the audit log.
+
+    Args:
+        db: Database manager
+        event_type: Type of event (PLATFORM_ADMIN_SPOOF, RLS_VIOLATION, etc.)
+        severity: S0|S1|S2|S3
+        source_ip: Client IP address
+        tenant_id: Affected tenant UUID (optional)
+        user_id: User identifier (optional)
+        request_path: Request path
+        request_method: HTTP method
+        details: Additional context
+
+    Returns:
+        UUID of created event
+    """
+    async with db.transaction() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                INSERT INTO core.security_events (
+                    event_type, severity, source_ip, tenant_id, user_id,
+                    request_path, request_method, details
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                RETURNING id
+                """,
+                (
+                    event_type, severity, source_ip, tenant_id, user_id,
+                    request_path, request_method, details or {}
+                )
+            )
+            result = await cur.fetchone()
+            return str(result["id"])
 
 
 # =============================================================================

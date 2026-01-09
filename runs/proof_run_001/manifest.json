@@ -1,0 +1,62 @@
+{
+  "run_id": "dry_run_20260108_062712",
+  "started_at": "2026-01-08T06:27:12.690420",
+  "completed_at": "2026-01-08T06:27:12.853136",
+  "overall_verdict": "BLOCK",
+  "can_publish": false,
+  "verdict_chain": {
+    "coords_gate": "BLOCK",
+    "drift_gate": "N/A",
+    "audit": "N/A",
+    "publish": "NO"
+  },
+  "stages": {
+    "import_stage": {
+      "success": true,
+      "verdict": "OK",
+      "duration_seconds": 0.134,
+      "artifacts": {
+        "canonical_orders": "runs\\proof_run_001\\canonical_orders.json",
+        "validation_report": "runs\\proof_run_001\\validation_report.json"
+      },
+      "metrics": {
+        "orders_raw": 10,
+        "orders_canonical": 10,
+        "orders_with_coords": 8,
+        "orders_with_zone": 2,
+        "orders_missing": 0
+      },
+      "errors": [],
+      "warnings": []
+    },
+    "coords_gate": {
+      "success": false,
+      "verdict": "BLOCK",
+      "duration_seconds": 0.028,
+      "artifacts": {
+        "coords_quality": "runs\\proof_run_001\\coords_quality_report.json"
+      },
+      "metrics": {
+        "total_orders": 10,
+        "orders_with_latlng": 8,
+        "orders_resolved_zone": 0,
+        "orders_resolved_h3": 0,
+        "orders_unresolved": 2,
+        "missing_latlng_rate": 0.2,
+        "fallback_rate": 0.0,
+        "allows_osrm_finalize": false
+      },
+      "errors": [],
+      "warnings": []
+    }
+  },
+  "hashes": {
+    "input": "84575eff1db042fd95c78931db3fb993cad83fc079bf73dbddd046de89443398",
+    "canonical": "0500bc5bea3735217259e39fe4b5cc0f2849db502268b226bca40af9d88679d6",
+    "output": ""
+  },
+  "config": {
+    "profile": "wien_pilot_routing",
+    "osrm_enabled": true
+  }
+}

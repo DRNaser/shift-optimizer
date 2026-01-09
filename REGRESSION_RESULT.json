@@ -1,0 +1,25 @@
+{
+  "passed": 2,
+  "failed": 0,
+  "errors": 0,
+  "datasets": [
+    {
+      "name": "wien_small",
+      "pack": "routing",
+      "category": "happy_path",
+      "passed": true,
+      "solve_duration_ms": 0,
+      "differences": 0
+    },
+    {
+      "name": "gurkerl_small",
+      "pack": "roster",
+      "category": "happy_path",
+      "passed": true,
+      "solve_duration_ms": 0,
+      "differences": 0
+    }
+  ],
+  "total": 2,
+  "all_passed": true
+}

@@ -1,0 +1,11 @@
+{
+  "git_sha": "e88374d",
+  "migrations_version": "023_policy_profiles",
+  "config_hash": "sha256:0793d620da605806bf96a1e08e5a50687a10533b6cc6382d7400a09b43ce497f",
+  "timestamp": "2026-01-07T10:00:00Z",
+  "all_tests_pass": true,
+  "health_status": "healthy",
+  "deployed_by": "ci/cd",
+  "deployment_notes": "V3.3b routing pack pilot ready",
+  "rollback_sha": "6e9a445"
+}

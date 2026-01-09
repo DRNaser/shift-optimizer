@@ -1,0 +1,345 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://solvereign.com/schemas/evidence_pack.schema.json",
+  "title": "SOLVEREIGN Evidence Pack Schema",
+  "description": "Audit-grade evidence pack for operational runs and drills",
+  "version": "1.0.0",
+  "type": "object",
+  "required": [
+    "run_id",
+    "tenant_id",
+    "evidence_type",
+    "timestamp",
+    "input_hashes",
+    "output_kpis",
+    "audits",
+    "artifacts"
+  ],
+  "properties": {
+    "run_id": {
+      "type": "string",
+      "description": "Unique identifier for this run (UUID or timestamp-based)",
+      "pattern": "^[a-zA-Z0-9_-]+$"
+    },
+    "tenant_id": {
+      "type": "string",
+      "description": "Tenant UUID"
+    },
+    "site_id": {
+      "type": ["string", "null"],
+      "description": "Site UUID (optional)"
+    },
+    "evidence_type": {
+      "type": "string",
+      "enum": ["SOLVE", "REPAIR", "DRILL_SICK_CALL", "DRILL_FREEZE", "DRILL_PARTIAL_FORECAST"],
+      "description": "Type of operation that generated this evidence"
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO8601 timestamp when evidence was generated"
+    },
+    "git_sha": {
+      "type": ["string", "null"],
+      "description": "Git commit SHA at time of run"
+    },
+    "seed": {
+      "type": "integer",
+      "description": "Random seed used for solver (determinism)"
+    },
+    "config_hash": {
+      "type": "string",
+      "description": "SHA256 hash of solver configuration"
+    },
+    "input_hashes": {
+      "type": "object",
+      "description": "Hashes of all input data for reproducibility",
+      "required": ["forecast_hash"],
+      "properties": {
+        "forecast_hash": {
+          "type": "string",
+          "description": "SHA256 of canonical forecast data"
+        },
+        "driver_pool_hash": {
+          "type": ["string", "null"],
+          "description": "SHA256 of driver pool state"
+        },
+        "freeze_state_hash": {
+          "type": ["string", "null"],
+          "description": "SHA256 of freeze-lock state"
+        },
+        "baseline_plan_hash": {
+          "type": ["string", "null"],
+          "description": "SHA256 of baseline plan (for repair/drill)"
+        }
+      }
+    },
+    "output_kpis": {
+      "type": "object",
+      "description": "Key performance indicators from the run",
+      "required": ["total_drivers", "coverage_pct"],
+      "properties": {
+        "total_drivers": {
+          "type": "integer",
+          "description": "Total drivers in final plan"
+        },
+        "fte_drivers": {
+          "type": "integer",
+          "description": "Full-time equivalent drivers (>=40h)"
+        },
+        "pt_drivers": {
+          "type": "integer",
+          "description": "Part-time drivers (<40h)"
+        },
+        "total_hours": {
+          "type": "number",
+          "description": "Sum of all assigned hours"
+        },
+        "max_driver_hours": {
+          "type": "number",
+          "description": "Maximum hours for any single driver"
+        },
+        "coverage_pct": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100,
+          "description": "Percentage of tours covered (100 = full coverage)"
+        },
+        "tours_assigned": {
+          "type": "integer",
+          "description": "Number of tours with valid assignments"
+        },
+        "tours_total": {
+          "type": "integer",
+          "description": "Total tours in forecast"
+        },
+        "solve_time_ms": {
+          "type": "integer",
+          "description": "Solver execution time in milliseconds"
+        }
+      }
+    },
+    "audits": {
+      "type": "object",
+      "description": "Audit check results",
+      "required": ["all_passed", "checks"],
+      "properties": {
+        "all_passed": {
+          "type": "boolean",
+          "description": "True if all audit checks passed"
+        },
+        "checks_run": {
+          "type": "integer",
+          "description": "Number of audit checks executed"
+        },
+        "checks_passed": {
+          "type": "integer",
+          "description": "Number of audit checks that passed"
+        },
+        "checks": {
+          "type": "array",
+          "description": "Individual audit check results",
+          "items": {
+            "type": "object",
+            "required": ["name", "status"],
+            "properties": {
+              "name": {
+                "type": "string",
+                "description": "Audit check name"
+              },
+              "status": {
+                "type": "string",
+                "enum": ["PASS", "FAIL", "WARN", "SKIP"],
+                "description": "Check result"
+              },
+              "violation_count": {
+                "type": "integer",
+                "description": "Number of violations found (0 = pass)"
+              },
+              "details": {
+                "type": ["object", "null"],
+                "description": "Additional details or violation list"
+              }
+            }
+          }
+        }
+      }
+    },
+    "repair": {
+      "type": ["object", "null"],
+      "description": "Repair-specific evidence (for REPAIR and DRILL types)",
+      "properties": {
+        "repair_reason": {
+          "type": "string",
+          "enum": ["SICK_CALL", "VEHICLE_BREAKDOWN", "FREEZE_VIOLATION", "MANUAL", "DRILL"],
+          "description": "Why repair was triggered"
+        },
+        "absent_driver_ids": {
+          "type": "array",
+          "items": {"type": "integer"},
+          "description": "Driver IDs marked as absent"
+        },
+        "tours_reassigned": {
+          "type": "integer",
+          "description": "Number of tours reassigned"
+        },
+        "drivers_affected": {
+          "type": "integer",
+          "description": "Number of drivers receiving new assignments"
+        },
+        "churn_metrics": {
+          "type": "object",
+          "description": "Churn analysis",
+          "properties": {
+            "churn_rate": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1,
+              "description": "Fraction of assignments changed (0-1)"
+            },
+            "changed_assignments": {
+              "type": "integer",
+              "description": "Total assignments changed"
+            },
+            "total_assignments": {
+              "type": "integer",
+              "description": "Total assignments in plan"
+            }
+          }
+        },
+        "baseline_comparison": {
+          "type": "object",
+          "description": "Comparison to baseline plan",
+          "properties": {
+            "headcount_delta": {
+              "type": "integer",
+              "description": "Change in driver count (negative = fewer)"
+            },
+            "hours_delta": {
+              "type": "number",
+              "description": "Change in total hours"
+            },
+            "audit_status_changed": {
+              "type": "boolean",
+              "description": "True if audit pass/fail changed"
+            }
+          }
+        }
+      }
+    },
+    "freeze": {
+      "type": ["object", "null"],
+      "description": "Freeze-lock evidence (for DRILL_FREEZE type)",
+      "properties": {
+        "freeze_policy": {
+          "type": "object",
+          "description": "Freeze policy configuration",
+          "properties": {
+            "horizon_minutes": {
+              "type": "integer",
+              "description": "Freeze horizon in minutes"
+            },
+            "enforcement_mode": {
+              "type": "string",
+              "enum": ["BLOCK", "WARN"],
+              "description": "How violations are handled"
+            }
+          }
+        },
+        "frozen_stops_count": {
+          "type": "integer",
+          "description": "Number of stops that were frozen"
+        },
+        "blocked_attempts": {
+          "type": "integer",
+          "description": "Number of blocked modification attempts"
+        },
+        "violations": {
+          "type": "array",
+          "description": "Freeze violations (if any)",
+          "items": {
+            "type": "object",
+            "properties": {
+              "stop_id": {"type": "string"},
+              "violation_type": {"type": "string"},
+              "expected_vehicle": {"type": "string"},
+              "actual_vehicle": {"type": ["string", "null"]}
+            }
+          }
+        }
+      }
+    },
+    "forecast_patch": {
+      "type": ["object", "null"],
+      "description": "Forecast patching evidence (for DRILL_PARTIAL_FORECAST)",
+      "properties": {
+        "v1_forecast_hash": {
+          "type": "string",
+          "description": "Hash of partial forecast (v1)"
+        },
+        "v2_forecast_hash": {
+          "type": "string",
+          "description": "Hash of complete forecast (v2)"
+        },
+        "days_added": {
+          "type": "array",
+          "items": {"type": "integer"},
+          "description": "Days that were added in v2"
+        },
+        "tours_added": {
+          "type": "integer",
+          "description": "Number of tours added"
+        },
+        "churn_from_patch": {
+          "type": "number",
+          "description": "Churn rate caused by forecast update"
+        }
+      }
+    },
+    "artifacts": {
+      "type": "object",
+      "description": "References to generated artifacts",
+      "required": ["manifest_hash"],
+      "properties": {
+        "manifest_hash": {
+          "type": "string",
+          "description": "SHA256 of the evidence manifest"
+        },
+        "checksums_file": {
+          "type": "string",
+          "description": "Path to checksums.txt in ZIP"
+        },
+        "files": {
+          "type": "array",
+          "description": "List of files in evidence pack",
+          "items": {
+            "type": "object",
+            "required": ["name", "sha256"],
+            "properties": {
+              "name": {
+                "type": "string",
+                "description": "Filename"
+              },
+              "sha256": {
+                "type": "string",
+                "description": "SHA256 hash of file contents"
+              },
+              "size_bytes": {
+                "type": "integer",
+                "description": "File size in bytes"
+              }
+            }
+          }
+        }
+      }
+    },
+    "can_publish": {
+      "type": "boolean",
+      "description": "Final verdict: can this plan be published?"
+    },
+    "verdict_reason": {
+      "type": ["string", "null"],
+      "description": "Explanation if can_publish is false"
+    }
+  }
+}

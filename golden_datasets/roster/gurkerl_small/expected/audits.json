@@ -1,0 +1,9 @@
+{
+  "coverage": "PASS",
+  "overlap": "PASS",
+  "rest": "PASS",
+  "span_regular": "PASS",
+  "span_split": "PASS",
+  "fatigue": "PASS",
+  "max_hours": "PASS"
+}

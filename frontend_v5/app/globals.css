@@ -1,26 +1,162 @@
 @import "tailwindcss";
 
+/* =============================================================================
+   SOLVEREIGN Design System - Tailwind 4 CSS Variables
+   ============================================================================= */
+
 :root {
+  /* Brand Colors (from logo analysis) */
+  --sv-primary: #0D4B8A;
+  --sv-primary-hover: #0A3D6E;
+  --sv-primary-light: #1565B8;
+  --sv-accent: #4BA3E3;
+  --sv-accent-light: #7BC4F0;
+
+  /* Neutral Palette */
+  --sv-gray-50: #F9FAFB;
+  --sv-gray-100: #F3F4F6;
+  --sv-gray-200: #E5E7EB;
+  --sv-gray-300: #D1D5DB;
+  --sv-gray-400: #9CA3AF;
+  --sv-gray-500: #6B7280;
+  --sv-gray-600: #4B5563;
+  --sv-gray-700: #374151;
+  --sv-gray-800: #1F2937;
+  --sv-gray-900: #111827;
+
+  /* Semantic Colors */
+  --sv-success: #10B981;
+  --sv-success-light: #D1FAE5;
+  --sv-warning: #F59E0B;
+  --sv-warning-light: #FEF3C7;
+  --sv-error: #EF4444;
+  --sv-error-light: #FEE2E2;
+  --sv-info: #3B82F6;
+  --sv-info-light: #DBEAFE;
+
+  /* Status Colors (Plan Lifecycle) */
+  --sv-status-imported: #6B7280;
+  --sv-status-snapshotted: #3B82F6;
+  --sv-status-solving: #3B82F6;
+  --sv-status-solved: #EAB308;
+  --sv-status-failed: #EF4444;
+  --sv-status-audited: #22C55E;
+  --sv-status-locked: #10B981;
+  --sv-status-frozen: #06B6D4;
+  --sv-status-superseded: #9CA3AF;
+
+  /* Layout */
+  --sv-sidebar-width: 280px;
+  --sv-header-height: 64px;
+  --sv-content-max-width: 1400px;
+
+  /* Shadows */
+  --sv-shadow-sm: 0 1px 2px 0 rgb(0 0 0 / 0.05);
+  --sv-shadow: 0 1px 3px 0 rgb(0 0 0 / 0.1), 0 1px 2px -1px rgb(0 0 0 / 0.1);
+  --sv-shadow-md: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1);
+  --sv-shadow-lg: 0 10px 15px -3px rgb(0 0 0 / 0.1), 0 4px 6px -4px rgb(0 0 0 / 0.1);
+
+  /* Light Mode Defaults */
   --background: #ffffff;
-  --foreground: #171717;
+  --foreground: #111827;
+  --muted: #F3F4F6;
+  --muted-foreground: #6B7280;
+  --border: #E5E7EB;
+  --input: #E5E7EB;
+  --ring: #0D4B8A;
+  --card: #ffffff;
+  --card-foreground: #111827;
 }
 
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+
+  /* Brand */
+  --color-primary: var(--sv-primary);
+  --color-primary-foreground: #ffffff;
+  --color-accent: var(--sv-accent);
+  --color-accent-foreground: #ffffff;
+
+  /* Semantic */
+  --color-success: var(--sv-success);
+  --color-warning: var(--sv-warning);
+  --color-error: var(--sv-error);
+  --color-info: var(--sv-info);
+
+  /* Fonts */
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
+
+  /* Radius */
+  --radius-sm: 0.25rem;
+  --radius: 0.375rem;
+  --radius-md: 0.5rem;
+  --radius-lg: 0.75rem;
+  --radius-xl: 1rem;
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
     --background: #0a0a0a;
-    --foreground: #ededed;
+    --foreground: #F9FAFB;
+    --muted: #1F2937;
+    --muted-foreground: #9CA3AF;
+    --border: #374151;
+    --input: #374151;
+    --card: #111827;
+    --card-foreground: #F9FAFB;
   }
 }
+
+/* =============================================================================
+   Base Styles
+   ============================================================================= */
 
 body {
   background: var(--background);
   color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  font-family: var(--font-sans), system-ui, sans-serif;
+}
+
+/* Focus Ring (Accessibility) */
+*:focus-visible {
+  outline: 2px solid var(--sv-primary);
+  outline-offset: 2px;
+}
+
+/* Status Badge Animations */
+@keyframes pulse-solving {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+.status-solving {
+  animation: pulse-solving 2s ease-in-out infinite;
+}
+
+/* Scrollbar Styling */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--muted);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--sv-gray-400);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--sv-gray-500);
 }

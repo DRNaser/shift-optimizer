@@ -1,0 +1,28 @@
+{
+  "tenant_code": "gurkerl",
+  "site_code": "wien",
+  "week_anchor_date": "2026-01-05",
+  "service_code": "roster",
+  "tours": [
+    {"external_id": "T001", "day": 1, "start_time": "08:00", "end_time": "16:00"},
+    {"external_id": "T002", "day": 1, "start_time": "06:00", "end_time": "14:00"},
+    {"external_id": "T003", "day": 1, "start_time": "14:00", "end_time": "22:00"},
+    {"external_id": "T004", "day": 2, "start_time": "08:00", "end_time": "16:00"},
+    {"external_id": "T005", "day": 2, "start_time": "06:00", "end_time": "14:00"},
+    {"external_id": "T006", "day": 2, "start_time": "14:00", "end_time": "22:00"},
+    {"external_id": "T007", "day": 3, "start_time": "08:00", "end_time": "16:00"},
+    {"external_id": "T008", "day": 3, "start_time": "06:00", "end_time": "14:00"},
+    {"external_id": "T009", "day": 3, "start_time": "14:00", "end_time": "22:00"},
+    {"external_id": "T010", "day": 4, "start_time": "08:00", "end_time": "16:00"}
+  ],
+  "config": {
+    "max_weekly_hours": 55,
+    "min_rest_hours": 11,
+    "max_span_regular": 14,
+    "max_span_split": 16
+  },
+  "metadata": {
+    "source": "gurkerl_solver_e2e_test",
+    "created_at": "2026-01-08T12:00:00Z"
+  }
+}

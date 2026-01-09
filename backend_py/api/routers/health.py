@@ -54,7 +54,8 @@ async def readiness_check(request: Request):
 
     Checks:
     - Database connection
-    - (Future: Redis, external services)
+    - PolicyService availability
+    - Pack availability (roster, routing)
 
     Returns 200 if ready to serve traffic.
     Used for Kubernetes readiness probes.
@@ -72,6 +73,36 @@ async def readiness_check(request: Request):
     except Exception as e:
         checks["database"] = f"unhealthy: {str(e)}"
         overall_status = "not_ready"
+
+    # Check PolicyService
+    try:
+        policy_service = getattr(request.app.state, 'policy_service', None)
+        if policy_service:
+            checks["policy_service"] = "healthy"
+        else:
+            checks["policy_service"] = "not_initialized"
+    except Exception as e:
+        checks["policy_service"] = f"error: {str(e)}"
+
+    # Check pack availability
+    packs_status = {}
+
+    # Roster pack
+    try:
+        import importlib
+        importlib.import_module("backend_py.packs.roster.api")
+        packs_status["roster"] = "available"
+    except ImportError as e:
+        packs_status["roster"] = f"unavailable: {str(e)}"
+
+    # Routing pack
+    try:
+        importlib.import_module("backend_py.packs.routing.api.routers.scenarios")
+        packs_status["routing"] = "available"
+    except ImportError as e:
+        packs_status["routing"] = f"unavailable: {str(e)}"
+
+    checks["packs"] = packs_status
 
     return ReadinessResponse(
         status=overall_status,

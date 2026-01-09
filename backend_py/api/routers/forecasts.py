@@ -14,7 +14,7 @@ from fastapi import APIRouter, Depends, HTTPException, Header, status
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
-from ..dependencies import get_db, get_current_tenant, TenantContext
+from ..dependencies import get_db, get_current_tenant, TenantContext, require_tenant_not_blocked
 from ..database import DatabaseManager, check_idempotency, record_idempotency
 from ..exceptions import ForecastNotFoundError, ForecastValidationError
 
@@ -104,6 +104,7 @@ async def ingest_forecast(
     request: ForecastIngestRequest,
     tenant: TenantContext = Depends(get_current_tenant),
     db: DatabaseManager = Depends(get_db),
+    _: None = Depends(require_tenant_not_blocked("tenant")),
     x_idempotency_key: Optional[str] = Header(None, alias="X-Idempotency-Key"),
 ):
     """

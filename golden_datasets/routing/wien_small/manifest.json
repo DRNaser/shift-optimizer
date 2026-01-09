@@ -1,0 +1,24 @@
+{
+  "name": "wien_small",
+  "pack": "routing",
+  "type": "happy_path",
+  "version": "1.0.0",
+  "created_at": "2026-01-07T12:00:00Z",
+  "updated_at": "2026-01-07T12:00:00Z",
+  "created_by": "golden_dataset_manager",
+  "description": "Minimal routing test (10 stops, 3 vehicles)",
+  "scenario": "Basic VRPTW with time windows",
+  "input_size": {
+    "stops": 10,
+    "vehicles": 3
+  },
+  "solver_seed": 94,
+  "input_hash": "c9710a1aee3ba27cb7e193eb20d7a66064260e6cdc478b322ddc79bf65bfb5d7",
+  "expected_output_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "expected_kpis": {
+    "coverage_percent": 100.0,
+    "routes_used": 3,
+    "total_distance_km": 45.0
+  },
+  "expected_failure": null
+}

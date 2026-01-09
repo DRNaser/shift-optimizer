@@ -1,0 +1,27 @@
+{
+  "api_p95_ms": 120,
+  "solver_p95_s": 45,
+  "solver_peak_rss_mb": 2048,
+  "last_updated": "2026-01-07T08:00:00Z",
+  "updated_by": "nightly-baseline-job",
+  "roster": {
+    "gurkerl": {
+      "total_drivers": 145,
+      "fte_ratio": 1.0,
+      "coverage_pct": 100.0,
+      "max_weekly_hours": 54,
+      "baseline_seed": 94,
+      "baseline_output_hash": "d329b1c40b8fc566fa32487db0830d1a2948b61ed72ab30847e39dbf731efd10"
+    }
+  },
+  "routing": {
+    "mediamarkt_wien": {
+      "coverage_pct": 100.0,
+      "tw_violations": 0,
+      "routes_used": 12,
+      "total_distance_km": 245.5,
+      "baseline_seed": 94,
+      "baseline_output_hash": "abc123def456789abc123def456789abc123def456789abc123def456789abcd"
+    }
+  }
+}

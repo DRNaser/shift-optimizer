@@ -73,6 +73,53 @@ services:
     restart: unless-stopped
 
   # =========================================================================
+  # Redis (Message Broker for Celery)
+  # =========================================================================
+  redis:
+    image: redis:7-alpine
+    container_name: solvereign-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # =========================================================================
+  # Celery Worker (Async Routing Solver)
+  # =========================================================================
+  celery-worker:
+    build:
+      context: ./backend_py
+      dockerfile: Dockerfile
+    container_name: solvereign-celery
+    command: celery -A packs.routing.jobs.celery_app worker --loglevel=info --concurrency=2
+    environment:
+      - PYTHONUNBUFFERED=1
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/1
+      - SOLVEREIGN_DATABASE_URL=postgresql://solvereign:dev_password_change_in_production@postgres:5432/solvereign
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          cpus: "4.0"
+          memory: 8G
+        reservations:
+          cpus: "1.0"
+          memory: 2G
+    restart: unless-stopped
+
+  # =========================================================================
   # Prometheus (Metrics Collection)
   # =========================================================================
   prometheus:
@@ -111,8 +158,47 @@ services:
     depends_on:
       - prometheus
 
+  # =========================================================================
+  # OSRM (Open Source Routing Machine) - Routing Finalize Validator
+  # =========================================================================
+  # Usage:
+  #   1. First run: ./scripts/setup_osrm.sh (downloads and prepares map data)
+  #   2. Start with: docker-compose --profile routing up -d osrm
+  #
+  # Endpoints:
+  #   - Route: http://localhost:5000/route/v1/driving/{coords}
+  #   - Table: http://localhost:5000/table/v1/driving/{coords}
+  #   - Status: http://localhost:5000/status (returns map version hash)
+  # =========================================================================
+  osrm:
+    image: osrm/osrm-backend:latest
+    container_name: solvereign-osrm
+    ports:
+      - "5000:5000"
+    volumes:
+      - ./data/osrm:/data:ro
+    command: osrm-routed --algorithm mld /data/austria-latest.osrm
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:5000/status"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 4G
+        reservations:
+          cpus: "0.5"
+          memory: 1G
+    restart: unless-stopped
+    profiles:
+      - routing
+
 volumes:
   postgres_data:
+  redis_data:
   prometheus_data:
   grafana_data:
 

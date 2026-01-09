@@ -1,0 +1,148 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "version": "1.0.0",
+  "description": "Wien Pilot KPI thresholds for drift detection",
+  "tenant_code": "wien_pilot",
+  "effective_date": "2026-01-08",
+  "review_date": "2026-02-08",
+
+  "baselines": {
+    "description": "Baseline values from manual process and staging tests",
+    "manual": {
+      "headcount": 150,
+      "avg_hours_per_driver": 42,
+      "fte_ratio": 0.90,
+      "pt_ratio": 0.10,
+      "coverage": 1.0,
+      "notes": "From Wien pilot manual scheduling (estimated)"
+    },
+    "solver": {
+      "headcount": 145,
+      "avg_hours_per_driver": 44,
+      "fte_ratio": 1.0,
+      "pt_ratio": 0.0,
+      "coverage": 1.0,
+      "runtime_seconds": 15,
+      "notes": "From staging soak with seed 94"
+    }
+  },
+
+  "thresholds": {
+    "headcount": {
+      "description": "Total driver count",
+      "unit": "drivers",
+      "baseline": 145,
+      "warn_percent": 5,
+      "block_percent": 10,
+      "warn_absolute": 7,
+      "block_absolute": 15,
+      "direction": "both",
+      "interpretation": "WARN if headcount deviates >5% or >7 drivers; BLOCK if >10% or >15 drivers"
+    },
+    "coverage": {
+      "description": "Percentage of tours with assigned drivers",
+      "unit": "percent",
+      "baseline": 100,
+      "warn_threshold": 99.5,
+      "block_threshold": 99.0,
+      "direction": "below",
+      "interpretation": "WARN if coverage <99.5%; BLOCK if <99%"
+    },
+    "fte_ratio": {
+      "description": "Ratio of full-time drivers (>=40h/week)",
+      "unit": "percent",
+      "baseline": 100,
+      "warn_threshold": 95,
+      "block_threshold": 90,
+      "direction": "below",
+      "interpretation": "WARN if FTE ratio <95%; BLOCK if <90%"
+    },
+    "pt_ratio": {
+      "description": "Ratio of part-time drivers (<40h/week)",
+      "unit": "percent",
+      "baseline": 0,
+      "warn_threshold": 5,
+      "block_threshold": 10,
+      "direction": "above",
+      "interpretation": "WARN if PT ratio >5%; BLOCK if >10%"
+    },
+    "churn": {
+      "description": "Assignment changes during repair",
+      "unit": "percent",
+      "baseline": 3,
+      "warn_threshold": 10,
+      "block_threshold": 20,
+      "direction": "above",
+      "interpretation": "WARN if churn >10%; BLOCK if >20%"
+    },
+    "runtime": {
+      "description": "Solver runtime",
+      "unit": "seconds",
+      "baseline": 15,
+      "warn_threshold": 30,
+      "block_threshold": 60,
+      "direction": "above",
+      "interpretation": "WARN if runtime >30s; BLOCK if >60s"
+    },
+    "max_driver_hours": {
+      "description": "Maximum hours assigned to any single driver",
+      "unit": "hours",
+      "baseline": 54,
+      "warn_threshold": 52,
+      "block_threshold": 55,
+      "direction": "above",
+      "interpretation": "WARN if max hours >52h; BLOCK if >55h (legal limit)"
+    },
+    "audit_pass_rate": {
+      "description": "Ratio of passed audit checks",
+      "unit": "percent",
+      "baseline": 100,
+      "warn_threshold": 100,
+      "block_threshold": 100,
+      "direction": "below",
+      "interpretation": "Any audit failure is BLOCK"
+    }
+  },
+
+  "drift_detection": {
+    "method": "z_score_and_percent",
+    "z_score_threshold": 2.0,
+    "percent_threshold": 25,
+    "rolling_window_weeks": 4,
+    "min_samples": 2,
+    "severity_mapping": {
+      "OK": "All metrics within baseline ± warn threshold",
+      "WARN": "One or more metrics in WARN range",
+      "BLOCK": "One or more metrics in BLOCK range"
+    }
+  },
+
+  "alerts": {
+    "warn": {
+      "channels": ["slack"],
+      "escalation_minutes": 60
+    },
+    "block": {
+      "channels": ["slack", "pagerduty"],
+      "escalation_minutes": 15
+    }
+  },
+
+  "weekly_summary_artifact": {
+    "path_template": "artifacts/pilot_kpis/{week_id}_kpi_summary.json",
+    "retention_days": 90,
+    "required_fields": [
+      "week_id",
+      "tenant_code",
+      "timestamp",
+      "headcount",
+      "coverage",
+      "fte_ratio",
+      "pt_ratio",
+      "runtime_seconds",
+      "audit_pass_rate",
+      "drift_status",
+      "comparison_to_baseline"
+    ]
+  }
+}

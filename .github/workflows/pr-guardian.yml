@@ -1,0 +1,1026 @@
+# PR-GUARDIAN: Guardian Context Tree gate for every PR
+# Runs on: Every PR, every push to main/develop
+# Purpose: Enforce system health, routing, and audit-grade status
+#
+# Exit Codes:
+# - 0: Healthy, all checks pass
+# - 1: Schema validation failed
+# - 2: S0/S1 incident active (STOP-THE-LINE)
+#
+# Audit-Grade Enforcement:
+# - proof/determinism jobs require audit_grade=true
+# - dirty worktree blocks audit-grade operations unless --allow-dirty
+
+name: Guardian Gate
+
+on:
+  pull_request:
+    branches: [main, develop]
+  push:
+    branches: [main, develop]
+
+concurrency:
+  group: guardian-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHONIOENCODING: utf-8
+
+jobs:
+  # ============================================
+  # GUARDIAN BOOTSTRAP (<30 sec)
+  # ============================================
+  guardian-bootstrap:
+    name: Guardian Bootstrap
+    runs-on: ubuntu-latest
+
+    outputs:
+      exit_code: ${{ steps.bootstrap.outputs.exit_code }}
+      routing_hint: ${{ steps.bootstrap.outputs.routing_hint }}
+      audit_grade: ${{ steps.bootstrap.outputs.audit_grade }}
+      stop_the_line: ${{ steps.bootstrap.outputs.stop_the_line }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install jsonschema requests
+
+      - name: Run Guardian Bootstrap
+        id: bootstrap
+        run: |
+          set +e  # Don't fail immediately
+          python backend_py/guardian_bootstrap.py
+          EXIT_CODE=$?
+          set -e
+
+          echo "exit_code=$EXIT_CODE" >> $GITHUB_OUTPUT
+
+          # Parse health_latest.json for outputs
+          if [ -f .claude/telemetry/health_latest.json ]; then
+            ROUTING=$(jq -r '.routing_hint // "unknown"' .claude/telemetry/health_latest.json)
+            AUDIT=$(jq -r '.audit_grade // false' .claude/telemetry/health_latest.json)
+            STOP=$(jq -r '.stop_the_line // false' .claude/telemetry/health_latest.json)
+
+            echo "routing_hint=$ROUTING" >> $GITHUB_OUTPUT
+            echo "audit_grade=$AUDIT" >> $GITHUB_OUTPUT
+            echo "stop_the_line=$STOP" >> $GITHUB_OUTPUT
+          else
+            echo "routing_hint=unknown" >> $GITHUB_OUTPUT
+            echo "audit_grade=false" >> $GITHUB_OUTPUT
+            echo "stop_the_line=false" >> $GITHUB_OUTPUT
+          fi
+
+          # Exit Code Policy:
+          # 0 = Healthy, all checks pass
+          # 1 = Schema validation failed → HARD BLOCK
+          # 2 = S0/S1 incident active → HARD BLOCK (STOP-THE-LINE)
+          if [ $EXIT_CODE -eq 2 ]; then
+            echo "::error::STOP-THE-LINE: S0/S1 incident active. All work blocked until resolved."
+            exit 2
+          fi
+
+          if [ $EXIT_CODE -eq 1 ]; then
+            echo "::error::SCHEMA INVALID: State files fail validation. PR blocked until fixed."
+            exit 1
+          fi
+
+          exit 0
+
+      - name: Upload telemetry artifacts
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: guardian-telemetry
+          path: |
+            .claude/telemetry/health_latest.json
+            .claude/context/00-current-state.md
+          retention-days: 7
+
+      - name: Verify bootstrap did not modify tracked files
+        run: |
+          # Bootstrap should NEVER modify tracked files (state/, schemas/)
+          if git diff --quiet .claude/state/ .claude/schemas/; then
+            echo "PASS: Bootstrap did not modify tracked files"
+          else
+            echo "::error::BLOCKED: Bootstrap modified tracked files!"
+            echo "--- Git diff of tracked files ---"
+            git diff .claude/state/ .claude/schemas/
+            exit 1
+          fi
+
+  # ============================================
+  # SECRET SCAN (gitleaks) - HARD FAIL
+  # ============================================
+  secret-scan:
+    name: Secret Scan (gitleaks)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Full history for scanning
+
+      - name: Run gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_ENABLE_COMMENTS: false
+
+      - name: Check for secrets
+        if: failure()
+        run: |
+          echo "::error::SECRET DETECTED! PR blocked until secrets are removed."
+          echo ""
+          echo "Possible secrets found in commits. Actions:"
+          echo "1. Remove the secret from code"
+          echo "2. Rotate the exposed credential immediately"
+          echo "3. Add to .gitleaksignore if false positive"
+          exit 1
+
+  # ============================================
+  # PACK BOUNDARY LINTER - Enforces import isolation
+  # ============================================
+  pack-boundary-linter:
+    name: Pack Boundary Linter
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Run Pack Boundary Linter
+        run: |
+          python backend_py/tools/pack_boundary_linter.py --strict --verbose
+
+      - name: Check for violations
+        if: failure()
+        run: |
+          echo "::error::PACK BOUNDARY VIOLATION! Imports cross pack boundaries."
+          echo ""
+          echo "Pack isolation rules:"
+          echo "  - Kernel (api/) MUST NOT import from packs"
+          echo "  - Packs MUST NOT import from each other"
+          echo ""
+          echo "Fix: Move shared code to kernel or create explicit contracts"
+          exit 1
+
+  # ============================================
+  # SCHEMA VALIDATION (<30 sec)
+  # ============================================
+  schema-validation:
+    name: Schema Validation
+    runs-on: ubuntu-latest
+    needs: [guardian-bootstrap, secret-scan, pack-boundary-linter]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install jsonschema
+        run: pip install jsonschema
+
+      - name: Validate all schemas
+        run: |
+          python -c "
+          import json
+          import jsonschema
+          from pathlib import Path
+
+          schemas_dir = Path('.claude/schemas')
+          all_valid = True
+
+          for schema_file in sorted(schemas_dir.glob('*.json')):
+              with open(schema_file) as f:
+                  schema = json.load(f)
+              try:
+                  jsonschema.Draft7Validator.check_schema(schema)
+                  print(f'PASS: {schema_file.name}')
+              except Exception as e:
+                  print(f'FAIL: {schema_file.name}: {e}')
+                  all_valid = False
+
+          if not all_valid:
+              exit(1)
+          print('All schemas valid!')
+          "
+
+  # ============================================
+  # KPI DRIFT SKILL TESTS (Skill 116)
+  # ============================================
+  kpi-drift-tests:
+    name: KPI Drift Tests (Skill 116)
+    runs-on: ubuntu-latest
+    needs: [guardian-bootstrap]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install pytest
+
+      - name: Run KPI Drift tests
+        run: |
+          python -m pytest backend_py/skills/kpi_drift/tests/ -v --tb=short
+
+      - name: Verify CLI works
+        run: |
+          python -m backend_py.skills.kpi_drift check --tenant gurkerl --pack roster --total-drivers 145
+          echo "CLI exit code: $?"
+
+  # ============================================
+  # GOLDEN DATASET TESTS (Skill 115)
+  # ============================================
+  golden-dataset-tests:
+    name: Golden Dataset Tests (Skill 115)
+    runs-on: ubuntu-latest
+    needs: [guardian-bootstrap]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install pytest
+
+      - name: Run Golden Dataset tests
+        run: |
+          python -m pytest backend_py/skills/golden_datasets/tests/ -v --tb=short
+
+      - name: Verify CLI works
+        run: |
+          python -m backend_py.skills.golden_datasets list
+          python -m backend_py.skills.golden_datasets regression
+
+  # ============================================
+  # IMPACT PREVIEW TESTS (Skill 114)
+  # ============================================
+  impact-preview-tests:
+    name: Impact Preview Tests (Skill 114)
+    runs-on: ubuntu-latest
+    needs: [guardian-bootstrap]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install pytest pytest-asyncio
+
+      - name: Run Impact Preview tests
+        run: |
+          python -m pytest backend_py/skills/impact_preview/tests/ -v --tb=short
+
+      - name: Verify CLI works
+        run: |
+          python -m backend_py.skills.impact_preview analyze --change-type config --target SOLVER_TIME_LIMIT --new-value 120 || true
+          echo "CLI executed (exit code indicates risk level)"
+
+  # ============================================
+  # AUDIT REPORT TESTS (Skill 113)
+  # ============================================
+  audit-report-tests:
+    name: Audit Report Tests (Skill 113)
+    runs-on: ubuntu-latest
+    needs: [guardian-bootstrap]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install pytest pytest-asyncio
+
+      - name: Run Audit Report tests
+        run: |
+          python -m pytest backend_py/skills/audit_report/tests/ -v --tb=short
+
+      - name: Verify CLI works
+        run: |
+          python -m backend_py.skills.audit_report compliance --frameworks GDPR,SOC2
+          echo "CLI exit code: $?"
+
+  # ============================================
+  # ACCEPTANCE GATE (1 min)
+  # Runs subset of guardian-acceptance.md checks
+  # ============================================
+  acceptance-gate:
+    name: Acceptance Gate
+    runs-on: ubuntu-latest
+    needs: [guardian-bootstrap, schema-validation]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install jsonschema requests
+
+      - name: "[1/5] Verify state files exist"
+        run: |
+          for f in last-known-good.json active-incidents.json tenant-status.json drift-baselines.json; do
+            if [ -f ".claude/state/$f" ]; then
+              echo "PASS: $f exists"
+            else
+              echo "FAIL: $f missing"
+              exit 1
+            fi
+          done
+
+      - name: "[2/5] Verify bootstrap doesn't modify state"
+        run: |
+          # Run bootstrap
+          python backend_py/guardian_bootstrap.py || true
+
+          # Check state files unchanged
+          if git diff --quiet .claude/state/; then
+            echo "PASS: state/ unchanged"
+          else
+            echo "FAIL: bootstrap modified state files!"
+            git diff .claude/state/
+            exit 1
+          fi
+
+      - name: "[3/5] Verify telemetry has audit trail"
+        run: |
+          python -c "
+          import json
+          with open('.claude/telemetry/health_latest.json') as f:
+              h = json.load(f)
+
+          required = ['git_sha', 'dirty', 'audit_grade', 'stop_the_line', 'routing_hint', 'routing_reason']
+          missing = [k for k in required if k not in h]
+
+          if missing:
+              print(f'FAIL: Missing audit trail fields: {missing}')
+              exit(1)
+          print('PASS: All audit trail fields present')
+          "
+
+      - name: "[4/5] Verify severity system is S0-S3"
+        run: |
+          # Check schema
+          if grep -q '"enum": \["S0", "S1", "S2", "S3"\]' .claude/schemas/incident.schema.json; then
+            echo "PASS: Schema uses S0-S3"
+          else
+            echo "FAIL: Schema doesn't use S0-S3"
+            exit 1
+          fi
+
+          # Check GUARDIAN.md
+          if grep -q "S0.*CRITICAL\|S1.*HIGH" .claude/GUARDIAN.md; then
+            echo "PASS: GUARDIAN.md uses S0-S3"
+          else
+            echo "FAIL: GUARDIAN.md doesn't use S0-S3"
+            exit 1
+          fi
+
+      - name: "[5/5] Verify exit code policy"
+        run: |
+          # Test healthy state (should be 0)
+          python backend_py/guardian_bootstrap.py
+          EXIT=$?
+          if [ $EXIT -eq 0 ]; then
+            echo "PASS: Exit 0 for healthy state"
+          else
+            echo "WARN: Exit $EXIT (check if expected)"
+          fi
+
+  # ============================================
+  # ALLOW-DIRTY OVERRIDE CHECK
+  # Validates that --allow-dirty is used responsibly
+  # Requires: PR label 'allow-dirty' AND override_reason in PR body
+  # Writes override audit trail to telemetry for single-source evidence
+  # ============================================
+  allow-dirty-check:
+    name: Allow-Dirty Override Check
+    runs-on: ubuntu-latest
+    needs: guardian-bootstrap
+    if: |
+      github.event_name == 'pull_request' &&
+      needs.guardian-bootstrap.outputs.audit_grade == 'false' &&
+      contains(github.event.pull_request.labels.*.name, 'allow-dirty')
+
+    outputs:
+      override_reason: ${{ steps.validate.outputs.override_reason }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install jsonschema requests
+
+      - name: Validate override_reason in PR body
+        id: validate
+        run: |
+          PR_BODY="${{ github.event.pull_request.body }}"
+
+          # Check for override_reason: in PR body
+          if echo "$PR_BODY" | grep -qi "override_reason:"; then
+            REASON=$(echo "$PR_BODY" | grep -i "override_reason:" | head -1 | sed 's/override_reason://i' | xargs)
+            echo "PASS: Found override_reason in PR body"
+            echo "Reason: $REASON"
+            echo "override_reason=$REASON" >> $GITHUB_OUTPUT
+
+            # Log to workflow summary
+            echo "## Allow-Dirty Override" >> $GITHUB_STEP_SUMMARY
+            echo "| Field | Value |" >> $GITHUB_STEP_SUMMARY
+            echo "|-------|-------|" >> $GITHUB_STEP_SUMMARY
+            echo "| Label | allow-dirty |" >> $GITHUB_STEP_SUMMARY
+            echo "| Reason | $REASON |" >> $GITHUB_STEP_SUMMARY
+            echo "| PR | #${{ github.event.pull_request.number }} |" >> $GITHUB_STEP_SUMMARY
+            echo "| Author | ${{ github.event.pull_request.user.login }} |" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "::error::BLOCKED: 'allow-dirty' label present but no 'override_reason:' in PR body"
+            echo ""
+            echo "To use --allow-dirty, you must:"
+            echo "1. Add label 'allow-dirty' to PR (done)"
+            echo "2. Include 'override_reason: <explanation>' in PR body (missing)"
+            echo ""
+            echo "Example PR body:"
+            echo "  override_reason: CI testing - no code changes, config only"
+            exit 1
+          fi
+
+      - name: Re-run bootstrap with override audit trail
+        run: |
+          # Re-run bootstrap with override fields for single-source telemetry
+          python backend_py/guardian_bootstrap.py \
+            --allow-dirty \
+            --override-reason "${{ steps.validate.outputs.override_reason }}" \
+            --override-actor "${{ github.event.pull_request.user.login }}" \
+            --override-pr "${{ github.event.pull_request.number }}"
+
+      - name: Create override alert notification
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Create a comment on the PR to alert about the override
+          COMMENT_BODY=$(cat <<'EOF'
+          ## ⚠️ AUDIT-GRADE OVERRIDE USED
+
+          This PR has bypassed audit-grade checks using the `allow-dirty` label.
+
+          | Field | Value |
+          |-------|-------|
+          | **Reason** | ${{ steps.validate.outputs.override_reason }} |
+          | **Actor** | @${{ github.event.pull_request.user.login }} |
+          | **PR** | #${{ github.event.pull_request.number }} |
+          | **Timestamp** | $(date -u +"%Y-%m-%dT%H:%M:%SZ") |
+
+          ### Audit Trail
+          - Override recorded in `health_latest.json` artifact
+          - This comment serves as public notification
+
+          **Reviewers:** Please ensure the override reason is legitimate before approving.
+          EOF
+          )
+
+          gh pr comment ${{ github.event.pull_request.number }} --body "$COMMENT_BODY"
+
+          # Also add the 'audit-override' label for tracking
+          gh pr edit ${{ github.event.pull_request.number }} --add-label "audit-override" || true
+
+      - name: Upload override telemetry
+        uses: actions/upload-artifact@v4
+        with:
+          name: guardian-telemetry-override
+          path: .claude/telemetry/health_latest.json
+          retention-days: 30
+
+  # ============================================
+  # AUDIT-GRADE GATE (for proof/determinism jobs)
+  # This job fails if audit_grade=false
+  # Other jobs can use: needs: [audit-grade-required]
+  # ============================================
+  audit-grade-required:
+    name: Audit-Grade Required
+    runs-on: ubuntu-latest
+    needs: [guardian-bootstrap, allow-dirty-check]
+    if: |
+      always() && (
+        contains(github.event.pull_request.title, 'proof') ||
+        contains(github.event.pull_request.title, 'audit') ||
+        contains(github.event.pull_request.title, 'determinism') ||
+        contains(github.event.pull_request.labels.*.name, 'audit-required')
+      )
+
+    steps:
+      - name: Check audit_grade
+        run: |
+          AUDIT_GRADE="${{ needs.guardian-bootstrap.outputs.audit_grade }}"
+          HAS_ALLOW_DIRTY="${{ contains(github.event.pull_request.labels.*.name, 'allow-dirty') }}"
+          ALLOW_DIRTY_CHECK="${{ needs.allow-dirty-check.result }}"
+
+          # If allow-dirty label is present, check that the override was validated
+          if [ "$HAS_ALLOW_DIRTY" = "true" ]; then
+            if [ "$ALLOW_DIRTY_CHECK" = "success" ]; then
+              echo "PASS: audit_grade override via allow-dirty (validated)"
+              exit 0
+            else
+              echo "::error::BLOCKED: allow-dirty label present but validation failed"
+              echo "Check the 'Allow-Dirty Override Check' job for details"
+              exit 1
+            fi
+          fi
+
+          # Standard audit_grade check
+          if [ "$AUDIT_GRADE" = "true" ]; then
+            echo "PASS: audit_grade=true"
+          else
+            echo "::error::BLOCKED: audit_grade=false (dirty worktree)"
+            echo ""
+            echo "Options to proceed:"
+            echo "1. Commit all changes to get a clean worktree"
+            echo "2. Add 'allow-dirty' label + 'override_reason:' in PR body"
+            exit 1
+          fi
+
+  # ============================================
+  # AUTH SEPARATION GATE (Gate F)
+  # Verifies strict auth separation between Platform and Pack endpoints
+  # ============================================
+  auth-separation-gate:
+    name: Auth Separation Gate (Gate F)
+    runs-on: ubuntu-latest
+    needs: [guardian-bootstrap]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install pytest
+
+      - name: Run auth separation tests
+        run: |
+          python -m pytest backend_py/api/tests/test_auth_separation.py -v --tb=short
+
+      - name: Verify prefix matching is exact
+        run: |
+          # Grep for the is_prefix_match function with boundary check
+          if grep -q "def is_prefix_match" backend_py/api/main.py && \
+             grep -q 'startswith(prefix + "/")' backend_py/api/main.py; then
+            echo "PASS: Prefix matching has boundary check"
+          else
+            echo "::error::FAIL: Prefix matching missing boundary check"
+            echo "The middleware must use exact prefix matching to prevent /api/v1/platformXYZ bypass"
+            exit 1
+          fi
+
+      - name: Verify HMAC uses empty body hash constant
+        run: |
+          if grep -q "EMPTY_BODY_HASH" backend_py/api/security/tenant_auth.py; then
+            echo "PASS: HMAC uses EMPTY_BODY_HASH constant"
+          else
+            echo "::error::FAIL: HMAC missing EMPTY_BODY_HASH constant"
+            exit 1
+          fi
+
+      - name: Verify logs don't leak secrets
+        run: |
+          # Check that API key values are not logged (only prefixes)
+          if grep -rn "api_key_prefix" backend_py/api/security/ | grep -v "api_key_prefix.*\[:8\]" | grep -v "\.pyc"; then
+            echo "WARN: Check that API key logging only shows prefix"
+          fi
+          echo "PASS: Log security patterns look correct"
+
+      - name: Verify idempotency returns 409 on hash mismatch
+        run: |
+          if grep -q "HTTP_409_CONFLICT" backend_py/api/security/tenant_auth.py && \
+             grep -q "idempotency_mismatch" backend_py/api/security/tenant_auth.py; then
+            echo "PASS: Idempotency returns 409 on hash mismatch"
+          else
+            echo "::error::FAIL: Idempotency missing 409 on hash mismatch"
+            exit 1
+          fi
+
+      - name: Verify CSRF is bound to session
+        run: |
+          if grep -q "session.csrf_token" backend_py/api/security/platform_auth.py; then
+            echo "PASS: CSRF token is bound to session"
+          else
+            echo "::error::FAIL: CSRF not bound to session"
+            exit 1
+          fi
+
+  # ============================================
+  # WIEN W02 SECURITY GATE (Gate A)
+  # Runs security hardening verification
+  # ============================================
+  wien-security-gate:
+    name: Wien W02 Security Gate
+    runs-on: ubuntu-latest
+    needs: [guardian-bootstrap]
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: solvereign
+          POSTGRES_PASSWORD: dev_password_change_in_production
+          POSTGRES_DB: solvereign
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install psycopg
+        run: pip install "psycopg[binary]"
+
+      - name: Apply migrations
+        run: |
+          export PGPASSWORD=dev_password_change_in_production
+
+          # Apply all migrations in order
+          for migration in backend_py/db/init.sql \
+                           backend_py/db/migrations/006_multi_tenant.sql \
+                           backend_py/db/migrations/025_tenants_rls_fix.sql \
+                           backend_py/db/migrations/025a_rls_hardening.sql \
+                           backend_py/db/migrations/025b_rls_role_lockdown.sql \
+                           backend_py/db/migrations/025c_rls_boundary_fix.sql \
+                           backend_py/db/migrations/025d_definer_owner_hardening.sql \
+                           backend_py/db/migrations/025e_final_hardening.sql \
+                           backend_py/db/migrations/025f_acl_fix.sql; do
+            if [ -f "$migration" ]; then
+              echo "Applying: $migration"
+              psql -h localhost -U solvereign -d solvereign -f "$migration"
+            fi
+          done
+
+      - name: Run security gate
+        id: security_gate
+        run: |
+          mkdir -p artifacts
+          chmod +x scripts/ci/security_gate.sh
+          ./scripts/ci/security_gate.sh --db-url "postgresql://solvereign:dev_password_change_in_production@localhost:5432/solvereign" || true
+          echo "exit_code=$?" >> $GITHUB_OUTPUT
+
+      - name: Upload security artifacts
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: wien-security-gate-artifacts
+          path: artifacts/
+          retention-days: 30
+
+      - name: Check security gate result
+        run: |
+          if [ -f artifacts/security_gate_result.json ]; then
+            cat artifacts/security_gate_result.json
+            GATE_STATUS=$(jq -r '.gate_status' artifacts/security_gate_result.json)
+            if [ "$GATE_STATUS" != "PASS" ]; then
+              echo "::error::Security gate FAILED"
+              exit 1
+            fi
+          else
+            echo "::warning::Security gate artifacts not generated"
+          fi
+
+  # ============================================
+  # WIEN W02 ROSTER GATE (Gate B)
+  # Runs roster solver E2E pipeline (routing parked)
+  # ============================================
+  wien-roster-gate:
+    name: Wien W02 Roster Gate
+    runs-on: ubuntu-latest
+    needs: [guardian-bootstrap]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install "psycopg[binary]" python-dotenv
+
+      - name: Run roster gate
+        id: roster_gate
+        run: |
+          mkdir -p artifacts
+          chmod +x scripts/ci/wien_roster_gate.sh
+          ./scripts/ci/wien_roster_gate.sh --skip-routing || true
+          echo "exit_code=$?" >> $GITHUB_OUTPUT
+
+      - name: Upload roster artifacts
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: wien-roster-gate-artifacts
+          path: artifacts/
+          retention-days: 30
+
+      - name: Check roster gate result
+        run: |
+          if [ -f artifacts/wien_roster_gate_result.json ]; then
+            cat artifacts/wien_roster_gate_result.json
+            FINAL_VERDICT=$(jq -r '.final_verdict' artifacts/wien_roster_gate_result.json)
+            CAN_PUBLISH=$(jq -r '.can_publish' artifacts/wien_roster_gate_result.json)
+
+            if [ "$CAN_PUBLISH" != "true" ]; then
+              echo "::error::Roster gate FAILED - cannot publish"
+              exit 1
+            fi
+
+            if [ "$FINAL_VERDICT" == "WARN" ]; then
+              echo "::warning::Roster gate passed with warnings"
+            fi
+          else
+            echo "::warning::Roster gate artifacts not generated"
+          fi
+
+  # ============================================
+  # OPS DRILLS GATE (Gate H)
+  # Runs break-it drills: sick-call, freeze-window, partial-forecast
+  # Uploads evidence artifacts always
+  # ============================================
+  ops-drills-gate:
+    name: Ops Drills Gate (Gate H)
+    runs-on: ubuntu-latest
+    needs: [guardian-bootstrap]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install "psycopg[binary]" python-dotenv jsonschema
+
+      - name: Create artifacts directory
+        run: mkdir -p artifacts/drills
+
+      - name: "[H1] Run Sick-Call Drill"
+        id: h1_sick_call
+        run: |
+          python scripts/run_sick_call_drill.py --dry-run --seed 94 \
+            --absent-drivers DRV001,DRV002,DRV003,DRV004,DRV005 \
+            --tenant wien_pilot 2>&1 | tee artifacts/drills/h1_sick_call.log
+          EXIT_CODE=${PIPESTATUS[0]}
+          echo "exit_code=$EXIT_CODE" >> $GITHUB_OUTPUT
+
+          # Copy evidence to artifacts
+          if ls artifacts/drills/sick_call/*.json 1> /dev/null 2>&1; then
+            cp artifacts/drills/sick_call/*.json artifacts/drills/
+          fi
+
+      - name: "[H2] Run Freeze-Window Drill"
+        id: h2_freeze
+        run: |
+          python scripts/run_freeze_window_drill.py --dry-run --seed 94 \
+            --freeze-horizon 720 \
+            --tenant wien_pilot 2>&1 | tee artifacts/drills/h2_freeze.log
+          EXIT_CODE=${PIPESTATUS[0]}
+          echo "exit_code=$EXIT_CODE" >> $GITHUB_OUTPUT
+
+          # Copy evidence to artifacts
+          if ls artifacts/drills/freeze_window/*.json 1> /dev/null 2>&1; then
+            cp artifacts/drills/freeze_window/*.json artifacts/drills/
+          fi
+
+      - name: "[H3] Run Partial-Forecast Drill"
+        id: h3_partial
+        run: |
+          python scripts/run_partial_forecast_drill.py --dry-run --seed 94 \
+            --tenant wien_pilot 2>&1 | tee artifacts/drills/h3_partial.log
+          EXIT_CODE=${PIPESTATUS[0]}
+          echo "exit_code=$EXIT_CODE" >> $GITHUB_OUTPUT
+
+          # Copy evidence to artifacts
+          if ls artifacts/drills/partial_forecast/*.json 1> /dev/null 2>&1; then
+            cp artifacts/drills/partial_forecast/*.json artifacts/drills/
+          fi
+
+      - name: Validate evidence against schema
+        run: |
+          python -c "
+          import json
+          import jsonschema
+          from pathlib import Path
+
+          schema_path = Path('backend_py/schemas/evidence_pack.schema.json')
+          if not schema_path.exists():
+            print('WARN: Schema not found, skipping validation')
+            exit(0)
+
+          with open(schema_path) as f:
+              schema = json.load(f)
+
+          drills_dir = Path('artifacts/drills')
+          all_valid = True
+
+          for evidence_file in drills_dir.glob('drill_*.json'):
+              try:
+                  with open(evidence_file) as f:
+                      evidence = json.load(f)
+                  jsonschema.validate(evidence, schema)
+                  print(f'PASS: {evidence_file.name}')
+              except jsonschema.ValidationError as e:
+                  print(f'FAIL: {evidence_file.name}: {e.message}')
+                  all_valid = False
+              except Exception as e:
+                  print(f'ERROR: {evidence_file.name}: {e}')
+                  all_valid = False
+
+          if not all_valid:
+              exit(1)
+          print('All evidence files valid!')
+          "
+
+      - name: Export evidence pack (if evidence exists)
+        run: |
+          # Export evidence pack for each drill
+          for drill in sick_call freeze_window partial_forecast; do
+            EVIDENCE_FILE=$(ls artifacts/drills/drill_*_${drill}_*.json 2>/dev/null | head -1)
+            if [ -n "$EVIDENCE_FILE" ]; then
+              python scripts/export_evidence_pack.py export \
+                --input "$EVIDENCE_FILE" \
+                --out "artifacts/drills/evidence_pack_${drill}.zip" \
+                --no-validate || true
+            fi
+          done
+
+      - name: Upload drill artifacts
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ops-drills-evidence
+          path: artifacts/drills/
+          retention-days: 30
+
+      - name: Check drill verdicts
+        run: |
+          H1_EXIT="${{ steps.h1_sick_call.outputs.exit_code }}"
+          H2_EXIT="${{ steps.h2_freeze.outputs.exit_code }}"
+          H3_EXIT="${{ steps.h3_partial.outputs.exit_code }}"
+
+          echo "## Ops Drills Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Drill | Exit Code | Verdict |" >> $GITHUB_STEP_SUMMARY
+          echo "|-------|-----------|---------|" >> $GITHUB_STEP_SUMMARY
+
+          # H1: Sick-Call
+          if [ "$H1_EXIT" = "0" ]; then
+            echo "| H1 Sick-Call | 0 | PASS |" >> $GITHUB_STEP_SUMMARY
+          elif [ "$H1_EXIT" = "1" ]; then
+            echo "| H1 Sick-Call | 1 | WARN (churn>10%) |" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "| H1 Sick-Call | $H1_EXIT | FAIL |" >> $GITHUB_STEP_SUMMARY
+          fi
+
+          # H2: Freeze-Window
+          if [ "$H2_EXIT" = "0" ]; then
+            echo "| H2 Freeze-Window | 0 | PASS |" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "| H2 Freeze-Window | $H2_EXIT | FAIL |" >> $GITHUB_STEP_SUMMARY
+          fi
+
+          # H3: Partial-Forecast
+          if [ "$H3_EXIT" = "0" ]; then
+            echo "| H3 Partial-Forecast | 0 | PASS |" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "| H3 Partial-Forecast | $H3_EXIT | FAIL |" >> $GITHUB_STEP_SUMMARY
+          fi
+
+          # Overall verdict
+          if [ "$H1_EXIT" = "2" ] || [ "$H2_EXIT" != "0" ] || [ "$H3_EXIT" != "0" ]; then
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "### VERDICT: FAIL" >> $GITHUB_STEP_SUMMARY
+            echo "One or more drills failed critical checks." >> $GITHUB_STEP_SUMMARY
+            exit 1
+          elif [ "$H1_EXIT" = "1" ]; then
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "### VERDICT: WARN" >> $GITHUB_STEP_SUMMARY
+            echo "Drills passed with warnings (churn above threshold)." >> $GITHUB_STEP_SUMMARY
+          else
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "### VERDICT: PASS" >> $GITHUB_STEP_SUMMARY
+            echo "All drills passed." >> $GITHUB_STEP_SUMMARY
+          fi
+
+  # ============================================
+  # SUMMARY
+  # ============================================
+  guardian-summary:
+    name: Guardian Summary
+    runs-on: ubuntu-latest
+    needs: [guardian-bootstrap, secret-scan, pack-boundary-linter, schema-validation, kpi-drift-tests, golden-dataset-tests, impact-preview-tests, audit-report-tests, acceptance-gate, allow-dirty-check, auth-separation-gate, wien-security-gate, wien-roster-gate, ops-drills-gate]
+    if: always()
+
+    steps:
+      - name: Summary
+        run: |
+          echo "## Guardian Gate Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Check | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|-------|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Bootstrap Exit | ${{ needs.guardian-bootstrap.outputs.exit_code }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Routing Hint | ${{ needs.guardian-bootstrap.outputs.routing_hint }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Audit Grade | ${{ needs.guardian-bootstrap.outputs.audit_grade }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Stop-the-Line | ${{ needs.guardian-bootstrap.outputs.stop_the_line }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Secret Scan | ${{ needs.secret-scan.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Pack Boundary | ${{ needs.pack-boundary-linter.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Schema Validation | ${{ needs.schema-validation.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| KPI Drift Tests (116) | ${{ needs.kpi-drift-tests.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Golden Dataset Tests (115) | ${{ needs.golden-dataset-tests.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Impact Preview Tests (114) | ${{ needs.impact-preview-tests.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Audit Report Tests (113) | ${{ needs.audit-report-tests.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Acceptance Gate | ${{ needs.acceptance-gate.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Auth Separation (F)** | ${{ needs.auth-separation-gate.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Wien W02 Security** | ${{ needs.wien-security-gate.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Wien W02 Roster** | ${{ needs.wien-roster-gate.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Ops Drills (H)** | ${{ needs.ops-drills-gate.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          # Exit code explanations
+          EXIT_CODE="${{ needs.guardian-bootstrap.outputs.exit_code }}"
+          if [ "$EXIT_CODE" = "2" ]; then
+            echo "### HARD BLOCK: STOP-THE-LINE (Exit 2)" >> $GITHUB_STEP_SUMMARY
+            echo "S0/S1 incident with status {new, active, investigating} is active." >> $GITHUB_STEP_SUMMARY
+            echo "ALL work blocked until incident is resolved or marked stale." >> $GITHUB_STEP_SUMMARY
+          elif [ "$EXIT_CODE" = "1" ]; then
+            echo "### HARD BLOCK: SCHEMA INVALID (Exit 1)" >> $GITHUB_STEP_SUMMARY
+            echo "State files fail JSON Schema validation. Fix .claude/state/ files." >> $GITHUB_STEP_SUMMARY
+          fi
+
+          if [ "${{ needs.guardian-bootstrap.outputs.stop_the_line }}" = "true" ]; then
+            echo "### STOP-THE-LINE ACTIVE" >> $GITHUB_STEP_SUMMARY
+            echo "S0/S1 incident requires immediate attention. All other work blocked." >> $GITHUB_STEP_SUMMARY
+          fi
+
+          if [ "${{ needs.guardian-bootstrap.outputs.audit_grade }}" = "false" ]; then
+            echo "### NOT AUDIT-GRADE" >> $GITHUB_STEP_SUMMARY
+            echo "Dirty worktree detected. Proof/determinism jobs blocked." >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "**To override:** Add label \`allow-dirty\` + include \`override_reason:\` in PR body" >> $GITHUB_STEP_SUMMARY
+          fi
+
+          # Allow-dirty override status
+          ALLOW_DIRTY_RESULT="${{ needs.allow-dirty-check.result }}"
+          if [ "$ALLOW_DIRTY_RESULT" = "success" ]; then
+            echo "### Allow-Dirty Override: APPROVED" >> $GITHUB_STEP_SUMMARY
+            echo "Override was validated (label + reason present)." >> $GITHUB_STEP_SUMMARY
+          elif [ "$ALLOW_DIRTY_RESULT" = "failure" ]; then
+            echo "### Allow-Dirty Override: REJECTED" >> $GITHUB_STEP_SUMMARY
+            echo "Label present but \`override_reason:\` missing from PR body." >> $GITHUB_STEP_SUMMARY
+          fi

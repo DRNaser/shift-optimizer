@@ -34,16 +34,23 @@ COMMENT ON COLUMN tenants.metadata IS 'JSON for rate limits, contact info, billi
 -- ============================================================================
 -- 2. DEFAULT TENANT (for migration of existing data)
 -- ============================================================================
+-- SECURITY NOTE: This tenant exists ONLY to own migrated legacy data.
+-- It is INACTIVE by default and cannot be used for authentication.
+-- Real tenants must be created via proper provisioning with valid API keys.
 
 INSERT INTO tenants (id, name, api_key_hash, is_active, metadata)
 VALUES (
     1,
-    'default',
-    'placeholder_hash_replace_before_production',  -- MUST be replaced
-    TRUE,
-    '{"tier": "internal", "note": "Default tenant for migrated data"}'::jsonb
+    '_migration_data_owner',
+    '0000000000000000000000000000000000000000000000000000000000000000',  -- Invalid placeholder (64 zeros)
+    FALSE,  -- CRITICAL: Inactive - cannot be used for auth
+    '{"tier": "migration", "note": "Owns legacy data from pre-multi-tenant era. NOT for auth.", "security": "inactive_by_design"}'::jsonb
 )
-ON CONFLICT (id) DO NOTHING;
+ON CONFLICT (id) DO UPDATE SET
+    name = EXCLUDED.name,
+    api_key_hash = EXCLUDED.api_key_hash,
+    is_active = EXCLUDED.is_active,
+    metadata = EXCLUDED.metadata;
 
 -- Ensure sequence is ahead of manual insert
 SELECT setval('tenants_id_seq', GREATEST(1, (SELECT MAX(id) FROM tenants)));

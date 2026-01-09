@@ -1,0 +1,107 @@
+{
+  "success": true,
+  "verdict": "OK",
+  "can_proceed": true,
+  "requires_approval": false,
+  "report": {
+    "validated_at": "2026-01-08T06:50:33.033139",
+    "overall_verdict": "OK",
+    "summary": {
+      "total_gates": 8,
+      "hard_gates_passed": 3,
+      "hard_gates_failed": 0,
+      "soft_gates_warned": 0
+    },
+    "statistics": {
+      "total_orders": 5,
+      "valid_orders": 5,
+      "orders_with_warnings": 0,
+      "orders_with_errors": 0,
+      "coords_present": 5,
+      "coords_from_zone": 0,
+      "coords_missing": 0,
+      "duplicate_order_ids": 0
+    },
+    "gates": [
+      {
+        "gate_id": "GATE_ORDER_ID",
+        "gate_type": "HARD",
+        "verdict": "OK",
+        "message": "All orders have order_id",
+        "details": {
+          "total": 5
+        },
+        "affected_orders": [],
+        "affected_count": 0
+      },
+      {
+        "gate_id": "GATE_TIME_WINDOW",
+        "gate_type": "HARD",
+        "verdict": "OK",
+        "message": "All time windows valid",
+        "details": {
+          "total": 5
+        },
+        "affected_orders": [],
+        "affected_count": 0
+      },
+      {
+        "gate_id": "GATE_COORDS_PRESENCE",
+        "gate_type": "HARD",
+        "verdict": "OK",
+        "message": "All orders have coords or zone fallback",
+        "details": {
+          "with_coords": 5,
+          "with_zone": 0
+        },
+        "affected_orders": [],
+        "affected_count": 0
+      },
+      {
+        "gate_id": "GATE_COORDS_RANGE",
+        "gate_type": "SOFT",
+        "verdict": "OK",
+        "message": "All coordinates within Austria bounds",
+        "details": {},
+        "affected_orders": [],
+        "affected_count": 0
+      },
+      {
+        "gate_id": "GATE_DUPLICATE_ORDER_ID",
+        "gate_type": "SOFT",
+        "verdict": "OK",
+        "message": "No duplicate order_ids",
+        "details": {},
+        "affected_orders": [],
+        "affected_count": 0
+      },
+      {
+        "gate_id": "GATE_SERVICE_CODE",
+        "gate_type": "SOFT",
+        "verdict": "OK",
+        "message": "All service codes recognized",
+        "details": {},
+        "affected_orders": [],
+        "affected_count": 0
+      },
+      {
+        "gate_id": "GATE_SERVICE_DURATION",
+        "gate_type": "SOFT",
+        "verdict": "OK",
+        "message": "All service durations reasonable",
+        "details": {},
+        "affected_orders": [],
+        "affected_count": 0
+      },
+      {
+        "gate_id": "GATE_METADATA",
+        "gate_type": "SOFT",
+        "verdict": "OK",
+        "message": "Metadata complete",
+        "details": {},
+        "affected_orders": [],
+        "affected_count": 0
+      }
+    ]
+  }
+}

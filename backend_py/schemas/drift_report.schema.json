@@ -1,0 +1,184 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://solvereign.com/schemas/drift_report.schema.json",
+  "version": "1.0.0",
+  "title": "Routing Drift Report",
+  "description": "Schema for drift report comparing static matrix times vs OSRM live times",
+  "type": "object",
+  "required": [
+    "plan_id",
+    "matrix_version",
+    "osrm_map_hash",
+    "computed_at",
+    "aggregations",
+    "statistics"
+  ],
+  "properties": {
+    "plan_id": {
+      "type": "string",
+      "description": "ID of the solved plan"
+    },
+    "matrix_version": {
+      "type": "string",
+      "description": "Version ID of the static matrix used"
+    },
+    "osrm_map_hash": {
+      "type": "string",
+      "description": "Hash of the OSRM map data"
+    },
+    "computed_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "When the drift report was computed"
+    },
+    "aggregations": {
+      "type": "object",
+      "required": [
+        "total_legs",
+        "legs_with_osrm",
+        "legs_with_timeout",
+        "legs_with_fallback"
+      ],
+      "properties": {
+        "total_legs": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Total number of route legs analyzed"
+        },
+        "legs_with_osrm": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Legs that received OSRM response"
+        },
+        "legs_with_timeout": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Legs where OSRM timed out"
+        },
+        "legs_with_fallback": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Legs using fallback computation"
+        },
+        "timeout_rate": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Rate of timeouts (0.0 - 1.0)"
+        },
+        "fallback_rate": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Rate of fallback usage (0.0 - 1.0)"
+        },
+        "osrm_coverage_rate": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Rate of successful OSRM responses"
+        }
+      }
+    },
+    "statistics": {
+      "type": "object",
+      "required": [
+        "mean_ratio",
+        "median_ratio",
+        "p95_ratio",
+        "max_ratio",
+        "min_ratio"
+      ],
+      "properties": {
+        "mean_ratio": {
+          "type": "number",
+          "description": "Mean of OSRM_time / Matrix_time ratios"
+        },
+        "median_ratio": {
+          "type": "number",
+          "description": "Median of ratios"
+        },
+        "p95_ratio": {
+          "type": "number",
+          "description": "95th percentile of ratios"
+        },
+        "max_ratio": {
+          "type": "number",
+          "description": "Maximum ratio"
+        },
+        "min_ratio": {
+          "type": "number",
+          "description": "Minimum ratio"
+        },
+        "std_ratio": {
+          "type": "number",
+          "description": "Standard deviation of ratios"
+        }
+      }
+    },
+    "worst_underestimates": {
+      "type": "array",
+      "description": "Top N legs where matrix underestimated travel time",
+      "items": {
+        "$ref": "#/definitions/LegDrift"
+      }
+    },
+    "worst_overestimates": {
+      "type": "array",
+      "description": "Top N legs where matrix overestimated travel time",
+      "items": {
+        "$ref": "#/definitions/LegDrift"
+      }
+    },
+    "legs": {
+      "type": "array",
+      "description": "Full list of per-leg drift data",
+      "items": {
+        "$ref": "#/definitions/LegDrift"
+      }
+    }
+  },
+  "definitions": {
+    "LegDrift": {
+      "type": "object",
+      "required": [
+        "from_stop_id",
+        "to_stop_id",
+        "t_matrix_seconds",
+        "t_osrm_seconds",
+        "ratio",
+        "delta_seconds"
+      ],
+      "properties": {
+        "from_stop_id": {
+          "type": "string",
+          "description": "Origin stop ID"
+        },
+        "to_stop_id": {
+          "type": "string",
+          "description": "Destination stop ID"
+        },
+        "t_matrix_seconds": {
+          "type": "integer",
+          "description": "Travel time from static matrix"
+        },
+        "t_osrm_seconds": {
+          "type": "integer",
+          "description": "Travel time from OSRM"
+        },
+        "ratio": {
+          "type": "number",
+          "description": "OSRM_time / Matrix_time ratio"
+        },
+        "delta_seconds": {
+          "type": "integer",
+          "description": "OSRM_time - Matrix_time difference"
+        },
+        "drift_percent": {
+          "type": "number",
+          "description": "Drift as percentage ((ratio - 1) * 100)"
+        }
+      }
+    }
+  }
+}

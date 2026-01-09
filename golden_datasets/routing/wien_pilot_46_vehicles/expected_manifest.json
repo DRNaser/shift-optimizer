@@ -1,0 +1,169 @@
+{
+  "$comment": "Expected manifest structure after a successful Wien Pilot pipeline run",
+  "$schema_version": "1.0.0",
+  "required_keys": {
+    "root": [
+      "import_run_id",
+      "plan_id",
+      "tenant_id",
+      "site_id",
+      "created_at",
+      "pipeline_version",
+      "verdicts",
+      "artifacts",
+      "kpis"
+    ],
+    "verdicts": [
+      "import",
+      "coords_quality",
+      "solve",
+      "drift_gate",
+      "audit",
+      "final"
+    ],
+    "artifacts": [
+      "raw_blob",
+      "canonical_orders",
+      "validation_report",
+      "coords_quality_report",
+      "solution",
+      "drift_report",
+      "fallback_report",
+      "routing_evidence",
+      "plan_evidence",
+      "manifest"
+    ],
+    "kpis": [
+      "total_orders",
+      "total_routes",
+      "total_vehicles_used",
+      "total_distance_km",
+      "total_duration_hours",
+      "avg_stops_per_route",
+      "coverage_rate",
+      "on_time_rate"
+    ]
+  },
+  "verdict_values": {
+    "allowed": ["OK", "WARN", "BLOCK", "SKIP", "N/A"],
+    "publishable": ["OK", "WARN"],
+    "blocked": ["BLOCK"]
+  },
+  "artifact_structure": {
+    "raw_blob": {
+      "required_fields": ["uri", "hash", "size_bytes"],
+      "hash_algorithm": "SHA256"
+    },
+    "canonical_orders": {
+      "required_fields": ["uri", "hash", "order_count"],
+      "hash_algorithm": "SHA256"
+    },
+    "validation_report": {
+      "required_fields": ["uri", "verdict", "gate_results"],
+      "expected_gates": [
+        "GATE_ORDER_ID",
+        "GATE_TIME_WINDOW",
+        "GATE_TW_VALID",
+        "GATE_COORDS_OR_ZONE",
+        "GATE_COORDS_RANGE",
+        "GATE_DUPLICATES"
+      ]
+    },
+    "coords_quality_report": {
+      "required_fields": ["uri", "verdict", "metrics"],
+      "expected_metrics": [
+        "total_orders",
+        "orders_with_coords",
+        "orders_missing_latlng",
+        "orders_resolved_by_zone",
+        "orders_resolved_by_h3",
+        "orders_unresolved",
+        "missing_latlng_rate",
+        "fallback_rate"
+      ]
+    },
+    "solution": {
+      "required_fields": ["uri", "hash", "route_count", "status"],
+      "expected_status": ["ROUTING_SUCCESS", "ROUTING_PARTIAL", "ROUTING_FAILED"]
+    },
+    "drift_report": {
+      "required_fields": ["uri", "verdict", "p95_ratio", "max_ratio", "total_legs"],
+      "conditional": "Only present if OSRM finalize enabled"
+    },
+    "fallback_report": {
+      "required_fields": ["uri", "fallback_count", "fallback_rate", "timeout_rate"],
+      "conditional": "Only present if OSRM finalize enabled"
+    },
+    "routing_evidence": {
+      "required_fields": ["uri", "matrix_version", "osrm_enabled"],
+      "osrm_fields_if_enabled": ["osrm_map_hash", "osrm_profile", "finalize_verdict"]
+    },
+    "plan_evidence": {
+      "required_fields": ["uri", "hash", "audit_results"],
+      "expected_audit_checks": [
+        "COVERAGE",
+        "TIME_WINDOW",
+        "SHIFT_FEASIBILITY",
+        "SKILLS_COMPLIANCE",
+        "OVERLAP"
+      ]
+    },
+    "manifest": {
+      "required_fields": ["uri", "hash", "generated_at"],
+      "self_reference": true
+    }
+  },
+  "pipeline_stages": [
+    {
+      "stage": 1,
+      "name": "import",
+      "produces": ["raw_blob", "canonical_orders", "validation_report"],
+      "verdict_key": "import"
+    },
+    {
+      "stage": 2,
+      "name": "coords_quality",
+      "produces": ["coords_quality_report"],
+      "verdict_key": "coords_quality",
+      "controls": "osrm_finalize_enabled"
+    },
+    {
+      "stage": 3,
+      "name": "solve",
+      "produces": ["solution"],
+      "verdict_key": "solve"
+    },
+    {
+      "stage": 4,
+      "name": "finalize",
+      "produces": ["drift_report", "fallback_report", "routing_evidence"],
+      "verdict_key": "drift_gate",
+      "conditional": "Only if coords_quality != BLOCK"
+    },
+    {
+      "stage": 5,
+      "name": "audit",
+      "produces": ["plan_evidence"],
+      "verdict_key": "audit"
+    },
+    {
+      "stage": 6,
+      "name": "manifest",
+      "produces": ["manifest"],
+      "verdict_key": "final"
+    }
+  ],
+  "regression_invariants": {
+    "hash_stability": {
+      "description": "Same input file MUST produce identical hashes across runs",
+      "affected_hashes": ["raw_blob.hash", "canonical_orders.hash"]
+    },
+    "verdict_stability": {
+      "description": "Same input with same policy MUST produce same verdicts",
+      "affected_verdicts": ["import", "coords_quality"]
+    },
+    "artifact_completeness": {
+      "description": "All required artifacts MUST be present for non-BLOCK runs"
+    }
+  }
+}

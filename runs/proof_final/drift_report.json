@@ -1,0 +1,27 @@
+{
+  "plan_id": "dry_run_20260108_065032",
+  "matrix_version": "wien_2026w02_v1",
+  "osrm_map": {
+    "status": "NOT_CONFIGURED",
+    "hash": null,
+    "hash_algorithm": "SHA256",
+    "hash_scope": "FULL_SET",
+    "profile": "car",
+    "files_hashed": [],
+    "total_size_bytes": 0,
+    "newest_mtime": null,
+    "computed_at": "2026-01-08T05:50:33.047652+00:00"
+  },
+  "computed_at": "2026-01-08T06:50:33.047757",
+  "aggregations": {
+    "total_legs": 0,
+    "legs_with_osrm": 0,
+    "timeout_rate": 0.01,
+    "fallback_rate": 0.02
+  },
+  "statistics": {
+    "mean_ratio": 1.05,
+    "p95_ratio": 1.08,
+    "max_ratio": 1.15
+  }
+}

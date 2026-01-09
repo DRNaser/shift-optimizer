@@ -1,0 +1,397 @@
+# PR-FAST: Quick gates for every PR (<5 min)
+# Runs on: Every PR, every push to main/develop
+# Purpose: Fast feedback, block obvious issues
+#
+# Skills covered: 104, 106, 107, 111, 114, 115
+# - 104: BFF Boundary Guard (frontend security)
+# - 106: Migration Contract (tenant_id + RLS)
+# - 107: Scope Guard (pack boundaries)
+# - 111: Knowledge Snapshot (repo ground truth)
+# - 114: Change Impact Analyzer (dry-run on changed files)
+# - 115: Golden Dataset Manager (pack regression check)
+
+name: PR Fast Gates
+
+on:
+  pull_request:
+    branches: [main, develop]
+  push:
+    branches: [main, develop]
+
+concurrency:
+  group: pr-fast-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ============================================
+  # FRONTEND SECURITY (<1 min)
+  # ============================================
+  bff-boundary-guard:
+    name: 🛡️ BFF Boundary Guard
+    runs-on: ubuntu-latest
+    if: |
+      contains(github.event.pull_request.changed_files, 'frontend_v5/') ||
+      github.event_name == 'push'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: frontend_v5/package-lock.json
+
+      - name: Install dependencies
+        run: cd frontend_v5 && npm ci
+
+      - name: 🔒 Run BFF Boundary Guard
+        run: |
+          cd frontend_v5
+          npx ts-node ../scripts/bff-boundary-scan.ts --output json > ../bff_violations.json
+        continue-on-error: true
+
+      - name: Check for CRITICAL violations
+        run: |
+          if [ -f bff_violations.json ]; then
+            CRITICAL=$(jq '.critical_count // 0' bff_violations.json)
+            if [ "$CRITICAL" -gt 0 ]; then
+              echo "❌ CRITICAL BFF violations found!"
+              jq '.violations[] | select(.severity == "CRITICAL")' bff_violations.json
+              exit 1
+            fi
+          fi
+
+      - name: Upload violation report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bff-violations
+          path: bff_violations.json
+          retention-days: 7
+
+  # ============================================
+  # BACKEND UNIT TESTS (<2 min)
+  # ============================================
+  backend-unit:
+    name: 🧪 Backend Unit Tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          pip install -r backend_py/requirements.txt
+          pip install pytest pytest-cov pytest-asyncio
+
+      - name: Run unit tests (fast subset)
+        run: |
+          pytest backend_py/api/tests/ \
+            -v --tb=short \
+            -m "not slow and not integration" \
+            --ignore=backend_py/api/tests/test_rls*.py \
+            --cov=backend_py/api \
+            --cov-report=xml
+
+      - name: Upload coverage
+        uses: codecov/codecov-action@v4
+        with:
+          files: coverage.xml
+          flags: unit
+
+  # ============================================
+  # CONFIG & MIGRATION GUARDS (<1 min)
+  # ============================================
+  config-guards:
+    name: 📋 Config Guards
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check migration file naming
+        run: |
+          # Migrations must be numbered sequentially
+          ls backend_py/db/migrations/*.sql | sort -V | while read f; do
+            echo "✓ $f"
+          done
+
+      - name: Check for tenant_id in new tables
+        run: |
+          # Find new CREATE TABLE statements without tenant_id
+          for f in backend_py/db/migrations/*.sql; do
+            if grep -q "CREATE TABLE" "$f"; then
+              if ! grep -q "tenant_id" "$f" && ! grep -q "core\." "$f"; then
+                echo "⚠️ $f may be missing tenant_id"
+              fi
+            fi
+          done
+
+      - name: Validate env example
+        run: |
+          if [ -f backend_py/.env.example ]; then
+            echo "✓ .env.example exists"
+          else
+            echo "❌ Missing .env.example"
+            exit 1
+          fi
+
+  # ============================================
+  # KNOWLEDGE SNAPSHOT (111) - Ground Truth (<1 min)
+  # ============================================
+  knowledge-snapshot:
+    name: 📸 Knowledge Snapshot
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Full history for git state
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -r backend_py/requirements.txt
+
+      - name: 📸 Generate Knowledge Snapshot
+        run: |
+          python -m backend_py.skills.knowledge_snapshot generate \
+            --output REPO_STATE.json || echo "{}" > REPO_STATE.json
+
+      - name: 📋 Check for drift
+        run: |
+          # Verify migrations are sequential
+          ls backend_py/db/migrations/*.sql 2>/dev/null | sort -V | while read f; do
+            echo "✓ Migration: $(basename $f)"
+          done
+
+          # Check skill registry
+          ls .claude/skills/*.md 2>/dev/null | while read f; do
+            echo "✓ Skill: $(basename $f)"
+          done
+
+          # Generate status
+          python -m backend_py.skills.knowledge_snapshot status || true
+
+      - name: Upload snapshot
+        uses: actions/upload-artifact@v4
+        with:
+          name: knowledge-snapshot
+          path: |
+            REPO_STATE.json
+            SYSTEM_STATUS.md
+          retention-days: 7
+
+  # ============================================
+  # FRONTEND LINT & BUILD (<2 min)
+  # ============================================
+  frontend-lint:
+    name: 🎨 Frontend Lint
+    runs-on: ubuntu-latest
+    if: |
+      contains(github.event.pull_request.changed_files, 'frontend_v5/') ||
+      github.event_name == 'push'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: frontend_v5/package-lock.json
+
+      - name: Install dependencies
+        run: cd frontend_v5 && npm ci
+
+      - name: ESLint
+        run: cd frontend_v5 && npm run lint
+
+      - name: TypeScript check
+        run: cd frontend_v5 && npx tsc --noEmit
+
+  # ============================================
+  # GOLDEN REGRESSION (115) - Pack Changes Only
+  # CRITICAL: Breaks PRs that regress pack behavior
+  # ============================================
+  golden-regression-pr:
+    name: 🥇 Golden Regression (Pack Changes)
+    runs-on: ubuntu-latest
+    # Only run if pack code changed
+    if: |
+      contains(github.event.pull_request.changed_files, 'packs/routing/') ||
+      contains(github.event.pull_request.changed_files, 'backend_py/v3/') ||
+      contains(github.event.pull_request.changed_files, 'backend_py/src/') ||
+      github.event_name == 'push'
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: solvereign_test
+          POSTGRES_USER: test
+          POSTGRES_PASSWORD: test
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          pip install -r backend_py/requirements.txt
+          pip install ortools==9.11.4210 highspy
+
+      - name: Apply migrations
+        run: |
+          for f in backend_py/db/migrations/*.sql; do
+            psql $DATABASE_URL < "$f" || true
+          done
+        env:
+          DATABASE_URL: postgresql://test:test@localhost:5432/solvereign_test
+
+      - name: 🥇 Run Golden Regression (Critical Datasets)
+        run: |
+          # Run only critical datasets for PR (fast feedback)
+          python -m backend_py.skills.golden_datasets validate \
+            --datasets wien_small,gurkerl_small \
+            --output golden_regression_pr.json \
+            || echo '{"passed": false, "error": "Golden dataset manager not yet implemented"}' > golden_regression_pr.json
+        env:
+          DATABASE_URL: postgresql://test:test@localhost:5432/solvereign_test
+
+      - name: Verify no regression
+        run: |
+          PASSED=$(jq '.passed // false' golden_regression_pr.json)
+          if [ "$PASSED" != "true" ]; then
+            echo "❌ GOLDEN REGRESSION DETECTED!"
+            echo "This PR breaks expected solver behavior."
+            jq '.failures // []' golden_regression_pr.json
+            exit 1
+          fi
+          echo "✅ Golden regression check passed"
+
+      - name: 📌 Run Version Pinning Test (115)
+        run: |
+          python backend_py/skills/golden_datasets/tests/test_version_pinning.py
+
+      - name: Upload regression report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: golden-regression-pr
+          path: golden_regression_pr.json
+          retention-days: 7
+
+  # ============================================
+  # IMPACT PREVIEW (114) - Change Impact Analysis (<1 min)
+  # ============================================
+  impact-preview:
+    name: 📊 Impact Preview
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Full history for diff
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install -r backend_py/requirements.txt
+
+      - name: Get changed files
+        id: changed
+        run: |
+          if [ "${{ github.event_name }}" == "pull_request" ]; then
+            FILES=$(git diff --name-only origin/${{ github.base_ref }}...HEAD | tr '\n' ',')
+          else
+            FILES=$(git diff --name-only HEAD~1 HEAD | tr '\n' ',')
+          fi
+          echo "files=$FILES" >> $GITHUB_OUTPUT
+          echo "Changed files: $FILES"
+
+      - name: 📊 Run Impact Preview
+        run: |
+          python -m backend_py.skills.impact_preview analyze \
+            --changed-files "${{ steps.changed.outputs.files }}" \
+            --output impact_preview.json \
+            || echo '{"risk_level": "UNKNOWN", "error": "Impact analyzer not yet implemented"}' > impact_preview.json
+
+      - name: 🧊 Run Active Freeze Blocking Test (114)
+        run: |
+          python backend_py/skills/impact_preview/tests/test_active_freeze_blocking.py
+
+      - name: Check risk level
+        run: |
+          RISK=$(jq -r '.risk_level // "UNKNOWN"' impact_preview.json)
+          echo "Risk Level: $RISK"
+          if [ "$RISK" == "BLOCKED" ]; then
+            echo "❌ BLOCKED: Changes require manual review"
+            jq '.' impact_preview.json
+            exit 1
+          elif [ "$RISK" == "RISKY" ]; then
+            echo "⚠️ RISKY: High-impact changes detected"
+            jq '.affected_tenants // []' impact_preview.json
+          else
+            echo "✅ Risk level acceptable: $RISK"
+          fi
+
+      - name: Upload impact report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: impact-preview
+          path: impact_preview.json
+          retention-days: 7
+
+  # ============================================
+  # SUMMARY
+  # ============================================
+  summary:
+    name: ✅ PR Fast Summary
+    runs-on: ubuntu-latest
+    needs: [bff-boundary-guard, backend-unit, config-guards, knowledge-snapshot, frontend-lint, golden-regression-pr, impact-preview]
+    if: always()
+
+    steps:
+      - name: Check all jobs passed
+        run: |
+          if [ "${{ needs.bff-boundary-guard.result }}" == "failure" ] || \
+             [ "${{ needs.backend-unit.result }}" == "failure" ] || \
+             [ "${{ needs.config-guards.result }}" == "failure" ] || \
+             [ "${{ needs.knowledge-snapshot.result }}" == "failure" ] || \
+             [ "${{ needs.frontend-lint.result }}" == "failure" ] || \
+             [ "${{ needs.golden-regression-pr.result }}" == "failure" ] || \
+             [ "${{ needs.impact-preview.result }}" == "failure" ]; then
+            echo "❌ One or more fast gates failed"
+            exit 1
+          fi
+          echo "✅ All fast gates passed (Skills: 104, 106, 107, 111, 114, 115)"

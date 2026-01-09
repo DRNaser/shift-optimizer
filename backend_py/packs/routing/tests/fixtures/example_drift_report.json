@@ -1,0 +1,54 @@
+{
+  "plan_id": "plan-wien-2026w02-001",
+  "matrix_version": "wien_2026w02_v3",
+  "osrm_map_hash": "sha256:9f8e7d6c5b4a3210fedcba9876543210abcdef0123456789abcdef0123456789",
+  "computed_at": "2026-01-08T14:30:00Z",
+  "aggregations": {
+    "total_legs": 847,
+    "legs_with_osrm": 820,
+    "legs_with_timeout": 12,
+    "legs_with_fallback": 27,
+    "timeout_rate": 0.0142,
+    "fallback_rate": 0.0319,
+    "osrm_coverage_rate": 0.9681
+  },
+  "statistics": {
+    "mean_ratio": 1.08,
+    "median_ratio": 1.05,
+    "p95_ratio": 1.22,
+    "max_ratio": 1.45,
+    "min_ratio": 0.92,
+    "std_ratio": 0.11
+  },
+  "worst_underestimates": [
+    {
+      "from_stop_id": "stop-A123",
+      "to_stop_id": "stop-B456",
+      "t_matrix_seconds": 600,
+      "t_osrm_seconds": 870,
+      "ratio": 1.45,
+      "delta_seconds": 270,
+      "drift_percent": 45.0
+    },
+    {
+      "from_stop_id": "stop-C789",
+      "to_stop_id": "stop-D012",
+      "t_matrix_seconds": 480,
+      "t_osrm_seconds": 672,
+      "ratio": 1.40,
+      "delta_seconds": 192,
+      "drift_percent": 40.0
+    }
+  ],
+  "worst_overestimates": [
+    {
+      "from_stop_id": "stop-E345",
+      "to_stop_id": "stop-F678",
+      "t_matrix_seconds": 720,
+      "t_osrm_seconds": 662,
+      "ratio": 0.92,
+      "delta_seconds": -58,
+      "drift_percent": -8.0
+    }
+  ]
+}

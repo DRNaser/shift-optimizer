@@ -1,0 +1,168 @@
+BACKEND AUDIT CHECKLIST (Security + Idempotency + Tenant Isolation)
+------------------------------------------------------------------
+
+B0 — Capture metadata (commit SHA, env, who ran it)
+Why: Audits are useless without reproducibility.
+
+Proof commands / code-search:
+  - git rev-parse HEAD
+  - git status --porcelain
+  - node -v && python -V && pip show fastapi || true
+
+Pass criteria:
+  - Commit SHA captured
+  - Working tree clean OR diffs attached
+
+------------------------------------------------------------------
+
+B1 — Direct-backend auth is enforced (no BFF bypass)
+Why: Even perfect BFF auth fails if backend accepts requests without verification.
+
+Proof commands / code-search:
+  - grep -RIn "X-SV-" backend_py/ backend/ src/ 2>/dev/null || true
+  - grep -RIn "HMAC" backend_py/ backend/ src/ 2>/dev/null || true
+  - grep -RIn "Authorization" backend_py/ backend/ src/ 2>/dev/null || true
+  - grep -RIn "tenant" backend_py/ backend/ src/ 2>/dev/null || true
+
+Pass criteria:
+  - All protected endpoints reject unauthenticated requests (401/403)
+  - Auth verification happens server-side on every request (middleware/dependency)
+  - Tenant binding is enforced (request cannot switch tenant)
+
+Negative tests (run + capture output):
+  • No auth header
+    - curl -i http://localhost:8000/api/v1/platform/orgs
+    Expect: 401/403 (never 200)
+  • Bad signature
+    - curl -i -H 'Authorization: Bearer bad' http://localhost:8000/api/v1/platform/orgs
+    Expect: 401/403
+
+------------------------------------------------------------------
+
+B2 — Session/token verification matches BFF contract
+Why: If backend can't validate platform session token, direct calls are possible or inconsistent.
+
+Proof commands / code-search:
+  - grep -RIn "SOLVEREIGN_SESSION_SECRET" backend_py/ backend/ src/ 2>/dev/null || true
+  - grep -RIn "timingSafeEqual" backend_py/ backend/ src/ 2>/dev/null || true
+  - grep -RIn "clock skew" backend_py/ backend/ src/ 2>/dev/null || true
+
+Pass criteria:
+  - Backend verifies token signature + expiry
+  - Secret rotation supported (_PREV)
+  - Timing-safe compare used (or equivalent)
+
+------------------------------------------------------------------
+
+B3 — RBAC enforced server-side (role not trusted from client cookies)
+Why: Role spoofing must not be possible even with a valid token.
+
+Proof commands / code-search:
+  - grep -RIn "platform:read" backend_py/ backend/ src/ 2>/dev/null || true
+  - grep -RIn "hasPermission" backend_py/ backend/ src/ 2>/dev/null || true
+  - grep -RIn "role" backend_py/ backend/ src/ 2>/dev/null || true
+
+Pass criteria:
+  - Role/claims come from verified token or server-side directory, not client-set values
+  - Permission checks exist per endpoint (or via router-level policy)
+
+Negative tests (run + capture output):
+  • Viewer cannot admin
+    - curl -i -H 'Authorization: Bearer <viewerToken>' -X POST http://localhost:8000/api/v1/platform/orgs -d '{"x":1}'
+    Expect: 403
+
+------------------------------------------------------------------
+
+B4 — Idempotency dedupe is real (DB constraint + handler behavior)
+Why: Presence/forwarding is not dedupe. Backend must prevent duplicate side effects.
+
+Proof commands / code-search:
+  - grep -RIn "idempot" backend_py/ backend/ src/ 2>/dev/null || true
+  - grep -RIn "Idempotency" backend_py/ backend/ src/ 2>/dev/null || true
+  - grep -RIn "X-Idempotency-Key" backend_py/ backend/ src/ 2>/dev/null || true
+  - ls -la backend_py/migrations backend/migrations 2>/dev/null || true
+
+Pass criteria:
+  - There is a persistence layer for idempotency keys (DB/Redis) with TTL/cleanup
+  - Unique constraint exists (scope: tenant + endpoint + key) or equivalent
+  - Same key returns same response (or 409/200 with stored result) without duplicating side effects
+
+Negative tests (run + capture output):
+  • Replay same key twice
+    - curl -s -i -H 'Authorization: Bearer <adminToken>' -H 'X-Idempotency-Key: demo-123' -H 'Content-Type: application/json' -X POST http://localhost:8000/api/v1/platform/orgs -d '{"orgCode":"demo"}'
+    - curl -s -i -H 'Authorization: Bearer <adminToken>' -H 'X-Idempotency-Key: demo-123' -H 'Content-Type: application/json' -X POST http://localhost:8000/api/v1/platform/orgs -d '{"orgCode":"demo"}'
+    Expect: Second call does NOT create a second org; response is replayed or safely rejected
+
+------------------------------------------------------------------
+
+B5 — Idempotency scope is correct (covers POST/PUT/PATCH/DELETE)
+Why: Gaps allow replays on non-POST writes.
+
+Proof commands / code-search:
+  - grep -RIn "X-Idempotency-Key" backend_py/ backend/ src/ 2>/dev/null || true
+  - grep -RIn "PATCH" backend_py/ backend/ src/ 2>/dev/null || true
+  - grep -RIn "PUT" backend_py/ backend/ src/ 2>/dev/null || true
+  - grep -RIn "DELETE" backend_py/ backend/ src/ 2>/dev/null || true
+
+Pass criteria:
+  - Write methods require idempotency key OR documented exception list exists
+  - Exception list is explicit and justified (e.g., read-only or already safe ops)
+
+------------------------------------------------------------------
+
+B6 — Tenant isolation enforced everywhere
+Why: Multi-tenant bugs are catastrophic and easy to introduce.
+
+Proof commands / code-search:
+  - grep -RIn "tenant_id" backend_py/ backend/ src/ 2>/dev/null || true
+  - grep -RIn "Tenant" backend_py/ backend/ src/ 2>/dev/null || true
+
+Pass criteria:
+  - Every query is tenant-scoped
+  - No cross-tenant access via ID guessing
+  - Tenant derived from verified auth context, not client input
+
+------------------------------------------------------------------
+
+B7 — Audit trail & immutability for platform writes (minimal)
+Why: Platform operations should be traceable (who/what/when).
+
+Proof commands / code-search:
+  - grep -RIn "audit" backend_py/ backend/ src/ 2>/dev/null || true
+  - grep -RIn "created_by|updated_by" backend_py/ backend/ src/ 2>/dev/null || true
+
+Pass criteria:
+  - Platform write operations log actor + request id + timestamp
+  - Changes are persisted with proper attribution
+
+------------------------------------------------------------------
+
+B8 — Rate limiting / abuse controls (at least for dev-login or platform endpoints)
+Why: Prevents brute-force and reduces blast radius.
+
+Proof commands / code-search:
+  - grep -RIn "rate" backend_py/ backend/ src/ 2>/dev/null || true
+  - grep -RIn "limit" backend_py/ backend/ src/ 2>/dev/null || true
+
+Pass criteria:
+  - Some form of throttling exists or is handled by ingress
+  - Document where enforcement lives (backend vs ingress)
+
+------------------------------------------------------------------
+
+B9 — Evidence bundle checklist (what to paste into SECURITY_AUDIT_BACKEND.md)
+Why: Turns the checklist into an auditable artifact.
+
+Proof commands / code-search:
+  - Paste: route table (method + endpoint + guard + permission) for /api/v1/platform/*
+  - Paste: migration snippet showing idempotency unique constraint
+  - Paste: failing curl for missing auth (401/403)
+  - Paste: replay proof for idempotency key (same response, no duplicates)
+  - Paste: commit SHA + build/test outputs
+
+Pass criteria:
+  - All evidence items captured with file:line or command output
+
+------------------------------------------------------------------
+
+Tip: Store outputs in SECURITY_AUDIT_BACKEND.md with commit SHA + dates.

@@ -1,0 +1,137 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://solvereign.com/schemas/routing.json",
+  "version": "1.0.0",
+  "description": "Machine-readable routing table for Guardian Context Tree",
+  "priority_order": ["security", "stability", "performance", "quality", "architecture", "operations"],
+  "severity_definitions": {
+    "S0": {
+      "name": "CRITICAL",
+      "description": "Data integrity or security breach, immediate stop-the-line",
+      "response_action": "STOP_ALL_WRITES",
+      "default_route": "stability/incident-triage.md"
+    },
+    "S1": {
+      "name": "HIGH",
+      "description": "Significant impact, blocks new deployments",
+      "response_action": "BLOCK_DEPLOYS",
+      "default_route": "stability/incident-triage.md"
+    },
+    "S2": {
+      "name": "MEDIUM",
+      "description": "Degraded service, user-visible impact",
+      "response_action": "WARN_CONTINUE",
+      "default_route": null
+    },
+    "S3": {
+      "name": "LOW",
+      "description": "Minor issue, informational",
+      "response_action": "LOG_ONLY",
+      "default_route": null
+    }
+  },
+  "type_based_routing": {
+    "description": "PREFERRED: Use incident.type field for deterministic routing",
+    "routes": {
+      "security": {
+        "target": "security/rls-enforcement.md",
+        "description": "RLS/auth/leak/token issues",
+        "examples": ["RLS bypass", "Auth failure", "Token leak", "Cross-tenant access"]
+      },
+      "stability": {
+        "target": "stability/incident-triage.md",
+        "description": "Crashes/down/errors/unavailable",
+        "examples": ["Service down", "500 errors", "Database unavailable"]
+      },
+      "perf": {
+        "target": "performance/timeout-playbook.md",
+        "description": "Timeout/memory/slow/freeze",
+        "examples": ["Solver timeout", "Memory leak", "Slow API response"]
+      },
+      "quality": {
+        "target": "quality/determinism-proof.md",
+        "description": "Test/audit/determinism failures",
+        "examples": ["Audit failed", "Non-deterministic output", "Coverage dropped"]
+      }
+    }
+  },
+  "keyword_based_routing": {
+    "description": "FALLBACK: Use keywords in incident summary when type field is missing",
+    "high_risk_keywords": {
+      "keywords": ["rls", "leak", "cross-tenant", "auth", "tenant"],
+      "route": "security",
+      "always_trigger": true,
+      "description": "Always trigger security route regardless of severity"
+    },
+    "medium_risk_keywords": {
+      "keywords": ["xss", "injection", "vuln", "token", "hmac", "replay", "security"],
+      "route": "security",
+      "always_trigger": false,
+      "description": "Only trigger if severity >= S1 OR combined with high-risk keyword"
+    },
+    "stability_keywords": {
+      "keywords": ["down", "crash", "error", "500", "unavailable", "broken"],
+      "route": "stability"
+    },
+    "performance_keywords": {
+      "keywords": ["timeout", "slow", "ram", "memory", "freeze", "oom", "pool"],
+      "route": "performance"
+    }
+  },
+  "context_branches": {
+    "security": {
+      "path": "context/security/",
+      "readme": "context/security/README.md",
+      "default_file": "rls-enforcement.md",
+      "description": "Authentication, authorization, RLS, HMAC, encryption"
+    },
+    "stability": {
+      "path": "context/stability/",
+      "readme": "context/stability/README.md",
+      "default_file": "incident-triage.md",
+      "description": "Incidents, health checks, escalations"
+    },
+    "performance": {
+      "path": "context/performance/",
+      "readme": "context/performance/README.md",
+      "default_file": "timeout-playbook.md",
+      "description": "Timeouts, memory, profiling, capacity"
+    },
+    "quality": {
+      "path": "context/quality/",
+      "readme": "context/quality/README.md",
+      "default_file": "determinism-proof.md",
+      "description": "Testing, audit compliance, determinism, KPI drift"
+    },
+    "architecture": {
+      "path": "context/architecture/",
+      "readme": "context/architecture/README.md",
+      "default_file": "kernel-boundary.md",
+      "description": "Pack boundaries, migrations, contracts"
+    },
+    "operations": {
+      "path": "context/operations/",
+      "readme": "context/operations/README.md",
+      "default_file": "deployment-checklist.md",
+      "description": "Deployment, rollback, tenant onboarding"
+    }
+  },
+  "stop_the_line_rules": {
+    "trigger_severities": ["S0", "S1"],
+    "trigger_statuses": ["new", "active", "investigating"],
+    "NOT_trigger_statuses": ["mitigated", "resolved", "stale"],
+    "action": "BLOCK_ALL_WRITES",
+    "route": "stability/incident-triage.md",
+    "message": "ALL other work BLOCKED until resolved"
+  },
+  "audit_grade_rules": {
+    "description": "Conditions for audit-grade execution",
+    "requirements": {
+      "git_dirty": false,
+      "active_s0_s1": false,
+      "schema_validation": "PASS"
+    },
+    "override_flag": "--allow-dirty",
+    "override_requires": ["override_reason", "override_actor"]
+  }
+}

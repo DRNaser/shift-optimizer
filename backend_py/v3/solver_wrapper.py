@@ -39,6 +39,7 @@ from .db_instances import (
 from .audit_fixed import audit_plan_fixed
 from .models import PlanStatus, SolverConfig
 from .solver_v2_integration import solve_with_v2_solver
+from .policy_snapshot import get_policy_snapshot, apply_policy_to_solver_config
 
 
 # ============================================================================
@@ -92,7 +93,9 @@ def solve_forecast(
     solver_config: Optional[SolverConfig] = None,
     baseline_plan_id: Optional[int] = None,
     scenario_label: Optional[str] = None,
-    tenant_id: int = 1  # Default tenant for backward compatibility
+    tenant_id: int = 1,  # Default tenant for backward compatibility
+    tenant_uuid: Optional[str] = None,  # UUID for policy lookup (ADR-002)
+    pack_id: str = "roster",  # Pack identifier for policy lookup
 ) -> dict:
     """
     Solve a forecast using V2 block heuristic solver.
@@ -120,6 +123,19 @@ def solve_forecast(
     Raises:
         ValueError: If forecast_version not found or has no instances
     """
+    # ADR-002: Fetch policy snapshot for this tenant/pack
+    policy_snapshot = None
+    if tenant_uuid:
+        policy_snapshot = get_policy_snapshot(tenant_uuid, pack_id)
+        if not policy_snapshot.using_defaults:
+            print(f"[POLICY] Using profile {policy_snapshot.profile_id} (hash: {policy_snapshot.config_hash[:16]}...)")
+        else:
+            print(f"[POLICY] Using pack defaults for {pack_id}")
+    else:
+        # No tenant UUID provided, use defaults
+        policy_snapshot = get_policy_snapshot("", pack_id)
+        print(f"[POLICY] No tenant_uuid provided, using defaults for {pack_id}")
+
     # Build solver config
     if solver_config is None:
         solver_config = SolverConfig(
@@ -136,6 +152,26 @@ def solve_forecast(
             span_regular_max=DEFAULT_SOLVER_CONFIG.span_regular_max,
             span_split_max=DEFAULT_SOLVER_CONFIG.span_split_max,
         )
+
+        # Apply policy overrides to solver config
+        if policy_snapshot and not policy_snapshot.using_defaults:
+            config_dict = solver_config.to_dict()
+            merged_config = apply_policy_to_solver_config(policy_snapshot, config_dict)
+            solver_config = SolverConfig(
+                seed=merged_config.get("seed", solver_config.seed),
+                weekly_hours_cap=merged_config.get("weekly_hours_cap", solver_config.weekly_hours_cap),
+                freeze_window_minutes=merged_config.get("freeze_window_minutes", solver_config.freeze_window_minutes),
+                triple_gap_min=merged_config.get("triple_gap_min", solver_config.triple_gap_min),
+                triple_gap_max=merged_config.get("triple_gap_max", solver_config.triple_gap_max),
+                split_break_min=merged_config.get("split_break_min", solver_config.split_break_min),
+                split_break_max=merged_config.get("split_break_max", solver_config.split_break_max),
+                churn_weight=merged_config.get("churn_weight", solver_config.churn_weight),
+                seed_sweep_count=merged_config.get("seed_sweep_count", solver_config.seed_sweep_count),
+                rest_min_minutes=merged_config.get("rest_min_minutes", solver_config.rest_min_minutes),
+                span_regular_max=merged_config.get("span_regular_max", solver_config.span_regular_max),
+                span_split_max=merged_config.get("span_split_max", solver_config.span_split_max),
+            )
+            print(f"[POLICY] Applied policy overrides to solver config")
 
     # Use seed from config if not explicitly provided
     if seed is None:
@@ -249,8 +285,13 @@ def solve_forecast(
             baseline_plan_version_id=baseline_plan_id,
             solver_config_json=solver_config_dict,
             tenant_id=tenant_id,
+            # ADR-002: Policy snapshot for reproducibility
+            policy_profile_id=policy_snapshot.profile_id if policy_snapshot else None,
+            policy_config_hash=policy_snapshot.config_hash if policy_snapshot else None,
         )
         print(f"Created plan_version {plan_version_id} (status=SOLVING)")
+        if policy_snapshot and policy_snapshot.profile_id:
+            print(f"  Policy: {policy_snapshot.profile_id} (hash: {policy_snapshot.config_hash[:16]}...)")
 
         try:
             # TRANSACTION SAFETY: Insert ALL assignments in single transaction
@@ -333,6 +374,10 @@ def solve_forecast(
             # V2 Solver degradation flag (P0 critical: detect fallback)
             "solver_degraded": solver_degraded,
             "solver_error_message": solver_error_message,
+            # ADR-002: Policy snapshot info
+            "policy_profile_id": policy_snapshot.profile_id if policy_snapshot else None,
+            "policy_config_hash": policy_snapshot.config_hash if policy_snapshot else None,
+            "policy_using_defaults": policy_snapshot.using_defaults if policy_snapshot else True,
         }
 
     else:
@@ -361,6 +406,10 @@ def solve_forecast(
             # V2 Solver degradation flag (P0 critical: detect fallback)
             "solver_degraded": solver_degraded,
             "solver_error_message": solver_error_message,
+            # ADR-002: Policy snapshot info
+            "policy_profile_id": policy_snapshot.profile_id if policy_snapshot else None,
+            "policy_config_hash": policy_snapshot.config_hash if policy_snapshot else None,
+            "policy_using_defaults": policy_snapshot.using_defaults if policy_snapshot else True,
         }
 
     return result

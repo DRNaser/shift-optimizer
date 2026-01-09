@@ -1,0 +1,20 @@
+{
+  "plan_id": "dry_run_20260108_063339",
+  "matrix_version": "wien_2026w02_v1",
+  "osrm_map_hash": "NOT_CONFIGURED",
+  "osrm_map_hash_full": "NOT_CONFIGURED",
+  "osrm_profile": "car",
+  "osrm_files_hashed": [],
+  "computed_at": "2026-01-08T06:33:39.660895",
+  "aggregations": {
+    "total_legs": 0,
+    "legs_with_osrm": 0,
+    "timeout_rate": 0.01,
+    "fallback_rate": 0.02
+  },
+  "statistics": {
+    "mean_ratio": 1.05,
+    "p95_ratio": 1.08,
+    "max_ratio": 1.15
+  }
+}

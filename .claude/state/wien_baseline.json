@@ -1,0 +1,152 @@
+{
+  "$schema": "../schemas/drift-baselines.schema.json",
+  "version": "1.0.0",
+  "tenant_id": "wien_pilot",
+  "baseline_date": "2026-01-08",
+  "description": "Wien Pilot W02 KPI baseline for drift detection",
+
+  "roster_kpis": {
+    "total_drivers": {
+      "expected": 145,
+      "min": 140,
+      "max": 155,
+      "unit": "count",
+      "description": "Total driver headcount"
+    },
+    "fte_ratio": {
+      "expected": 1.0,
+      "min": 0.95,
+      "max": 1.0,
+      "unit": "ratio",
+      "description": "Full-time equivalent ratio (>= 40h/week)"
+    },
+    "pt_count": {
+      "expected": 0,
+      "min": 0,
+      "max": 5,
+      "unit": "count",
+      "description": "Part-time drivers (< 40h/week)"
+    },
+    "max_weekly_hours": {
+      "expected": 54,
+      "min": 48,
+      "max": 55,
+      "unit": "hours",
+      "description": "Maximum weekly hours per driver (55h hard limit)"
+    },
+    "avg_weekly_hours": {
+      "expected": 42,
+      "min": 40,
+      "max": 48,
+      "unit": "hours",
+      "description": "Average weekly hours per driver"
+    },
+    "coverage": {
+      "expected": 1.0,
+      "min": 0.98,
+      "max": 1.0,
+      "unit": "ratio",
+      "description": "Tour coverage ratio (assigned/total)"
+    },
+    "total_tours": {
+      "expected": 1385,
+      "min": 1350,
+      "max": 1450,
+      "unit": "count",
+      "description": "Total tours to cover"
+    }
+  },
+
+  "solver_kpis": {
+    "solve_time_seconds": {
+      "expected": 30,
+      "min": 10,
+      "max": 120,
+      "unit": "seconds",
+      "description": "Solver execution time"
+    },
+    "seed": {
+      "expected": 94,
+      "unit": "seed",
+      "description": "Deterministic solver seed"
+    },
+    "block_1er_count": {
+      "expected_min": 100,
+      "expected_max": 200,
+      "unit": "count",
+      "description": "Single-tour blocks"
+    },
+    "block_2er_count": {
+      "expected_min": 200,
+      "expected_max": 400,
+      "unit": "count",
+      "description": "Two-tour blocks (regular + split)"
+    },
+    "block_3er_count": {
+      "expected_min": 100,
+      "expected_max": 200,
+      "unit": "count",
+      "description": "Three-tour chains"
+    }
+  },
+
+  "audit_kpis": {
+    "coverage_check": { "expected": "PASS", "severity_on_fail": "S0" },
+    "overlap_check": { "expected": "PASS", "severity_on_fail": "S0" },
+    "rest_check": { "expected": "PASS", "severity_on_fail": "S1" },
+    "span_regular_check": { "expected": "PASS", "severity_on_fail": "S1" },
+    "span_split_check": { "expected": "PASS", "severity_on_fail": "S1" },
+    "fatigue_check": { "expected": "PASS", "severity_on_fail": "S1" },
+    "reproducibility_check": { "expected": "PASS", "severity_on_fail": "S0" }
+  },
+
+  "repair_kpis": {
+    "max_churn_rate": {
+      "expected": 0.05,
+      "warn_threshold": 0.10,
+      "fail_threshold": 0.20,
+      "unit": "ratio",
+      "description": "Maximum acceptable churn on repair"
+    },
+    "sick_call_coverage": {
+      "expected": 1.0,
+      "min": 0.98,
+      "unit": "ratio",
+      "description": "Coverage after sick-call repair"
+    },
+    "repair_time_seconds": {
+      "expected": 5,
+      "max": 30,
+      "unit": "seconds",
+      "description": "Repair execution time"
+    }
+  },
+
+  "freeze_kpis": {
+    "horizon_minutes": {
+      "expected": 720,
+      "unit": "minutes",
+      "description": "Freeze horizon (12 hours)"
+    },
+    "enforcement": {
+      "expected": "BLOCK",
+      "description": "Freeze enforcement mode (BLOCK, not WARN)"
+    }
+  },
+
+  "drift_thresholds": {
+    "z_score_alert": 2.0,
+    "z_score_incident": 3.0,
+    "percent_change_warn": 0.10,
+    "percent_change_alert": 0.25,
+    "evaluation_window_days": 7
+  },
+
+  "metadata": {
+    "created_at": "2026-01-08T00:00:00Z",
+    "created_by": "claude_code",
+    "approved_by": null,
+    "approval_date": null,
+    "notes": "Initial baseline for Wien Pilot Week 02 (2026-W02)"
+  }
+}

@@ -1,0 +1,68 @@
+{
+  "$schema": "https://solvereign.com/schemas/fls_import_contract.schema.json",
+  "import_metadata": {
+    "source": "FLS",
+    "export_timestamp": "2026-01-08T06:00:00+01:00",
+    "tenant_id": 1,
+    "site_id": 1,
+    "plan_date": "2026-01-08",
+    "fls_export_id": "FLS-WIEN-2026W02-PROOF"
+  },
+  "orders": [
+    {
+      "order_id": "ORD-001",
+      "service_code": "DELIVERY",
+      "tw_start": "2026-01-08T08:00:00+01:00",
+      "tw_end": "2026-01-08T10:00:00+01:00",
+      "lat": 48.2082,
+      "lng": 16.3738,
+      "service_seconds": 300
+    },
+    {
+      "order_id": "ORD-002",
+      "service_code": "DELIVERY",
+      "tw_start": "2026-01-08T09:00:00+01:00",
+      "tw_end": "2026-01-08T12:00:00+01:00",
+      "lat": 48.1986,
+      "lng": 16.3478,
+      "service_seconds": 600
+    },
+    {
+      "order_id": "ORD-003",
+      "service_code": "SERVICE",
+      "tw_start": "2026-01-08T14:00:00+01:00",
+      "tw_end": "2026-01-08T16:00:00+01:00",
+      "lat": 48.2116,
+      "lng": 16.3632,
+      "service_seconds": 1800
+    },
+    {
+      "order_id": "ORD-004",
+      "service_code": "PICKUP",
+      "tw_start": "2026-01-08T10:00:00+01:00",
+      "tw_end": "2026-01-08T14:00:00+01:00",
+      "lat": 48.2206,
+      "lng": 16.3100,
+      "service_seconds": 300
+    },
+    {
+      "order_id": "ORD-005",
+      "service_code": "DELIVERY",
+      "tw_start": "2026-01-08T11:00:00+01:00",
+      "tw_end": "2026-01-08T13:00:00+01:00",
+      "lat": 48.1858,
+      "lng": 16.3126,
+      "service_seconds": 300
+    }
+  ],
+  "depots": [
+    {
+      "depot_id": "DEPOT-MAIN",
+      "name": "Wien Hauptdepot",
+      "lat": 48.2000,
+      "lng": 16.3600,
+      "open_time": "06:00",
+      "close_time": "22:00"
+    }
+  ]
+}

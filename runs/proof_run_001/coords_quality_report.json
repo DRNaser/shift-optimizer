@@ -1,0 +1,50 @@
+{
+  "verdict": "BLOCK",
+  "evaluated_at": "2026-01-08T06:27:12.852286",
+  "metrics": {
+    "total_orders": 10,
+    "orders_with_latlng": 8,
+    "orders_resolved_by_zone": 0,
+    "orders_resolved_by_h3": 0,
+    "orders_unresolved": 2
+  },
+  "rates": {
+    "missing_latlng_rate": 0.2,
+    "fallback_rate": 0.0,
+    "unresolved_rate": 0.2
+  },
+  "reasons": [
+    "BLOCK: 2 unresolved orders (strict mode requires 0)",
+    "BLOCK: 2 unresolved orders exceeds threshold 0"
+  ],
+  "warnings": [],
+  "unresolved_orders": [
+    "ORD-006",
+    "ORD-007"
+  ],
+  "unresolved_count": 2,
+  "allows_osrm_finalize": false,
+  "policy": {
+    "ok_thresholds": {
+      "missing_latlng_max": 0.0,
+      "fallback_rate_max": 0.0,
+      "unresolved_max": 0
+    },
+    "warn_thresholds": {
+      "missing_latlng_max": 0.1,
+      "fallback_rate_max": 0.1,
+      "unresolved_max": 0
+    },
+    "block_thresholds": {
+      "missing_latlng_max": 0.25,
+      "fallback_rate_max": 0.25,
+      "unresolved_max": 0
+    },
+    "feature_flags": {
+      "allow_zone_fallback": true,
+      "allow_h3_fallback": true,
+      "allow_geocoding": false,
+      "strict_mode": true
+    }
+  }
+}

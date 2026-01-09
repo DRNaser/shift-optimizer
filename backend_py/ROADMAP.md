@@ -1,9 +1,276 @@
 # SOLVEREIGN Roadmap
 
-> **Last Update**: 2026-01-05 (V3.2 Simulation Framework)
-> **Version**: 9.0.0 (V3.2 Simulation Framework Complete)
-> **Status**: **V3.2 SIMULATION FRAMEWORK** ✅ | **8 AUDIT CHECKS** ✅ | **13 SCENARIOS** ✅
-> **Tag**: [`v9.0.0-simulation`](https://github.com/DRNaser/shift-optimizer/tree/main)
+> **Last Update**: 2026-01-08 (Wien W02 + Auth Separation)
+> **Version**: 9.3.0 (V3.7 Auth Separation)
+> **Status**: **V3.7 AUTH SEPARATION** ✅ | **ROUTING PARKED** ⏸️ | **WIEN W02 GATES** ✅
+> **Tag**: [`v9.3.0-wien-w02`](https://github.com/DRNaser/shift-optimizer/tree/main)
+
+---
+
+## ⏸️ BLOCKER: Routing Pack PARKED (Wien W02)
+
+> **Reason**: Real FLS input test data not yet available
+> **Unblocks When**: FLS provides test export file for Wien pilot
+
+### What's Parked
+
+| Component | Status | Reason |
+|-----------|--------|--------|
+| FLS Import E2E | ⏸️ PARKED | No test data |
+| OSRM Live Validation | ⏸️ PARKED | No OSRM map for Wien |
+| Coords Quality Gate E2E | ⏸️ PARKED | Needs real addresses |
+| `scripts/run_wien_pilot_dry_run.py` | ⏸️ PARKED | Requires input file |
+
+### What Still Runs
+
+| Component | Status | Tests |
+|-----------|--------|-------|
+| Routing Unit Tests | ✅ ACTIVE | `pytest backend_py/packs/routing/tests/` |
+| OSRM Map Hash Tests | ✅ ACTIVE | 18 tests (path-neutral hashing) |
+| Golden Dataset Regression | ✅ ACTIVE | Schema validation only |
+| Security Gate | ✅ ACTIVE | `scripts/ci/security_gate.sh` |
+| Roster E2E Gate | ✅ ACTIVE | `scripts/ci/wien_roster_gate.sh` |
+
+### Unblock Checklist
+
+- [ ] FLS test export file received (JSON with 10+ orders)
+- [ ] OSRM map data for Wien region available
+- [ ] Zone resolver populated with Wien PLZ codes
+- [ ] Test tenant configured with Wien site
+
+---
+
+## 🔐 V3.7 Auth Separation (Jan 8, 2026) ✅ NEW
+
+### Overview
+
+V3.7 enforces strict separation between Platform and Pack authentication:
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                    AUTH SEPARATION (V3.7)                            │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                     │
+│  PLATFORM AUTH               PACK AUTH                              │
+│  (/api/v1/platform/*)        (/api/v1/routing/*, /api/v1/roster/*) │
+│  ├─ Session cookies          ├─ X-API-Key                          │
+│  ├─ CSRF tokens              ├─ HMAC signature                     │
+│  ├─ RBAC roles               ├─ Nonce replay protection            │
+│  └─ dev-login BLOCKED prod   └─ Idempotency integration            │
+│                                                                     │
+│  REJECTS: API Key, HMAC      REJECTS: Session, CSRF                │
+│                                                                     │
+│                 NO ENDPOINT ACCEPTS BOTH!                           │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+### New Files (V3.7)
+
+| File | Purpose |
+|------|---------|
+| `api/security/platform_auth.py` | Session + CSRF + RBAC for platform |
+| `api/security/tenant_auth.py` | API Key + HMAC + Nonce for packs |
+| `scripts/ci/security_gate.sh` | DB hardening verification |
+| `scripts/ci/wien_roster_gate.sh` | Roster E2E dry run |
+
+### Key Features
+
+1. **Platform Auth** (`platform_auth.py`):
+   - `require_platform_session(roles=[...])` dependency
+   - Session cookies with HMAC signing
+   - CSRF token validation for POST/PUT/PATCH/DELETE
+   - `reject_tenant_auth_headers()` blocks API Key on platform
+   - `dev_login()` HARD BLOCKED in production
+
+2. **Tenant HMAC Auth** (`tenant_auth.py`):
+   - `require_tenant_hmac()` dependency
+   - HMAC-SHA256 signature verification
+   - Nonce replay protection (5-minute TTL)
+   - Idempotency key integration
+   - `reject_platform_auth_headers()` blocks sessions on packs
+
+3. **Middleware Enforcement** (`main.py`):
+   - Auth separation middleware rejects mismatched auth at request level
+   - Runs BEFORE route handlers
+   - Logs violations for security monitoring
+
+### Wien W02 Gates
+
+| Gate | Script | Expected Output |
+|------|--------|-----------------|
+| **Security** | `security_gate.sh` | solvereign_api → "Permission denied" on tenants |
+| **Roster** | `wien_roster_gate.sh` | 7/7 audit checks PASS, determinism verified |
+
+---
+
+## 🏢 V3.4 Enterprise Extensions (Jan 7, 2026) ✅
+
+### Overview
+
+V3.4 adds 4 **Enterprise Extensions** (Skills 113-116) for production-grade monitoring, testing, and audit compliance:
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│              ENTERPRISE EXTENSIONS (4 SKILLS, 88 TESTS)             │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                     │
+│ SKILL 116: KPI Drift    SKILL 115: Golden      SKILL 114: Impact   │
+│ ├─ Anomaly detection    ├─ Versioned fixtures  ├─ Risk assessment  │
+│ ├─ Baseline protection  ├─ Hash validation     ├─ Rollback plans   │
+│ └─ 26 tests ✅          └─ 12 tests ✅         └─ 24 tests ✅      │
+│                                                                     │
+│ SKILL 113: Audit Report                                             │
+│ ├─ Evidence collection (101+103+104+106+112)                        │
+│ ├─ Compliance matrix (GDPR/SOC2/ISO27001)                           │
+│ ├─ Customer-safe redaction                                          │
+│ └─ 26 tests ✅                                                      │
+│                                                                     │
+│                     TOTAL: 88/88 TESTS PASS                         │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+### New Files (V3.4)
+
+| Skill | Directory | Purpose |
+|-------|-----------|---------|
+| 116 | `backend_py/skills/kpi_drift/` | KPI Drift Detector |
+| 115 | `backend_py/skills/golden_datasets/` | Golden Dataset Manager |
+| 114 | `backend_py/skills/impact_preview/` | Change Impact Analyzer |
+| 113 | `backend_py/skills/audit_report/` | Enterprise Audit Report Generator |
+
+### Skill Details
+
+#### Skill 116: KPI Drift Detector
+- **Purpose**: Proactive anomaly detection for solver KPIs
+- **Thresholds**: OK (<10%), WARNING (10-25%), ALERT (25-50%), INCIDENT (>50%)
+- **Features**: Z-score + percent-change drift calculation, weighted metrics
+- **Baseline Protection**: APPROVER role required (automation cannot write)
+- **CLI**: `python -m backend_py.skills.kpi_drift check --tenant X --pack Y`
+- **Exit Codes**: 0=OK, 1=WARNING, 2=ALERT, 3=INCIDENT
+
+#### Skill 115: Golden Dataset Manager
+- **Purpose**: Versioned test fixtures for regression testing
+- **Datasets**: `golden_datasets/routing/wien_small/`, `golden_datasets/roster/gurkerl_small/`
+- **Features**: SHA256 input/output hashes, manifest versioning
+- **CLI**: `python -m backend_py.skills.golden_datasets list|validate|regression`
+- **Exit Codes**: 0=PASS, 1=FAIL
+
+#### Skill 114: Impact Preview
+- **Purpose**: "Was bricht wenn...?" for every change
+- **Change Types**: CONFIG, PACK, MIGRATION, CODE
+- **Risk Levels**: SAFE (0), CAUTION (1), RISKY (2), BLOCKED (3)
+- **Features**: Affected tenant analysis, rollback plan generation
+- **CLI**: `python -m backend_py.skills.impact_preview analyze --change-type X --target Y`
+
+#### Skill 113: Audit Report Generator
+- **Purpose**: One-click proof pack for CIO/CISO audits
+- **Orchestrates**: Skills 101+103+104+106+112
+- **Compliance**: GDPR, SOC2, ISO27001 matrix
+- **Output Modes**: INTERNAL (full), CUSTOMER_SAFE (redacted)
+- **Features**: Evidence ZIP, hash chain, redaction verification
+- **CLI**: `python -m backend_py.skills.audit_report generate|platform|compliance`
+
+### CI Integration
+
+All skills integrated in `.github/workflows/pr-guardian.yml`:
+
+```yaml
+jobs:
+  kpi-drift-tests:         # Skill 116 - 26 tests
+  golden-dataset-tests:    # Skill 115 - 12 tests
+  impact-preview-tests:    # Skill 114 - 24 tests
+  audit-report-tests:      # Skill 113 - 26 tests
+```
+
+---
+
+## 🚀 V3.3b Routing-Pack Pilot Gates (Jan 6, 2026) ✅
+
+### Overview
+
+V3.3b implements 6 critical **Go/No-Go Gates** for production-ready Routing-Pack deployment:
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                 ROUTING-PACK PILOT GATES (6/6 PASS)                 │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                     │
+│ GATE 1: Realistic Solver   GATE 2: Audit-Gating    GATE 3: RLS Test│
+│ ├─ OR-Tools VRPTW          ├─ FAIL blocks lock     ├─ Thread-local │
+│ ├─ GUIDED_LOCAL_SEARCH     ├─ HTTP 409 Conflict   ├─ 2 tenants    │
+│ └─ 3 tests ✅              └─ 12 tests ✅          └─ 3 tests ✅   │
+│                                                                     │
+│ GATE 4: Site Partition     GATE 5: Artifact Store  GATE 6: Freeze  │
+│ ├─ Advisory locks          ├─ S3/Azure/Local       ├─ Hard gate    │
+│ ├─ FK enforcement          ├─ SHA256 integrity     ├─ DB is_locked │
+│ └─ 19 tests ✅             └─ 19 tests ✅          └─ 12 tests ✅  │
+│                                                                     │
+│                        TOTAL: 68/68 TESTS PASS                      │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+### New Files (V3.3b)
+
+| File | Purpose |
+|------|---------|
+| `packs/routing/tests/test_solver_realistic.py` | Gate 1: OR-Tools actual solve proof |
+| `packs/routing/services/plan_service.py` | Gate 2: AuditGate + PlanService |
+| `packs/routing/tests/test_audit_gate.py` | Gate 2: 12 audit gate tests |
+| `packs/routing/tests/test_rls_parallel_leak.py` | Gate 3: RLS isolation tests |
+| `db/migrations/021_scenario_site_partitioning.sql` | Gate 4: Site FK + advisory locks |
+| `packs/routing/services/site_partitioning.py` | Gate 4: Site partitioning service |
+| `packs/routing/tests/test_site_partitioning.py` | Gate 4: 19 partitioning tests |
+| `packs/routing/services/evidence/artifact_store.py` | Gate 5: Abstract store interface |
+| `packs/routing/tests/test_artifact_store.py` | Gate 5: 19 artifact tests |
+| `packs/routing/services/repair/freeze_lock_enforcer.py` | Gate 6: Hard freeze enforcement |
+| `packs/routing/tests/test_freeze_lock_enforcer.py` | Gate 6: 12 freeze tests |
+
+### Gate Details
+
+#### Gate 1: OR-Tools Realistic Solver Test
+- **Problem**: 21ms E2E test only tested pipeline, not actual solver
+- **Solution**: Verify `status=ROUTING_SUCCESS`, `objective>0`, `search_time>1ms`
+- **Metaheuristic**: `GUIDED_LOCAL_SEARCH` with 5s time limit
+
+#### Gate 2: Audit-Gating at Lock Endpoint
+- **Problem**: FAIL audit should block plan lock (not just warn)
+- **Solution**: `AuditGate.check_lock_allowed()` → FAIL = HTTP 409
+- **Required Checks**: Coverage, Time Window, Shift Feasibility, Skills, Overlap
+
+#### Gate 3: Two-Tenant Parallel RLS Leak Test
+- **Problem**: Verify tenant isolation under parallel Celery execution
+- **Solution**: `threading.local()` tenant context, 0 cross-tenant leaks
+
+#### Gate 4: Site/Depot Partitioning Enforcement
+- **Problem**: Advisory locks must scope per tenant+site
+- **Solution**: `routing_advisory_lock_key(tenant_id, site_id, scenario_id)` + FK
+
+#### Gate 5: Evidence Pack via Artifact Store + Hash
+- **Problem**: Evidence needs cloud storage with integrity verification
+- **Solution**: Abstract `ArtifactStore` (Local/S3/Azure) + SHA256 hash
+
+#### Gate 6: Repair Freeze-Locks Hard Enforce from DB
+- **Problem**: Freeze-locks were recommendations, not hard gates
+- **Solution**: `FreezeLockEnforcer` raises `FreezeLockViolationError`
+
+### Plan State Machine (Updated)
+
+```
+QUEUED → SOLVING → SOLVED → AUDITED → DRAFT → LOCKED
+                     ↓         ↓
+                  [FAIL]    [FAIL blocks LOCK via Gate 2]
+```
+
+### Vision: Pilot Deployment
+
+**Target Verticals**: MediaMarkt, HDL Plus
+
+**Deployment Steps**:
+1. Apply migrations (`021_scenario_site_partitioning.sql`)
+2. Configure artifact store (S3/Azure Blob)
+3. Deploy to pilot tenant
+4. Monitor Celery RLS isolation
+5. Validate freeze-lock enforcement
 
 ---
 

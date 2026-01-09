@@ -1,0 +1,160 @@
+{
+  "$schema": "https://solvereign.com/schemas/routing_policy_profile.schema.json",
+  "version": "1.0.0",
+  "profile_id": "wien_pilot_routing",
+  "name": "Wien Pilot - 46 Vehicles",
+  "description": "Routing policy for Wien pilot deployment with OSRM finalize validation",
+  "tenant_id": 1,
+  "site_id": 1,
+  "effective_from": "2026-01-08",
+  "effective_to": null,
+
+  "import": {
+    "source": "FLS",
+    "validation": {
+      "require_order_id": true,
+      "require_time_window": true,
+      "require_coords_or_zone": true,
+      "max_missing_coords_warning": 0.05,
+      "max_missing_coords_block": 0.20,
+      "allow_duplicate_order_ids": false
+    },
+    "canonicalization": {
+      "timezone": "Europe/Vienna",
+      "round_service_to_minutes": true,
+      "default_service_seconds": 300,
+      "coord_decimals": 6
+    }
+  },
+
+  "coords_quality": {
+    "enabled": true,
+    "policy": {
+      "ok_missing_latlng_max": 0.00,
+      "ok_fallback_rate_max": 0.00,
+      "ok_unresolved_max": 0,
+      "warn_missing_latlng_max": 0.10,
+      "warn_fallback_rate_max": 0.10,
+      "block_missing_latlng_max": 0.25,
+      "block_fallback_rate_max": 0.25,
+      "block_unresolved_max": 0,
+      "allow_zone_fallback": true,
+      "allow_h3_fallback": true,
+      "allow_geocoding": false,
+      "strict_mode": true
+    },
+    "controls_osrm_finalize": true
+  },
+
+  "solver": {
+    "algorithm": "VRPTW",
+    "metaheuristic": "GUIDED_LOCAL_SEARCH",
+    "time_limit_seconds": 300,
+    "solution_limit": 0,
+    "seed": 42,
+    "objectives": {
+      "minimize_vehicles": true,
+      "minimize_distance": true,
+      "minimize_time_window_violations": true
+    },
+    "constraints": {
+      "max_route_duration_minutes": 600,
+      "max_stops_per_route": 50,
+      "respect_hard_time_windows": true,
+      "allow_soft_time_window_violations": false
+    }
+  },
+
+  "matrix": {
+    "provider": "static",
+    "version_pattern": "wien_{year}w{week}_v{version}",
+    "cache_enabled": true,
+    "cache_ttl_hours": 24
+  },
+
+  "osrm_finalize": {
+    "enabled": true,
+    "enabled_when_coords_ok": true,
+    "disabled_when_coords_warn": false,
+    "disabled_when_coords_block": true,
+    "config": {
+      "base_url": "http://localhost:5000",
+      "profile": "driving",
+      "timeout_per_route_seconds": 10.0,
+      "max_total_seconds": 60.0,
+      "connect_timeout_seconds": 2.0,
+      "no_fallback_in_finalize": true
+    }
+  },
+
+  "drift_gate": {
+    "enabled": true,
+    "policy": {
+      "ok_p95_ratio_max": 1.15,
+      "ok_tw_violations_max": 0,
+      "ok_timeout_rate_max": 0.02,
+      "warn_p95_ratio_max": 1.30,
+      "warn_tw_violations_max": 3,
+      "warn_timeout_rate_max": 0.10,
+      "max_ratio_hard_limit": 3.0,
+      "max_tw_violation_seconds": 3600,
+      "require_drift_report": true,
+      "require_tw_validation": true,
+      "raise_on_warn": false
+    }
+  },
+
+  "audit": {
+    "required_checks": [
+      "COVERAGE",
+      "TIME_WINDOW",
+      "SHIFT_FEASIBILITY",
+      "SKILLS_COMPLIANCE",
+      "OVERLAP"
+    ],
+    "block_on_fail": true,
+    "allow_warn": true
+  },
+
+  "freeze": {
+    "enabled": true,
+    "horizon_minutes": 60,
+    "strict_mode": true,
+    "block_on_violation": true
+  },
+
+  "evidence": {
+    "store_type": "s3",
+    "artifacts": {
+      "raw_blob": true,
+      "canonical_orders": true,
+      "validation_report": true,
+      "drift_report": true,
+      "fallback_report": true,
+      "routing_evidence": true,
+      "plan_evidence": true
+    },
+    "retention_days": 365
+  },
+
+  "alerts": {
+    "on_block": {
+      "enabled": true,
+      "channels": ["slack", "pagerduty"],
+      "severity": "critical"
+    },
+    "on_warn": {
+      "enabled": true,
+      "channels": ["slack"],
+      "severity": "warning"
+    }
+  },
+
+  "metadata": {
+    "created_by": "system",
+    "created_at": "2026-01-08T00:00:00Z",
+    "updated_at": "2026-01-08T00:00:00Z",
+    "approved_by": null,
+    "notes": "Initial Wien pilot configuration with 46 vehicles. OSRM finalize enabled only when coords quality passes."
+  }
+}

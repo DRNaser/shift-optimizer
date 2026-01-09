@@ -1,0 +1,76 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://solvereign.com/schemas/run-manifest.json",
+  "version": "1.0.0",
+  "title": "Run Manifest",
+  "description": "Context for a solver run (Run-ID, tenant/site, matrix/OSRM versions, hashes)",
+  "type": "object",
+  "required": ["run_id", "tenant_code", "site_code", "created_at"],
+  "additionalProperties": false,
+  "properties": {
+    "run_id": {
+      "type": "string",
+      "pattern": "^RUN-[0-9]{8}-[A-Z0-9]{8}$",
+      "description": "Unique run identifier (format: RUN-YYYYMMDD-XXXXXXXX)"
+    },
+    "tenant_code": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 50,
+      "description": "Tenant code (e.g., 'mediamarkt', 'gurkerl')"
+    },
+    "site_code": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 50,
+      "description": "Site code (e.g., 'wien', 'graz')"
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO 8601 timestamp of run creation"
+    },
+    "matrix_version": {
+      "type": ["string", "null"],
+      "description": "Distance matrix version hash (null if using OSRM live)"
+    },
+    "osrm_version": {
+      "type": ["string", "null"],
+      "description": "OSRM server version or profile hash"
+    },
+    "input_hash": {
+      "type": "string",
+      "pattern": "^sha256:[a-f0-9]{64}$",
+      "description": "SHA256 hash of input data (stops, vehicles, etc.)"
+    },
+    "config_hash": {
+      "type": "string",
+      "pattern": "^sha256:[a-f0-9]{64}$",
+      "description": "SHA256 hash of solver configuration"
+    },
+    "output_hash": {
+      "type": ["string", "null"],
+      "pattern": "^sha256:[a-f0-9]{64}$",
+      "description": "SHA256 hash of solver output (null until complete)"
+    },
+    "solver_seed": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Random seed for solver reproducibility"
+    },
+    "status": {
+      "type": "string",
+      "enum": ["QUEUED", "SOLVING", "SOLVED", "AUDITED", "LOCKED", "FAILED"],
+      "description": "Current run status"
+    },
+    "fallback_used": {
+      "type": "boolean",
+      "default": false,
+      "description": "Whether fallback distance estimation was used"
+    },
+    "fallback_reason": {
+      "type": ["string", "null"],
+      "description": "Reason for fallback (OSRM timeout, matrix missing, etc.)"
+    }
+  }
+}

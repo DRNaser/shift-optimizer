@@ -302,9 +302,27 @@ def create_plan_version(
     scenario_label: Optional[str] = None,
     baseline_plan_version_id: Optional[int] = None,
     solver_config_json: Optional[dict] = None,
-    tenant_id: int = 1  # Default tenant for backward compatibility
+    tenant_id: int = 1,  # Default tenant for backward compatibility
+    policy_profile_id: Optional[str] = None,  # UUID of active policy profile
+    policy_config_hash: Optional[str] = None,  # Hash of policy config at solve time
 ) -> int:
-    """Create plan version and return ID."""
+    """
+    Create plan version and return ID.
+
+    Args:
+        forecast_version_id: Source forecast
+        seed: Solver random seed
+        solver_config_hash: Hash of solver configuration
+        output_hash: Hash of output assignments
+        status: Plan status (DRAFT, LOCKED, etc.)
+        notes: Optional notes
+        scenario_label: Scenario name for tracking
+        baseline_plan_version_id: Baseline plan for churn calculation
+        solver_config_json: Full solver config as dict
+        tenant_id: Tenant ID
+        policy_profile_id: UUID of the policy profile used (ADR-002)
+        policy_config_hash: SHA256 of policy config for reproducibility
+    """
     import json as json_module
 
     with get_connection() as conn:
@@ -312,11 +330,13 @@ def create_plan_version(
             cur.execute("""
                 INSERT INTO plan_versions (
                     forecast_version_id, seed, solver_config_hash, output_hash, status, notes,
-                    scenario_label, baseline_plan_version_id, solver_config_json, tenant_id
+                    scenario_label, baseline_plan_version_id, solver_config_json, tenant_id,
+                    policy_profile_id, policy_config_hash
                 )
                 VALUES (
                     %(fv_id)s, %(seed)s, %(config_hash)s, %(output_hash)s, %(status)s, %(notes)s,
-                    %(scenario_label)s, %(baseline_id)s, %(config_json)s, %(tenant_id)s
+                    %(scenario_label)s, %(baseline_id)s, %(config_json)s, %(tenant_id)s,
+                    %(policy_profile_id)s, %(policy_config_hash)s
                 )
                 RETURNING id
             """, {
@@ -329,7 +349,9 @@ def create_plan_version(
                 "scenario_label": scenario_label,
                 "baseline_id": baseline_plan_version_id,
                 "config_json": json_module.dumps(solver_config_json) if solver_config_json else None,
-                "tenant_id": tenant_id
+                "tenant_id": tenant_id,
+                "policy_profile_id": policy_profile_id,
+                "policy_config_hash": policy_config_hash,
             })
             plan_id = cur.fetchone()["id"]
             conn.commit()

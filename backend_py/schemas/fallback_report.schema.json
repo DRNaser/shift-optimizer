@@ -1,0 +1,156 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://solvereign.com/schemas/fallback_report.schema.json",
+  "version": "1.0.0",
+  "title": "Routing Fallback Report",
+  "description": "Schema for fallback usage report during OSRM finalize",
+  "type": "object",
+  "required": [
+    "plan_id",
+    "generated_at",
+    "total_legs",
+    "fallback_count"
+  ],
+  "properties": {
+    "plan_id": {
+      "type": "string",
+      "description": "ID of the solved plan"
+    },
+    "generated_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "When the report was generated"
+    },
+    "statistics": {
+      "type": "object",
+      "required": [
+        "total_legs",
+        "fallback_count",
+        "timeout_count",
+        "error_count"
+      ],
+      "properties": {
+        "total_legs": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Total number of route legs"
+        },
+        "fallback_count": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Number of legs using fallback"
+        },
+        "timeout_count": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Number of legs that timed out"
+        },
+        "error_count": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Number of legs with errors"
+        },
+        "fallback_rate": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Rate of fallback usage (0.0 - 1.0)"
+        },
+        "timeout_rate": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Rate of timeouts (0.0 - 1.0)"
+        },
+        "error_rate": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Rate of errors (0.0 - 1.0)"
+        }
+      }
+    },
+    "fallback_by_level": {
+      "type": "object",
+      "description": "Count of fallbacks by level (HAVERSINE, H3, etc.)",
+      "additionalProperties": {
+        "type": "integer",
+        "minimum": 0
+      }
+    },
+    "fallback_by_reason": {
+      "type": "object",
+      "description": "Count of fallbacks by reason (OSRM_TIMEOUT, OSRM_ERROR, MATRIX_MISS)",
+      "additionalProperties": {
+        "type": "integer",
+        "minimum": 0
+      }
+    },
+    "sample_events": {
+      "type": "array",
+      "description": "Sample of fallback events for debugging (limited)",
+      "items": {
+        "$ref": "#/definitions/FallbackEvent"
+      }
+    },
+    "events": {
+      "type": "array",
+      "description": "Full list of fallback events",
+      "items": {
+        "$ref": "#/definitions/FallbackEvent"
+      }
+    }
+  },
+  "definitions": {
+    "FallbackEvent": {
+      "type": "object",
+      "required": [
+        "from_stop_id",
+        "to_stop_id",
+        "fallback_level",
+        "reason",
+        "occurred_at"
+      ],
+      "properties": {
+        "from_stop_id": {
+          "type": "string",
+          "description": "Origin stop ID"
+        },
+        "to_stop_id": {
+          "type": "string",
+          "description": "Destination stop ID"
+        },
+        "fallback_level": {
+          "type": "string",
+          "enum": ["HAVERSINE", "H3", "ZONE", "GEOHASH", "PLZ"],
+          "description": "Type of fallback computation used"
+        },
+        "reason": {
+          "type": "string",
+          "enum": ["OSRM_TIMEOUT", "OSRM_ERROR", "MATRIX_MISS", "RATE_LIMIT"],
+          "description": "Reason for fallback"
+        },
+        "occurred_at": {
+          "type": "string",
+          "format": "date-time",
+          "description": "When the fallback occurred"
+        },
+        "duration_computed": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Computed duration in seconds"
+        },
+        "distance_computed": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Computed distance in meters"
+        },
+        "request_time_ms": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Time spent on failed request (ms)"
+        }
+      }
+    }
+  }
+}

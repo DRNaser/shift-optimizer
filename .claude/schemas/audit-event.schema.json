@@ -1,0 +1,75 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://solvereign.com/schemas/audit-event.json",
+  "version": "1.0.0",
+  "title": "Audit Event",
+  "description": "Security and operational audit events (for core.security_events table)",
+  "type": "object",
+  "required": ["event_type", "severity", "created_at"],
+  "additionalProperties": false,
+  "properties": {
+    "id": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Auto-generated event ID"
+    },
+    "event_type": {
+      "type": "string",
+      "enum": [
+        "SIGNATURE_INVALID",
+        "REPLAY_ATTACK",
+        "SIG_TIMESTAMP_SKEW",
+        "SIG_BODY_MISMATCH",
+        "TENANT_MISMATCH",
+        "RLS_BYPASS_ATTEMPT",
+        "AUTH_FAILED",
+        "IDEMPOTENCY_CONFLICT",
+        "RATE_LIMIT_EXCEEDED",
+        "FREEZE_VIOLATION"
+      ],
+      "description": "Type of security/audit event"
+    },
+    "severity": {
+      "type": "string",
+      "enum": ["S0", "S1", "S2", "S3"],
+      "description": "Severity level (S0=critical, S1=high, S2=medium, S3=low)"
+    },
+    "tenant_id": {
+      "type": ["string", "null"],
+      "description": "Affected tenant ID (null for platform-level events)"
+    },
+    "request_id": {
+      "type": ["string", "null"],
+      "pattern": "^[a-f0-9-]{36}$",
+      "description": "Correlation request ID (UUID format)"
+    },
+    "source_ip": {
+      "type": ["string", "null"],
+      "description": "Client IP address (IPv4 or IPv6)"
+    },
+    "request_path": {
+      "type": ["string", "null"],
+      "maxLength": 500,
+      "description": "HTTP request path"
+    },
+    "request_method": {
+      "type": ["string", "null"],
+      "enum": ["GET", "POST", "PUT", "PATCH", "DELETE", null],
+      "description": "HTTP method"
+    },
+    "evidence_link": {
+      "type": ["string", "null"],
+      "format": "uri",
+      "description": "Link to evidence artifact (S3/Azure Blob URL)"
+    },
+    "details": {
+      "type": ["object", "null"],
+      "description": "Event-specific details (JSON)"
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO 8601 timestamp of event creation"
+    }
+  }
+}

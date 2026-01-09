@@ -1,6 +1,6 @@
 """
-SOLVEREIGN V3.3b API - Main Application
-=======================================
+SOLVEREIGN V3.7 API - Main Application (UNIFIED ENTERPRISE API)
+================================================================
 
 FastAPI application with:
 - JWT authentication (RS256) with RBAC
@@ -12,6 +12,35 @@ FastAPI application with:
 - Prometheus metrics
 - Structured logging
 - Idempotency support
+
+V3.7 AUTH SEPARATION (Wien W02):
+================================
+Platform Endpoints (Session Auth):
+- /api/v1/platform/*      Platform admin operations (Cookie + CSRF)
+- /api/v1/service-status  Service health (optional session)
+
+Pack Endpoints (Tenant HMAC Auth):
+- /api/v1/routing/*       Routing pack (API Key + HMAC)
+- /api/v1/roster/*        Roster pack (API Key + HMAC)
+
+Kernel Endpoints (API Key):
+- /api/v1/forecasts/*     Forecast ingest (X-API-Key)
+- /api/v1/plans/*         Plan management (X-API-Key)
+- /api/v1/runs/*          Async runs (X-API-Key)
+
+CRITICAL: No endpoint accepts both auth methods!
+
+Endpoints:
+- /health/*           Health check and readiness (NO AUTH)
+- /api/v1/platform/*  Platform admin (SESSION AUTH)
+- /api/v1/routing/*   Routing pack (HMAC AUTH)
+- /api/v1/roster/*    Roster pack (HMAC AUTH)
+- /api/v1/forecasts/* Forecast ingest (API KEY)
+- /api/v1/plans/*     Solve, audit, lock, export (API KEY)
+- /api/v1/runs/*      Async optimization with SSE (API KEY)
+- /metrics            Prometheus metrics (NO AUTH)
+
+This is the UNIFIED Enterprise API replacing the legacy src/main.py.
 """
 
 import logging
@@ -61,6 +90,13 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     app.state.db = db_manager
 
     logger.info("database_pool_initialized")
+
+    # Initialize PolicyService (kernel service for pack configuration)
+    from .services.policy_service import init_policy_service
+    policy_service = init_policy_service(db_manager.pool)
+    app.state.policy_service = policy_service
+
+    logger.info("policy_service_initialized")
 
     yield
 
@@ -115,10 +151,11 @@ def configure_middleware(app: FastAPI) -> None:
 
     1. SecurityHeaders (outermost - always runs)
     2. CORS (before auth to handle preflight)
-    3. RequestContext (sets request_id, timing)
-    4. Auth (JWT validation, sets tenant_id/user_id)
-    5. RateLimit (AFTER auth - can use tenant_id/user_id)
-    6. Router handlers (innermost)
+    3. AuthSeparation (V3.7 - enforces platform vs pack auth)
+    4. RequestContext (sets request_id, timing)
+    5. Auth (per-route via dependencies)
+    6. RateLimit (AFTER auth - can use tenant_id/user_id)
+    7. Router handlers (innermost)
     """
     from .security.headers import SecurityHeadersMiddleware
     from .security.rate_limit import RateLimitMiddleware
@@ -126,13 +163,106 @@ def configure_middleware(app: FastAPI) -> None:
     # NOTE: FastAPI middleware is LIFO - last added executes FIRST
     # So we add in REVERSE order of desired execution
 
-    # 5. Rate limiting - runs AFTER auth (has access to tenant_id/user_id)
+    # 6. Rate limiting - runs AFTER auth (has access to tenant_id/user_id)
     app.add_middleware(RateLimitMiddleware)
 
-    # 4. Auth middleware will be applied via dependencies (per-route)
+    # 5. Auth middleware will be applied via dependencies (per-route)
     # This allows public endpoints (/health, /metrics) to skip auth
 
-    # 3. RequestContext is added below as @app.middleware("http")
+    # 4. RequestContext is added below as @app.middleware("http")
+
+    # 3. Auth separation enforcement middleware (V3.7)
+    # Blocks mismatched auth methods at middleware level
+    @app.middleware("http")
+    async def enforce_auth_separation(request: Request, call_next):
+        """
+        V3.7 AUTH SEPARATION ENFORCEMENT (Hardened)
+
+        Rejects requests that use wrong auth method for endpoint type:
+        - Platform endpoints (/api/v1/platform/*): REJECT API-Key, HMAC headers
+        - Pack endpoints (/api/v1/routing/*, /api/v1/roster/*): REJECT session cookies
+
+        SECURITY HARDENING (Blindspot fixes):
+        - Exact prefix matching with boundary check (not just startswith)
+        - Normalized path (no encoded chars, no trailing slash abuse)
+        - /api/v1/platformXYZ does NOT match as platform endpoint
+        """
+        from urllib.parse import unquote
+
+        # Get raw path and normalize
+        raw_path = request.url.path
+
+        # SECURITY: Decode URL-encoded chars to prevent bypass via %2F etc.
+        # This catches attempts like /api/v1/platform%2Fbypass
+        decoded_path = unquote(raw_path)
+
+        # SECURITY: Normalize trailing slashes for consistent matching
+        # /api/v1/platform/ and /api/v1/platform should both match
+        path = decoded_path.rstrip("/") if decoded_path != "/" else decoded_path
+
+        # Skip for public endpoints
+        if path.startswith("/health") or path == "/metrics" or path == "":
+            return await call_next(request)
+
+        def is_prefix_match(check_path: str, prefix: str) -> bool:
+            """
+            SECURITY: Exact prefix match with boundary check.
+
+            /api/v1/platform matches /api/v1/platform and /api/v1/platform/foo
+            /api/v1/platform does NOT match /api/v1/platformXYZ
+
+            Returns True if check_path equals prefix OR starts with prefix + "/"
+            """
+            return check_path == prefix or check_path.startswith(prefix + "/")
+
+        # Platform endpoints: reject tenant auth
+        if is_prefix_match(path, "/api/v1/platform"):
+            tenant_headers = ["X-API-Key", "X-SV-Signature", "X-SV-Nonce"]
+            found_tenant_auth = [h for h in tenant_headers if request.headers.get(h)]
+            if found_tenant_auth:
+                logger.warning(
+                    "auth_separation_violation_platform",
+                    extra={
+                        "path": path,
+                        "raw_path": raw_path,
+                        "found_headers": found_tenant_auth,
+                        "source_ip": request.client.host if request.client else "unknown"
+                    }
+                )
+                return JSONResponse(
+                    status_code=400,
+                    content={
+                        "error": "auth_method_mismatch",
+                        "message": "Platform endpoints require session auth. API Key / HMAC not accepted.",
+                        "rejected_headers": found_tenant_auth
+                    }
+                )
+
+        # Pack endpoints: reject session auth
+        pack_prefixes = ["/api/v1/routing", "/api/v1/roster"]
+        if any(is_prefix_match(path, prefix) for prefix in pack_prefixes):
+            session_cookie = request.cookies.get("sv_session")
+            csrf_header = request.headers.get("X-CSRF-Token")
+            if session_cookie or csrf_header:
+                logger.warning(
+                    "auth_separation_violation_pack",
+                    extra={
+                        "path": path,
+                        "raw_path": raw_path,
+                        "has_session": bool(session_cookie),
+                        "has_csrf": bool(csrf_header),
+                        "source_ip": request.client.host if request.client else "unknown"
+                    }
+                )
+                return JSONResponse(
+                    status_code=400,
+                    content={
+                        "error": "auth_method_mismatch",
+                        "message": "Pack endpoints require HMAC auth. Session cookies not accepted.",
+                    }
+                )
+
+        return await call_next(request)
 
     # 2. CORS - must run before auth to handle OPTIONS preflight
     app.add_middleware(
@@ -203,7 +333,12 @@ def register_routers(app: FastAPI) -> None:
     """Register all API routers."""
 
     # Import routers here to avoid circular imports
-    from .routers import health, forecasts, plans, tenants, simulations
+    from .routers import (
+        health, forecasts, plans, tenants,
+        simulations, runs, repair, config,
+        core_tenant, platform, platform_orgs, service_status,
+        policies, dispatcher_platform
+    )
 
     # Health check (no auth required)
     app.include_router(
@@ -215,10 +350,46 @@ def register_routers(app: FastAPI) -> None:
     # API v1 routes
     api_prefix = "/api/v1"
 
+    # Legacy tenant management (integer ID, X-API-Key)
     app.include_router(
         tenants.router,
         prefix=f"{api_prefix}/tenants",
-        tags=["Tenants"],
+        tags=["Tenants (Legacy)"],
+    )
+
+    # Core tenant self-service (UUID, X-Tenant-Code)
+    app.include_router(
+        core_tenant.router,
+        prefix=f"{api_prefix}/tenant",
+        tags=["Tenant"],
+    )
+
+    # Platform admin operations (X-Platform-Admin)
+    app.include_router(
+        platform.router,
+        prefix=f"{api_prefix}/platform",
+        tags=["Platform Admin"],
+    )
+
+    # Platform organization management (requires internal signature)
+    app.include_router(
+        platform_orgs.router,
+        prefix=f"{api_prefix}/platform",
+        tags=["Platform Organizations"],
+    )
+
+    # Service status and escalation management
+    app.include_router(
+        service_status.router,
+        prefix=f"{api_prefix}",
+        tags=["Service Status"],
+    )
+
+    # Dispatcher cockpit (platform session auth + tenant context headers)
+    app.include_router(
+        dispatcher_platform.router,
+        prefix=f"{api_prefix}/platform/dispatcher",
+        tags=["Dispatcher Cockpit"],
     )
 
     app.include_router(
@@ -238,6 +409,68 @@ def register_routers(app: FastAPI) -> None:
         prefix=f"{api_prefix}/simulations",
         tags=["Simulations"],
     )
+
+    # NEW: Runs router for async optimization with SSE streaming
+    app.include_router(
+        runs.router,
+        prefix=f"{api_prefix}/runs",
+        tags=["Runs"],
+    )
+
+    # NEW: Repair router for driver absence handling
+    # Note: Nested under /plans for REST semantics
+    app.include_router(
+        repair.router,
+        prefix=f"{api_prefix}/plans",
+        tags=["Repair"],
+    )
+
+    # NEW: Config router for schema and validation
+    app.include_router(
+        config.router,
+        prefix=f"{api_prefix}/config",
+        tags=["Config"],
+    )
+
+    # Policy profiles management (Kernel service, see ADR-002)
+    app.include_router(
+        policies.router,
+        prefix=f"{api_prefix}/policies",
+        tags=["Policies"],
+    )
+
+    # =========================================================================
+    # PACK ROUTERS (Domain-specific, see ADR-001)
+    # =========================================================================
+
+    # Roster Pack (Phase 1: wrapper around kernel routers)
+    try:
+        from ..packs.roster.api import router as roster_router
+        app.include_router(
+            roster_router,
+            prefix=f"{api_prefix}/roster",
+            tags=["Roster Pack"],
+        )
+        logger.info("roster_pack_router_registered", extra={"prefix": f"{api_prefix}/roster"})
+    except ImportError as e:
+        logger.warning("roster_pack_not_available", extra={"error": str(e)})
+
+    # Routing Pack (already exists in packs/)
+    try:
+        from ..packs.routing.api.routers import scenarios, routes
+        app.include_router(
+            scenarios.router,
+            prefix=f"{api_prefix}/routing/scenarios",
+            tags=["Routing Scenarios"],
+        )
+        app.include_router(
+            routes.router,
+            prefix=f"{api_prefix}/routing",
+            tags=["Routing Routes"],
+        )
+        logger.info("routing_pack_router_registered", extra={"prefix": f"{api_prefix}/routing"})
+    except ImportError as e:
+        logger.warning("routing_pack_not_available", extra={"error": str(e)})
 
     # Prometheus metrics endpoint (always registered)
     from .metrics import get_metrics_response

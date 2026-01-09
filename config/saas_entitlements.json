@@ -1,0 +1,116 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "version": "1.0.0",
+  "description": "SaaS entitlements and quota configuration",
+  "last_updated": "2026-03-05",
+
+  "tiers": {
+    "pilot": {
+      "name": "Pilot",
+      "description": "Initial deployment tier for evaluation",
+      "quotas": {
+        "max_sites": 2,
+        "max_drivers_per_site": 200,
+        "max_tours_per_week": 2000,
+        "max_solver_runs_per_day": 10,
+        "max_concurrent_solves": 1,
+        "evidence_retention_days": 90,
+        "api_rate_limit_per_minute": 60
+      },
+      "features": {
+        "publish_lock": true,
+        "parallel_runs": true,
+        "fire_drills": true,
+        "audit_reports": true,
+        "kpi_drift_alerts": true,
+        "custom_policies": false,
+        "priority_support": false,
+        "sla_99_9": false
+      }
+    },
+    "standard": {
+      "name": "Standard",
+      "description": "Production tier for single-region deployments",
+      "quotas": {
+        "max_sites": 10,
+        "max_drivers_per_site": 500,
+        "max_tours_per_week": 10000,
+        "max_solver_runs_per_day": 50,
+        "max_concurrent_solves": 3,
+        "evidence_retention_days": 365,
+        "api_rate_limit_per_minute": 300
+      },
+      "features": {
+        "publish_lock": true,
+        "parallel_runs": true,
+        "fire_drills": true,
+        "audit_reports": true,
+        "kpi_drift_alerts": true,
+        "custom_policies": true,
+        "priority_support": true,
+        "sla_99_9": false
+      }
+    },
+    "enterprise": {
+      "name": "Enterprise",
+      "description": "Full-featured tier for multi-region deployments",
+      "quotas": {
+        "max_sites": "unlimited",
+        "max_drivers_per_site": "unlimited",
+        "max_tours_per_week": "unlimited",
+        "max_solver_runs_per_day": "unlimited",
+        "max_concurrent_solves": 10,
+        "evidence_retention_days": 730,
+        "api_rate_limit_per_minute": 1000
+      },
+      "features": {
+        "publish_lock": true,
+        "parallel_runs": true,
+        "fire_drills": true,
+        "audit_reports": true,
+        "kpi_drift_alerts": true,
+        "custom_policies": true,
+        "priority_support": true,
+        "sla_99_9": true
+      }
+    }
+  },
+
+  "current_tenants": {
+    "lts": {
+      "tier": "pilot",
+      "effective_date": "2026-02-03",
+      "sites": ["wien", "graz"],
+      "pack_entitlements": ["roster"],
+      "custom_overrides": {
+        "max_drivers_per_site": 200,
+        "evidence_retention_days": 90
+      },
+      "contacts": {
+        "primary": "ops@lts-transport.at",
+        "billing": "finance@lts-transport.at",
+        "technical": "it@lts-transport.at"
+      }
+    }
+  },
+
+  "quota_enforcement": {
+    "mode": "soft",
+    "soft_limit_action": "warn_and_log",
+    "hard_limit_action": "block_with_error",
+    "overage_grace_period_hours": 24
+  },
+
+  "metering": {
+    "enabled": true,
+    "metrics": [
+      "solver_runs",
+      "api_calls",
+      "evidence_storage_gb",
+      "active_drivers",
+      "active_sites"
+    ],
+    "aggregation_interval": "hourly",
+    "retention_days": 90
+  }
+}
