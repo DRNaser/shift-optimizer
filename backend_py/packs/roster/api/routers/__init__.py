@@ -63,6 +63,17 @@ if _kernel_routers_available:
         dependencies=[require_roster_entitlement()]
     )
 
+# Include Dispatch Assist router (Gurkerl MVP)
+try:
+    from ..dispatch import router as dispatch_router
+    router.include_router(
+        dispatch_router,
+        dependencies=[require_roster_entitlement()]
+    )
+    _dispatch_available = True
+except ImportError:
+    _dispatch_available = False
+
 
 # Health check for roster pack
 @router.get("/health", summary="Roster Pack Health")
@@ -71,8 +82,9 @@ async def roster_health():
     return {
         "pack": "roster",
         "status": "healthy",
-        "version": "1.0.0",
+        "version": "1.1.0",  # V1.1 = Dispatch Assist MVP
         "kernel_routers_available": _kernel_routers_available,
+        "dispatch_assist_available": _dispatch_available if '_dispatch_available' in dir() else False,
         "migration_phase": 1  # 1=wrapper, 2=moving, 3=complete
     }
 

@@ -337,7 +337,7 @@ def register_routers(app: FastAPI) -> None:
         health, forecasts, plans, tenants,
         simulations, runs, repair, config,
         core_tenant, platform, platform_orgs, service_status,
-        policies, dispatcher_platform
+        policies, dispatcher_platform, masterdata
     )
 
     # Health check (no auth required)
@@ -438,6 +438,60 @@ def register_routers(app: FastAPI) -> None:
         prefix=f"{api_prefix}/policies",
         tags=["Policies"],
     )
+
+    # Master Data Layer (MDL) - canonical entities + external ID mappings
+    app.include_router(
+        masterdata.router,
+        prefix=f"{api_prefix}",
+        tags=["Master Data"],
+    )
+
+    # =========================================================================
+    # PORTAL ROUTERS (V4.1 Driver Portal)
+    # =========================================================================
+
+    # Public Portal (Magic Link auth - NO Entra ID)
+    # Accessible at /my-plan, /api/portal/read, /api/portal/ack
+    try:
+        from .routers import portal_public
+        app.include_router(
+            portal_public.router,
+            prefix="",  # Root level for /my-plan
+            tags=["Portal (Public)"],
+        )
+        logger.info("portal_public_router_registered", extra={"paths": ["/my-plan", "/api/portal/*"]})
+    except ImportError as e:
+        logger.warning("portal_public_not_available", extra={"error": str(e)})
+
+    # Portal Admin (Entra ID auth - Dispatcher/Approver)
+    # Accessible at /api/v1/portal/*
+    try:
+        from .routers import portal_admin
+        app.include_router(
+            portal_admin.router,
+            prefix="",  # Router already has /api/v1/portal prefix
+            tags=["Portal (Admin)"],
+        )
+        logger.info("portal_admin_router_registered", extra={"prefix": f"{api_prefix}/portal"})
+    except ImportError as e:
+        logger.warning("portal_admin_not_available", extra={"error": str(e)})
+
+    # =========================================================================
+    # NOTIFICATION ROUTERS (V4.1 Notification Pipeline)
+    # =========================================================================
+
+    # Notification API (Entra ID auth - Dispatcher/Approver)
+    # Accessible at /api/v1/notifications/*
+    try:
+        from .routers import notifications
+        app.include_router(
+            notifications.router,
+            prefix="",  # Router already has /api/v1/notifications prefix
+            tags=["Notifications"],
+        )
+        logger.info("notifications_router_registered", extra={"prefix": f"{api_prefix}/notifications"})
+    except ImportError as e:
+        logger.warning("notifications_not_available", extra={"error": str(e)})
 
     # =========================================================================
     # PACK ROUTERS (Domain-specific, see ADR-001)
