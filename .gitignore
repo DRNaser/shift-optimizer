@@ -72,6 +72,7 @@ test_report.json
 baseline_metrics_raw.txt
 proof_*.txt
 *_evidence.txt
+evidence/
 
 # Desktop builds (not used anymore)
 ShiftOptimizer.spec

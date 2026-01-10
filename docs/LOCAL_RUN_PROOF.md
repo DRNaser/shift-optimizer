@@ -72,8 +72,12 @@ docker compose --env-file "C:\secrets\shift-optimizer\.env.staging" up -d --forc
 ## Evidence
 
 - **Preflight JSON**: `evidence/staging_preflight_20260110_165531.json`
+- **Timestamp**: 2026-01-10T16:55:31Z
 - **Checks passed**: Security headers, Route caching, Portal page
 - **Bootstrap verified**: 401 without secret, 200 with secret, 403 when disabled
+
+> **Note**: `evidence/` is a local artifact directory (in `.gitignore`).
+> For pilot deployment, upload evidence JSON to your ArtifactStore or attach to deployment ticket.
 
 ---
 
