@@ -112,3 +112,5 @@ ShiftOptimizer.spec
 **/*.ndjson
 **/*.log.json
 **/error_dump*.json
+data/osrm/
+dist_final/
