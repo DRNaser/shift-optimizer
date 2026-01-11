@@ -341,7 +341,8 @@ def main():
         description="SOLVEREIGN Sick-Call Drill (Gate H1)"
     )
     parser.add_argument(
-        "--tenant-id",
+        "--tenant-id", "--tenant",
+        dest="tenant_id",
         default="gurkerl",
         help="Tenant ID or code"
     )
@@ -377,10 +378,18 @@ def main():
 
     args = parser.parse_args()
 
-    # Parse absent drivers
+    # Parse absent drivers (supports both integer IDs and string codes like DRV001)
     absent_drivers = None
     if args.absent_drivers:
-        absent_drivers = [int(x.strip()) for x in args.absent_drivers.split(",")]
+        raw_ids = [x.strip() for x in args.absent_drivers.split(",")]
+        # Try to parse as integers, but keep as strings if not numeric (for dry-run mode)
+        absent_drivers = []
+        for x in raw_ids:
+            try:
+                absent_drivers.append(int(x))
+            except ValueError:
+                # String driver ID (e.g., "DRV001") - use as-is for dry-run
+                absent_drivers.append(x)
 
     result = run_drill(
         tenant_id=args.tenant_id,

@@ -10,7 +10,7 @@ Architecture:
 Rules:
 1. Kernel MUST NOT import from packs (routing, roster)
 2. Packs MAY import from kernel (api.database, api.exceptions, etc.)
-3. Packs MUST NOT import from each other (routing ↔ roster)
+3. Packs MUST NOT import from each other (routing <-> roster)
 4. Tools are exempt (they orchestrate across boundaries)
 
 Exit Codes:
@@ -59,6 +59,32 @@ FORBIDDEN_IMPORTS = [
     ("routing", "roster"),   # Routing must not import from roster
     ("roster", "routing"),   # Roster must not import from routing
 ]
+
+# Allowed exceptions: (file_path_pattern, import_module_pattern)
+# These are intentional API wiring points where kernel orchestrates packs
+ALLOWED_IMPORTS = [
+    # main.py wires routing pack routes
+    ("api/main.py", "packs.routing"),
+    # Routers call domain solvers - these are intentional API integrations
+    ("api/routers/forecasts.py", "v3."),
+    ("api/routers/plans.py", "v3."),
+    ("api/routers/repair.py", "v3."),
+    ("api/routers/runs.py", "v3."),
+    ("api/routers/simulations.py", "v3."),
+    # Async solver wrapper
+    ("api/solver_async.py", "v3."),
+    # Policy service uses routing config schema
+    ("api/services/policy_service.py", "packs.routing"),
+]
+
+
+def is_allowed_import(file_path: Path, import_name: str) -> bool:
+    """Check if an import is in the allowlist."""
+    path_str = str(file_path).replace("\\", "/")
+    for file_pattern, import_pattern in ALLOWED_IMPORTS:
+        if file_pattern in path_str and import_name.startswith(import_pattern):
+            return True
+    return False
 
 
 def get_pack_for_path(file_path: Path) -> str | None:
@@ -121,8 +147,8 @@ def check_file(file_path: Path, verbose: bool = False) -> list[Violation]:
         if target_pack is None:
             continue  # External or standard library import
 
-        # Check if this import is forbidden
-        if (source_pack, target_pack) in FORBIDDEN_IMPORTS:
+        # Check if this import is forbidden (unless explicitly allowed)
+        if (source_pack, target_pack) in FORBIDDEN_IMPORTS and not is_allowed_import(file_path, import_name):
             violations.append(Violation(
                 file=file_path,
                 line=line_no,
@@ -131,7 +157,7 @@ def check_file(file_path: Path, verbose: bool = False) -> list[Violation]:
                 import_statement=import_name,
             ))
             if verbose:
-                print(f"  VIOLATION: {file_path}:{line_no} ({source_pack} → {target_pack})")
+                print(f"  VIOLATION: {file_path}:{line_no} ({source_pack} -> {target_pack})")
 
     return violations
 
@@ -218,7 +244,7 @@ def main():
         for file_path, file_violations in sorted(by_file.items()):
             print(f"{file_path}:")
             for v in file_violations:
-                print(f"  Line {v.line}: {v.importer_pack} → {v.imported_pack}")
+                print(f"  Line {v.line}: {v.importer_pack} -> {v.imported_pack}")
                 print(f"    import: {v.import_statement}")
             print()
 

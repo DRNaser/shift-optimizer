@@ -364,7 +364,7 @@ def main():
     parser = argparse.ArgumentParser(
         description="SOLVEREIGN Partial Forecast Drill (Gate H3)"
     )
-    parser.add_argument("--tenant-id", default="gurkerl")
+    parser.add_argument("--tenant-id", "--tenant", dest="tenant_id", default="gurkerl")
     parser.add_argument("--seed", type=int, default=94)
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--output-dir", type=str, default=None)

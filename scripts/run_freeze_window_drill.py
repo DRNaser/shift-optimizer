@@ -338,7 +338,8 @@ def main():
         description="SOLVEREIGN Freeze Window Drill (Gate H2)"
     )
     parser.add_argument(
-        "--tenant-id",
+        "--tenant-id", "--tenant",
+        dest="tenant_id",
         default="gurkerl",
         help="Tenant ID"
     )
@@ -353,6 +354,12 @@ def main():
         type=int,
         default=720,
         help="Freeze horizon in minutes (default: 720 = 12h)"
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=94,
+        help="Random seed for determinism (unused in freeze drill but accepted for CI compatibility)"
     )
     parser.add_argument(
         "--dry-run",
