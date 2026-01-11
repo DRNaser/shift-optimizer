@@ -13,7 +13,7 @@ from datetime import datetime, timedelta
 from unittest.mock import MagicMock, patch
 import secrets
 
-from backend_py.api.security.internal_rbac import (
+from ..security.internal_rbac import (
     hash_password,
     verify_password,
     generate_session_token,

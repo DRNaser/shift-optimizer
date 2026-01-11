@@ -24,7 +24,7 @@ class TestProductionGuard:
         This prevents client headers from overriding tenant identity in production.
         """
         from pydantic import ValidationError
-        from backend_py.api.config import APISettings
+        from ..config import APISettings
 
         with pytest.raises(ValidationError) as exc_info:
             APISettings(
@@ -39,7 +39,7 @@ class TestProductionGuard:
 
     def test_tenant_override_allowed_in_development(self):
         """Tenant override is allowed in development for testing."""
-        from backend_py.api.config import APISettings
+        from ..config import APISettings
 
         # Should not raise
         settings = APISettings(
@@ -52,7 +52,7 @@ class TestProductionGuard:
 
     def test_tenant_override_allowed_in_staging(self):
         """Tenant override is allowed in staging for testing."""
-        from backend_py.api.config import APISettings
+        from ..config import APISettings
 
         # Should not raise
         settings = APISettings(
@@ -64,7 +64,7 @@ class TestProductionGuard:
 
     def test_default_tenant_override_is_false(self):
         """Default setting should be safe (override disabled)."""
-        from backend_py.api.config import APISettings
+        from ..config import APISettings
 
         settings = APISettings()
 
@@ -73,7 +73,7 @@ class TestProductionGuard:
     def test_production_secret_key_validation(self):
         """Production requires non-default secret key."""
         from pydantic import ValidationError
-        from backend_py.api.config import APISettings
+        from ..config import APISettings
 
         with pytest.raises(ValidationError) as exc_info:
             APISettings(
@@ -93,7 +93,7 @@ class TestScopeBlockingEnforcement:
     @pytest.mark.asyncio
     async def test_require_tenant_not_blocked_allows_healthy_scope(self):
         """Healthy scope should allow writes."""
-        from backend_py.api.dependencies import require_tenant_not_blocked, TenantContext
+        from ..dependencies import require_tenant_not_blocked, TenantContext
         from unittest.mock import AsyncMock, MagicMock
         from datetime import datetime
 
@@ -121,7 +121,7 @@ class TestScopeBlockingEnforcement:
     async def test_require_tenant_not_blocked_blocks_s0_scope(self):
         """S0/S1 blocked scope should reject writes with 503."""
         from fastapi import HTTPException
-        from backend_py.api.dependencies import require_tenant_not_blocked, TenantContext
+        from ..dependencies import require_tenant_not_blocked, TenantContext
         from unittest.mock import AsyncMock, MagicMock
         from datetime import datetime
 
@@ -150,7 +150,7 @@ class TestScopeBlockingEnforcement:
     @pytest.mark.asyncio
     async def test_require_core_tenant_not_blocked_checks_correct_scope(self):
         """Verify the correct scope type and ID are checked."""
-        from backend_py.api.dependencies import require_core_tenant_not_blocked, CoreTenantContext
+        from ..dependencies import require_core_tenant_not_blocked, CoreTenantContext
         from unittest.mock import AsyncMock, MagicMock
 
         mock_request = MagicMock()
@@ -184,7 +184,7 @@ class TestInternalSignatureSecurity:
 
     def test_signature_is_required_for_platform_admin(self):
         """Platform admin flag without signature should be rejected."""
-        from backend_py.api.security.internal_signature import InternalContext
+        from ..security.internal_signature import InternalContext
 
         # Without internal signature, context should not be platform admin
         context = InternalContext(is_internal=False)
@@ -194,7 +194,7 @@ class TestInternalSignatureSecurity:
 
     def test_signature_generation_is_deterministic(self):
         """Same inputs should produce same signature."""
-        from backend_py.api.security.internal_signature import generate_signature
+        from ..security.internal_signature import generate_signature
 
         secret = "test_secret_key_12345"
         timestamp = 1704067200  # Fixed timestamp
@@ -220,7 +220,7 @@ class TestInternalSignatureSecurity:
 
     def test_signature_changes_with_path(self):
         """Different paths should produce different signatures."""
-        from backend_py.api.security.internal_signature import generate_signature
+        from ..security.internal_signature import generate_signature
 
         secret = "test_secret_key_12345"
         timestamp = 1704067200
@@ -243,7 +243,7 @@ class TestInternalSignatureSecurity:
 
     def test_signature_changes_with_tenant_context(self):
         """Tenant code should be included in signature."""
-        from backend_py.api.security.internal_signature import generate_signature
+        from ..security.internal_signature import generate_signature
 
         secret = "test_secret_key_12345"
         timestamp = 1704067200

@@ -23,7 +23,7 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent))
 
-from backend_py.api.services.pack_entitlements import (
+from ..services.pack_entitlements import (
     PackEntitlementService,
     PackEntitlement,
     PackAccessResult,

@@ -16,7 +16,7 @@ import pytest
 from pathlib import Path
 from datetime import datetime, timezone
 
-from backend_py.api.services.publish_gate import (
+from ..services.publish_gate import (
     PublishGateService,
     PublishGateStatus,
     ApprovalRecord,
