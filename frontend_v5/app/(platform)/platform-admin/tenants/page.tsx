@@ -1,15 +1,31 @@
 // =============================================================================
-// SOLVEREIGN V4.5 - Platform Admin Tenants List
+// SOLVEREIGN V4.5 - Platform Admin Tenants List (Redesigned)
 // =============================================================================
-// List and manage tenants.
+// List and manage tenants with modern design system.
 // =============================================================================
 
 'use client';
 
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
-import { Building2, Plus, Users, MapPin, ChevronRight, Search } from 'lucide-react';
+import {
+  Building2,
+  Plus,
+  Users,
+  MapPin,
+  ChevronRight,
+  Search,
+  Calendar,
+  LayoutGrid,
+  List,
+} from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Card } from '@/components/ui/card';
+import { Badge } from '@/components/ui/badge';
+import { Spinner } from '@/components/ui/spinner';
+import { SkeletonTable } from '@/components/ui/skeleton';
 
 interface Tenant {
   id: number;
@@ -25,6 +41,7 @@ export default function TenantsListPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
+  const [viewMode, setViewMode] = useState<'list' | 'grid'>('list');
 
   useEffect(() => {
     async function loadTenants() {
@@ -51,115 +68,205 @@ export default function TenantsListPage() {
   );
 
   return (
-    <div className="min-h-screen bg-[var(--sv-gray-900)] p-6">
-      <div className="max-w-7xl mx-auto">
+    <div className="min-h-screen bg-background">
+      <div className="max-w-7xl mx-auto p-6 lg:p-8">
         {/* Header */}
-        <div className="flex items-center justify-between mb-6">
-          <div>
-            <h1 className="text-2xl font-bold text-white flex items-center gap-3">
-              <Building2 className="h-6 w-6 text-[var(--sv-primary)]" />
-              Tenants
-            </h1>
-            <p className="text-[var(--sv-gray-400)] mt-1">
-              Manage tenant organizations and their configurations
-            </p>
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-8">
+          <div className="flex items-center gap-4">
+            <div className="p-3 rounded-xl bg-primary/10">
+              <Building2 className="h-6 w-6 text-primary" />
+            </div>
+            <div>
+              <h1 className="text-2xl font-bold text-foreground">Tenants</h1>
+              <p className="text-foreground-muted mt-0.5">
+                Manage tenant organizations
+              </p>
+            </div>
           </div>
-          <Link
-            href="/platform-admin/tenants/new"
-            className={cn(
-              'flex items-center gap-2 px-4 py-2 rounded-lg',
-              'bg-[var(--sv-primary)] text-white',
-              'hover:bg-[var(--sv-primary-dark)] transition-colors'
-            )}
-          >
-            <Plus className="h-4 w-4" />
-            New Tenant
-          </Link>
+          <Button asChild leftIcon={<Plus className="h-4 w-4" />}>
+            <Link href="/platform-admin/tenants/new">New Tenant</Link>
+          </Button>
         </div>
 
-        {/* Search */}
-        <div className="mb-6">
-          <div className="relative">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-[var(--sv-gray-500)]" />
-            <input
+        {/* Controls Bar */}
+        <div className="flex flex-col sm:flex-row gap-4 mb-6">
+          <div className="flex-1">
+            <Input
               type="text"
               placeholder="Search tenants..."
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              className={cn(
-                'w-full pl-10 pr-4 py-2 rounded-lg',
-                'bg-[var(--sv-gray-800)] border border-[var(--sv-gray-700)]',
-                'text-white placeholder-[var(--sv-gray-500)]',
-                'focus:outline-none focus:border-[var(--sv-primary)]'
-              )}
+              leftIcon={<Search className="h-4 w-4" />}
             />
+          </div>
+          <div className="flex items-center gap-2">
+            <div className="flex items-center border border-border rounded-lg p-1">
+              <button
+                onClick={() => setViewMode('list')}
+                className={cn(
+                  'p-2 rounded-md transition-colors',
+                  viewMode === 'list'
+                    ? 'bg-primary text-white'
+                    : 'text-foreground-muted hover:text-foreground'
+                )}
+              >
+                <List className="h-4 w-4" />
+              </button>
+              <button
+                onClick={() => setViewMode('grid')}
+                className={cn(
+                  'p-2 rounded-md transition-colors',
+                  viewMode === 'grid'
+                    ? 'bg-primary text-white'
+                    : 'text-foreground-muted hover:text-foreground'
+                )}
+              >
+                <LayoutGrid className="h-4 w-4" />
+              </button>
+            </div>
           </div>
         </div>
 
-        {/* Loading State */}
-        {loading && (
-          <div className="flex items-center justify-center py-12">
-            <div className="h-8 w-8 border-4 border-[var(--sv-primary)]/30 border-t-[var(--sv-primary)] rounded-full animate-spin" />
+        {/* Results Count */}
+        {!loading && !error && (
+          <div className="mb-4">
+            <p className="text-sm text-foreground-muted">
+              {filteredTenants.length} {filteredTenants.length === 1 ? 'tenant' : 'tenants'}
+              {searchQuery && ` matching "${searchQuery}"`}
+            </p>
           </div>
         )}
+
+        {/* Loading State */}
+        {loading && <SkeletonTable rows={5} />}
 
         {/* Error State */}
         {error && (
-          <div className="bg-red-500/10 border border-red-500/20 rounded-lg p-4 text-red-400">
-            {error}
-          </div>
+          <Card variant="outline" className="border-error/30 bg-error-light p-6">
+            <div className="flex items-center gap-3 text-error">
+              <div className="p-2 rounded-full bg-error/10">
+                <Building2 className="h-5 w-5" />
+              </div>
+              <div>
+                <p className="font-medium">Failed to load tenants</p>
+                <p className="text-sm opacity-80">{error}</p>
+              </div>
+            </div>
+          </Card>
         )}
 
-        {/* Tenants List */}
-        {!loading && !error && (
-          <div className="bg-[var(--sv-gray-800)] rounded-lg border border-[var(--sv-gray-700)] overflow-hidden">
-            {filteredTenants.length === 0 ? (
-              <div className="p-8 text-center text-[var(--sv-gray-400)]">
-                {searchQuery ? 'No tenants match your search' : 'No tenants yet. Create your first tenant to get started.'}
-              </div>
-            ) : (
-              <div className="divide-y divide-[var(--sv-gray-700)]">
-                {filteredTenants.map((tenant) => (
-                  <Link
-                    key={tenant.id}
-                    href={`/platform-admin/tenants/${tenant.id}`}
-                    className="flex items-center justify-between p-4 hover:bg-[var(--sv-gray-700)]/50 transition-colors"
-                  >
-                    <div className="flex items-center gap-4">
-                      <div className="p-2 rounded-lg bg-blue-500/10">
-                        <Building2 className="h-5 w-5 text-blue-400" />
-                      </div>
-                      <div>
-                        <h3 className="font-medium text-white">{tenant.name}</h3>
-                        <div className="flex items-center gap-4 text-sm text-[var(--sv-gray-400)]">
-                          <span className="flex items-center gap-1">
-                            <Users className="h-3 w-3" />
-                            {tenant.user_count || 0} users
-                          </span>
-                          <span className="flex items-center gap-1">
-                            <MapPin className="h-3 w-3" />
-                            {tenant.site_count || 0} sites
-                          </span>
-                        </div>
-                      </div>
-                    </div>
-                    <div className="flex items-center gap-3">
-                      <span
-                        className={cn(
-                          'px-2 py-1 rounded text-xs',
-                          tenant.is_active
-                            ? 'bg-green-500/10 text-green-400'
-                            : 'bg-red-500/10 text-red-400'
-                        )}
-                      >
-                        {tenant.is_active ? 'Active' : 'Inactive'}
-                      </span>
-                      <ChevronRight className="h-4 w-4 text-[var(--sv-gray-500)]" />
-                    </div>
-                  </Link>
-                ))}
-              </div>
+        {/* Empty State */}
+        {!loading && !error && filteredTenants.length === 0 && (
+          <Card className="p-12 text-center">
+            <div className="inline-flex items-center justify-center w-16 h-16 rounded-full bg-muted mb-4">
+              <Building2 className="h-8 w-8 text-foreground-muted" />
+            </div>
+            <h3 className="text-lg font-medium text-foreground mb-2">
+              {searchQuery ? 'No tenants found' : 'No tenants yet'}
+            </h3>
+            <p className="text-foreground-muted mb-6 max-w-md mx-auto">
+              {searchQuery
+                ? 'Try adjusting your search to find what you\'re looking for.'
+                : 'Create your first tenant to start managing organizations.'}
+            </p>
+            {!searchQuery && (
+              <Button asChild leftIcon={<Plus className="h-4 w-4" />}>
+                <Link href="/platform-admin/tenants/new">Create First Tenant</Link>
+              </Button>
             )}
+          </Card>
+        )}
+
+        {/* List View */}
+        {!loading && !error && filteredTenants.length > 0 && viewMode === 'list' && (
+          <Card padding="none">
+            <div className="divide-y divide-border">
+              {filteredTenants.map((tenant, index) => (
+                <Link
+                  key={tenant.id}
+                  href={`/platform-admin/tenants/${tenant.id}`}
+                  className={cn(
+                    'flex items-center justify-between p-4 hover:bg-card-hover transition-colors group',
+                    index === 0 && 'rounded-t-xl',
+                    index === filteredTenants.length - 1 && 'rounded-b-xl'
+                  )}
+                  style={{ animationDelay: `${index * 50}ms` }}
+                >
+                  <div className="flex items-center gap-4">
+                    <div className="p-2.5 rounded-xl bg-primary/10 group-hover:bg-primary/15 transition-colors">
+                      <Building2 className="h-5 w-5 text-primary" />
+                    </div>
+                    <div>
+                      <h3 className="font-medium text-foreground group-hover:text-primary transition-colors">
+                        {tenant.name}
+                      </h3>
+                      <div className="flex items-center gap-4 text-sm text-foreground-muted mt-1">
+                        <span className="flex items-center gap-1.5">
+                          <Users className="h-3.5 w-3.5" />
+                          {tenant.user_count || 0} users
+                        </span>
+                        <span className="flex items-center gap-1.5">
+                          <MapPin className="h-3.5 w-3.5" />
+                          {tenant.site_count || 0} sites
+                        </span>
+                        <span className="flex items-center gap-1.5">
+                          <Calendar className="h-3.5 w-3.5" />
+                          {new Date(tenant.created_at).toLocaleDateString()}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-4">
+                    <Badge variant={tenant.is_active ? 'success' : 'error'} dot>
+                      {tenant.is_active ? 'Active' : 'Inactive'}
+                    </Badge>
+                    <ChevronRight className="h-4 w-4 text-foreground-muted group-hover:translate-x-1 transition-transform" />
+                  </div>
+                </Link>
+              ))}
+            </div>
+          </Card>
+        )}
+
+        {/* Grid View */}
+        {!loading && !error && filteredTenants.length > 0 && viewMode === 'grid' && (
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 stagger-children">
+            {filteredTenants.map((tenant) => (
+              <Link key={tenant.id} href={`/platform-admin/tenants/${tenant.id}`}>
+                <Card variant="interactive" className="h-full group">
+                  <div className="flex items-start justify-between mb-4">
+                    <div className="p-2.5 rounded-xl bg-primary/10 group-hover:bg-primary/15 transition-colors">
+                      <Building2 className="h-5 w-5 text-primary" />
+                    </div>
+                    <Badge variant={tenant.is_active ? 'success' : 'error'} size="sm" dot>
+                      {tenant.is_active ? 'Active' : 'Inactive'}
+                    </Badge>
+                  </div>
+
+                  <h3 className="font-semibold text-foreground group-hover:text-primary transition-colors mb-2">
+                    {tenant.name}
+                  </h3>
+
+                  <div className="flex items-center gap-4 text-sm text-foreground-muted">
+                    <span className="flex items-center gap-1.5">
+                      <Users className="h-3.5 w-3.5" />
+                      {tenant.user_count || 0}
+                    </span>
+                    <span className="flex items-center gap-1.5">
+                      <MapPin className="h-3.5 w-3.5" />
+                      {tenant.site_count || 0}
+                    </span>
+                  </div>
+
+                  <div className="flex items-center justify-between mt-4 pt-4 border-t border-border">
+                    <span className="text-xs text-foreground-muted">
+                      Created {new Date(tenant.created_at).toLocaleDateString()}
+                    </span>
+                    <ChevronRight className="h-4 w-4 text-foreground-muted group-hover:translate-x-1 transition-transform" />
+                  </div>
+                </Card>
+              </Link>
+            ))}
           </div>
         )}
       </div>

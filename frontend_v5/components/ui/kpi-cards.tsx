@@ -1,6 +1,9 @@
 "use client";
 
-import { Activity, Cpu, Zap, Truck } from "lucide-react";
+import { Activity, Cpu, Zap, Truck, TrendingUp } from "lucide-react";
+import { cn } from "@/lib/utils";
+import { Card } from "./card";
+import { SkeletonKPICard } from "./skeleton";
 
 interface KPICardsProps {
     driversFTE: number;
@@ -14,6 +17,78 @@ interface KPICardsProps {
     isLoading?: boolean;
 }
 
+interface KPICardData {
+    label: string;
+    value: number;
+    format: (v: number) => string;
+    icon: React.ComponentType<{ className?: string }>;
+    color: string;
+    bgColor: string;
+    glowClass?: string;
+    subtitle?: string;
+}
+
+function KPICard({ card }: { card: KPICardData }) {
+    const isOptimal = card.label === "Gap to LB" && card.value === 0;
+
+    return (
+        <Card
+            variant="interactive"
+            padding="sm"
+            className={cn(
+                "group relative overflow-hidden",
+                isOptimal && "border-success/30"
+            )}
+        >
+            {/* Subtle gradient overlay */}
+            <div
+                className={cn(
+                    "absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity duration-300",
+                    card.bgColor
+                )}
+                style={{ opacity: 0.05 }}
+            />
+
+            <div className="relative">
+                <div className="flex items-center gap-2.5 mb-3">
+                    <div
+                        className={cn(
+                            "p-2 rounded-lg transition-transform group-hover:scale-110",
+                            card.bgColor
+                        )}
+                    >
+                        <card.icon className={cn("w-4 h-4", card.color)} />
+                    </div>
+                    <span className="text-xs font-medium text-foreground-muted uppercase tracking-wider">
+                        {card.label}
+                    </span>
+                </div>
+
+                <div
+                    className={cn(
+                        "text-2xl font-bold tabular-nums tracking-tight",
+                        card.color
+                    )}
+                >
+                    {card.format(card.value)}
+                </div>
+
+                {card.subtitle && (
+                    <div className="text-xs text-foreground-muted mt-1.5 flex items-center gap-1">
+                        <TrendingUp className="w-3 h-3" />
+                        {card.subtitle}
+                    </div>
+                )}
+            </div>
+
+            {/* Glow effect for optimal state */}
+            {isOptimal && (
+                <div className="absolute -inset-px rounded-xl bg-gradient-to-r from-success/20 to-success/5 -z-10" />
+            )}
+        </Card>
+    );
+}
+
 export function KPICards({
     driversFTE,
     driversPT,
@@ -25,55 +100,49 @@ export function KPICards({
     fleetPeakTime = "",
     isLoading = false,
 }: KPICardsProps) {
-    // Format fleet peak subtitle
-    const fleetSubtitle = fleetPeakDay && fleetPeakTime
-        ? `${fleetPeakDay} @ ${fleetPeakTime}`
-        : "";
+    const fleetSubtitle =
+        fleetPeakDay && fleetPeakTime ? `${fleetPeakDay} @ ${fleetPeakTime}` : "";
 
-    const cards = [
+    const cards: KPICardData[] = [
         {
             label: "FTE Drivers",
             value: driversFTE,
             format: (v: number) => v.toString(),
             icon: Cpu,
-            color: "text-blue-400",
-            bgColor: "bg-blue-500/10",
-            subtitle: "",
+            color: "text-primary",
+            bgColor: "bg-primary/10",
         },
         {
             label: "PT Drivers",
             value: driversPT,
             format: (v: number) => v.toString(),
             icon: Activity,
-            color: "text-emerald-400",
-            bgColor: "bg-emerald-500/10",
-            subtitle: "",
+            color: "text-success",
+            bgColor: "bg-success/10",
         },
         {
             label: "Utilization",
             value: utilization * 100,
             format: (v: number) => `${v.toFixed(1)}%`,
             icon: Zap,
-            color: "text-amber-400",
-            bgColor: "bg-amber-500/10",
-            subtitle: "",
+            color: "text-warning",
+            bgColor: "bg-warning/10",
         },
         {
             label: "Gap to LB",
             value: gapToLB * 100,
             format: (v: number) => (v === 0 ? "OPTIMAL" : `${v.toFixed(1)}%`),
             icon: Zap,
-            color: gapToLB === 0 ? "text-emerald-400" : "text-slate-400",
-            bgColor: gapToLB === 0 ? "bg-emerald-500/10" : "bg-slate-500/10",
-            subtitle: "",
+            color: gapToLB === 0 ? "text-success" : "text-foreground-muted",
+            bgColor: gapToLB === 0 ? "bg-success/10" : "bg-muted",
         },
         {
             label: "Fleet Peak",
             value: fleetPeakCount,
-            format: (v: number) => v > 0 ? `${v} vehicles` : "N/A",
+            format: (v: number) => (v > 0 ? `${v} vehicles` : "N/A"),
             icon: Truck,
-            color: "text-orange-400",
-            bgColor: "bg-orange-500/10",
+            color: "text-accent",
+            bgColor: "bg-accent/10",
             subtitle: fleetSubtitle,
         },
     ];
@@ -82,44 +151,17 @@ export function KPICards({
         return (
             <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
                 {[1, 2, 3, 4, 5].map((i) => (
-                    <div
-                        key={i}
-                        className="bg-slate-900 border border-slate-800 rounded-lg p-4 animate-pulse"
-                    >
-                        <div className="h-4 bg-slate-800 rounded w-24 mb-3" />
-                        <div className="h-8 bg-slate-800 rounded w-16" />
-                    </div>
+                    <SkeletonKPICard key={i} />
                 ))}
             </div>
         );
     }
 
     return (
-        <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
+        <div className="grid grid-cols-2 lg:grid-cols-5 gap-4 stagger-children">
             {cards.map((card) => (
-                <div
-                    key={card.label}
-                    className="bg-slate-900 border border-slate-800 rounded-lg p-4 hover:border-slate-700 transition-colors"
-                >
-                    <div className="flex items-center gap-2 mb-2">
-                        <div className={`p-1.5 rounded ${card.bgColor}`}>
-                            <card.icon className={`w-4 h-4 ${card.color}`} />
-                        </div>
-                        <span className="text-xs font-medium text-slate-500 uppercase tracking-wider">
-                            {card.label}
-                        </span>
-                    </div>
-                    <div className={`text-2xl font-bold ${card.color}`}>
-                        {card.format(card.value)}
-                    </div>
-                    {card.subtitle && (
-                        <div className="text-xs text-slate-500 mt-1">
-                            {card.subtitle}
-                        </div>
-                    )}
-                </div>
+                <KPICard key={card.label} card={card} />
             ))}
         </div>
     );
 }
-

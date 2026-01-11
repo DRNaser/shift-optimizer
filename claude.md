@@ -1,7 +1,7 @@
 # SOLVEREIGN V4 - Agent Context
 
-> **Status**: V4.5.0 | SaaS Admin Core | Production Ready
-> **Last Updated**: 2026-01-09
+> **Status**: V4.5.1 | SaaS Admin Core + Design System v2.0 | Production Ready
+> **Last Updated**: 2026-01-11
 
 ---
 
@@ -332,6 +332,84 @@ psql $DATABASE_URL < backend_py/db/migrations/041_platform_context_switching.sql
 
 ---
 
+## Frontend Design System v2.0
+
+### Overview
+
+Professional enterprise UI built with:
+- **Tailwind CSS v4** with CSS variables
+- **Radix UI** primitives for accessibility
+- **CVA** (class-variance-authority) for type-safe variants
+- **Framer Motion** for animations
+
+### Core Components
+
+All components in `frontend_v5/components/ui/`:
+
+| Component | File | Description |
+|-----------|------|-------------|
+| Button | `button.tsx` | Variants: default, destructive, outline, secondary, ghost, link, success, premium |
+| Card | `card.tsx` | Variants: default, elevated, interactive, glass |
+| Input | `input.tsx` | With icons, error states, filled/ghost variants |
+| Badge | `badge.tsx` | Status badges with dot indicators |
+| Skeleton | `skeleton.tsx` | Loading states (card, table, avatar, KPI) |
+| Spinner | `spinner.tsx` | Loading indicators |
+| Avatar | `avatar.tsx` | With groups, fallbacks, initials |
+| Label | `label.tsx` | Form labels with Radix primitives |
+
+### Design Tokens
+
+Defined in `frontend_v5/app/globals.css`:
+
+```css
+/* Brand Colors */
+--sv-primary: #0066FF;
+--sv-accent: #7C3AED;
+
+/* Semantic */
+--sv-success: #10B981;
+--sv-warning: #F59E0B;
+--sv-error: #EF4444;
+
+/* Shadows */
+--sv-shadow-sm → --sv-shadow-xl
+--sv-shadow-glow (primary glow effect)
+```
+
+### Animation Classes
+
+```css
+.animate-fade-in       /* 0.3s fade */
+.animate-fade-in-up    /* 0.4s slide up */
+.animate-scale-in      /* 0.2s scale */
+.animate-shimmer       /* skeleton loading */
+.stagger-children      /* staggered child animations */
+```
+
+### Usage Pattern
+
+```tsx
+import { Button, Card, Input, Badge } from '@/components/ui';
+
+<Card variant="interactive" padding="sm">
+  <Input leftIcon={<Search />} placeholder="Search..." />
+  <Button isLoading={loading} leftIcon={<Plus />}>
+    Create
+  </Button>
+  <Badge variant="success" dot>Active</Badge>
+</Card>
+```
+
+### Key Pages (Redesigned)
+
+| Page | Features |
+|------|----------|
+| `/platform/login` | Split-panel layout, gradient branding |
+| `/platform-admin` | Stat cards, activity feed, quick actions |
+| `/platform-admin/tenants` | List/grid toggle, search, empty states |
+
+---
+
 ## Wien Pilot Checklist
 
 ### P0 Blockers
@@ -374,7 +452,8 @@ docker compose exec api python scripts/staging_preflight.py \
 | V4.1-V4.2 | Portal + Notifications + Integration |
 | V4.3 | Frontend Driver Portal |
 | V4.4 | Internal RBAC |
-| **V4.5** | **SaaS Admin Core (Current)** |
+| V4.5 | SaaS Admin Core |
+| **V4.5.1** | **Design System v2.0 (Current)** |
 
 ---
 
