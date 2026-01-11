@@ -124,7 +124,37 @@ SELECT * FROM verify_final_hardening();
 | OSRM map hash | 18 | 18 | 100% |
 | Audit framework | 7 | 7 | 100% |
 
-### 2.4 Reliability Summary
+### 2.4 API Test Suite Summary
+
+**Final test run**: 334 passed, 21 skipped, 12 xfailed, 0 failures, 0 xpass
+
+| Category | Count | Status |
+|----------|-------|--------|
+| Passed | 334 | ✅ |
+| Skipped | 21 | ✅ (expected) |
+| Expected failures | 12 | ✅ (xfail) |
+| Unexpected passes | 0 | ✅ |
+| Failures | 0 | ✅ |
+
+**Test configuration**:
+- Pytest config: single source of truth (`pytest.ini` at repo root)
+- Cache directory: `/tmp/pytest_cache` (writable in containers)
+- Custom markers registered: `smoke`, `performance`, `quality`, `contract`, `integration`
+- Warning filters: DeprecationWarning, UserWarning (upstream library warnings)
+- Verified commit: `6d47c42`
+
+**Warning breakdown** (51 total, filtered):
+
+| Warning Type | Count | Disposition |
+|--------------|-------|-------------|
+| PydanticDeprecatedSince20 | ~10 | Accepted (upstream library) |
+| datetime.utcnow() DeprecationWarning | ~41 | Accepted (Python stdlib) |
+
+**Justification for accepted warnings**:
+- **PydanticDeprecatedSince20**: Pydantic V1→V2 migration warnings in model definitions. Will be resolved when upgrading to Pydantic V3 patterns. No runtime impact.
+- **datetime.utcnow()**: Python 3.12+ stdlib deprecation. Test code uses `datetime.utcnow()` for mock session creation. Production code unaffected.
+
+### 2.5 Reliability Summary
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
@@ -502,6 +532,6 @@ artifacts/
 
 **Document Version**: 1.0
 
-**Last Updated**: 2026-01-08
+**Last Updated**: 2026-01-11
 
 **Status**: Ready for sign-off
