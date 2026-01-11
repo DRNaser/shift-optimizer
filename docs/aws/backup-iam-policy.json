@@ -1,0 +1,33 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "BackupWrite",
+      "Effect": "Allow",
+      "Action": [
+        "s3:PutObject",
+        "s3:GetObject",
+        "s3:ListBucket"
+      ],
+      "Resource": [
+        "arn:aws:s3:::solvereign-backups-${ENV}",
+        "arn:aws:s3:::solvereign-backups-${ENV}/*"
+      ]
+    },
+    {
+      "Sid": "BackupDelete",
+      "Effect": "Allow",
+      "Action": [
+        "s3:DeleteObject"
+      ],
+      "Resource": [
+        "arn:aws:s3:::solvereign-backups-${ENV}/postgresql/*"
+      ],
+      "Condition": {
+        "StringLike": {
+          "s3:prefix": "postgresql/solvereign-backup-*.dump"
+        }
+      }
+    }
+  ]
+}
