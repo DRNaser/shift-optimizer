@@ -29,12 +29,6 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["src"]
 
-[tool.pytest.ini_options]
-testpaths = ["tests"]
-python_files = "test_*.py"
-asyncio_mode = "auto"
-pythonpath = ["."]
-
 [tool.ruff]
 line-length = 100
 target-version = "py311"
