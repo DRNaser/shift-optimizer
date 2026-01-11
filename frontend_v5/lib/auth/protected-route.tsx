@@ -1,6 +1,21 @@
 // =============================================================================
 // SOLVEREIGN - Protected Route Components
 // =============================================================================
+//
+// !!! DEPRECATED (V4.4.0) !!!
+// ===========================
+// This module is DEPRECATED as of V4.4.0 (2026-01-09).
+// Internal RBAC with server-side session validation is now the default.
+//
+// MIGRATION:
+// - Route protection is handled by BFF routes checking session cookies
+// - Server Components use require_session() on backend
+// - No client-side role checking needed
+//
+// This file is kept for reference only. DO NOT USE for new development.
+//
+// =============================================================================
+// Original documentation (historical):
 // Components for protecting routes that require authentication or specific roles.
 // =============================================================================
 

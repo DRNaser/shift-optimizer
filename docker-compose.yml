@@ -7,11 +7,12 @@
 #   docker-compose down        # Stop all services
 #
 # Endpoints:
-#   - API: http://localhost:8000
+#   - Frontend (BFF): http://localhost:3000
+#   - API Backend: http://localhost:8000
 #   - Health: http://localhost:8000/health
 #   - Metrics: http://localhost:8000/metrics
 #   - Prometheus: http://localhost:9090
-#   - Grafana: http://localhost:3000 (admin/admin)
+#   - Grafana: http://localhost:3001 (admin/admin)
 
 services:
   # =========================================================================
@@ -19,7 +20,6 @@ services:
   # =========================================================================
   postgres:
     image: postgres:16-alpine
-    container_name: solvereign-db
     environment:
       POSTGRES_DB: solvereign
       POSTGRES_USER: solvereign
@@ -44,9 +44,11 @@ services:
     build:
       context: ./backend_py
       dockerfile: Dockerfile
-    container_name: solvereign-api
     ports:
       - "8000:8000"
+    volumes:
+      # Mount scripts for bootstrap and admin tools (dev only, read-only)
+      - ./scripts:/app/scripts:ro
     environment:
       - PYTHONUNBUFFERED=1
       # Database connection (postgres = Docker service name)
@@ -73,11 +75,36 @@ services:
     restart: unless-stopped
 
   # =========================================================================
+  # SOLVEREIGN Frontend (Next.js BFF)
+  # =========================================================================
+  frontend:
+    build:
+      context: ./frontend_v5
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+      - BACKEND_URL=http://api:8000
+      # Bootstrap/staging env vars (injected via --env-file)
+      - STAGING_BOOTSTRAP_ENABLED=${STAGING_BOOTSTRAP_ENABLED:-false}
+      - STAGING_BOOTSTRAP_SECRET=${STAGING_BOOTSTRAP_SECRET:-}
+      - SOLVEREIGN_SESSION_SECRET=${SOLVEREIGN_SESSION_SECRET:-dev_secret_unsafe}
+    depends_on:
+      - api
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:3000/api/auth/staging-bootstrap"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    restart: unless-stopped
+
+  # =========================================================================
   # Redis (Message Broker for Celery)
   # =========================================================================
   redis:
     image: redis:7-alpine
-    container_name: solvereign-redis
     ports:
       - "6379:6379"
     volumes:
@@ -97,7 +124,6 @@ services:
     build:
       context: ./backend_py
       dockerfile: Dockerfile
-    container_name: solvereign-celery
     command: celery -A packs.routing.jobs.celery_app worker --loglevel=info --concurrency=2
     environment:
       - PYTHONUNBUFFERED=1
@@ -124,7 +150,6 @@ services:
   # =========================================================================
   prometheus:
     image: prom/prometheus:v2.47.0
-    container_name: solvereign-prometheus
     ports:
       - "9090:9090"
     volumes:
@@ -143,9 +168,8 @@ services:
   # =========================================================================
   grafana:
     image: grafana/grafana:10.1.0
-    container_name: solvereign-grafana
     ports:
-      - "3000:3000"
+      - "3001:3000"
     environment:
       - GF_SECURITY_ADMIN_USER=admin
       - GF_SECURITY_ADMIN_PASSWORD=admin
@@ -172,7 +196,6 @@ services:
   # =========================================================================
   osrm:
     image: osrm/osrm-backend:latest
-    container_name: solvereign-osrm
     ports:
       - "5000:5000"
     volumes:

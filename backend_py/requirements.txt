@@ -11,6 +11,7 @@ fastapi>=0.109.0
 uvicorn[standard]>=0.27.0
 pydantic>=2.5.0
 pydantic-settings>=2.1.0
+email-validator>=2.1.0  # Required for Pydantic EmailStr
 
 # -----------------------------------------------------------------------------
 # Database (PostgreSQL with async support)
@@ -23,12 +24,24 @@ psycopg[binary,pool]>=3.1.0
 PyJWT[crypto]>=2.8.0          # JWT validation with RS256 support
 cryptography>=41.0.0          # AES-256-GCM encryption, JWKS
 python-multipart>=0.0.6       # Form data parsing
+argon2-cffi>=23.1.0           # Argon2id password hashing (OWASP recommended)
 
 # -----------------------------------------------------------------------------
 # Observability
 # -----------------------------------------------------------------------------
 structlog>=24.1.0             # Structured JSON logging
 prometheus-client>=0.19.0     # Metrics
+sentry-sdk[fastapi]>=2.0.0    # Error tracking with FastAPI integration
+
+# -----------------------------------------------------------------------------
+# Billing (Stripe)
+# -----------------------------------------------------------------------------
+stripe>=7.0.0                 # Stripe Python SDK
+
+# -----------------------------------------------------------------------------
+# Cloud Storage (Backups)
+# -----------------------------------------------------------------------------
+boto3>=1.34.0                 # AWS S3 for backups
 
 # -----------------------------------------------------------------------------
 # Solver (pinned for determinism)

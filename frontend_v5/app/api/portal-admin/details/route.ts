@@ -1,16 +1,16 @@
-// =============================================================================
-// SOLVEREIGN V4.3 - Portal Admin Details BFF Route
-// =============================================================================
-// Proxies driver list requests to backend with auth.
-// RBAC: Dispatcher or Approver role required.
-// =============================================================================
+/**
+ * SOLVEREIGN V4.4 - Portal Admin Details BFF Route
+ *
+ * Proxies driver list requests to backend with session cookie auth.
+ * RBAC: portal.details.read permission required.
+ */
 
 import { NextRequest, NextResponse } from "next/server";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
-const BACKEND_URL = process.env.SOLVEREIGN_BACKEND_URL || "http://localhost:8000";
+const BACKEND_URL = process.env.BACKEND_URL || "http://localhost:8000";
 
 export async function GET(request: NextRequest) {
   const searchParams = request.nextUrl.searchParams;
@@ -26,6 +26,16 @@ export async function GET(request: NextRequest) {
     );
   }
 
+  // Get session cookie from request
+  const sessionCookie = request.cookies.get("__Host-sv_platform_session");
+
+  if (!sessionCookie) {
+    return NextResponse.json(
+      { error: "Not authenticated", error_code: "NO_SESSION" },
+      { status: 401 }
+    );
+  }
+
   try {
     const url = new URL(`${BACKEND_URL}/api/v1/portal/dashboard/details`);
     url.searchParams.set("snapshot_id", snapshotId);
@@ -36,7 +46,7 @@ export async function GET(request: NextRequest) {
     const response = await fetch(url.toString(), {
       headers: {
         "Content-Type": "application/json",
-        // TODO: Add auth headers from request
+        Cookie: `__Host-sv_platform_session=${sessionCookie.value}`,
       },
       cache: "no-store",
     });
@@ -50,7 +60,11 @@ export async function GET(request: NextRequest) {
     }
 
     const data = await response.json();
-    return NextResponse.json(data);
+
+    const res = NextResponse.json(data);
+    res.headers.set("Cache-Control", "no-store, no-cache, must-revalidate");
+    res.headers.set("Pragma", "no-cache");
+    return res;
   } catch (error) {
     console.error("Portal admin details error:", error);
     return NextResponse.json(

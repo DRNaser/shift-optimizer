@@ -541,10 +541,29 @@ SOLVEREIGN Team
 
 | Document | Purpose |
 |----------|---------|
+| [docs/DEPLOYMENT_RUNBOOK.md](docs/DEPLOYMENT_RUNBOOK.md) | **GA Deployment Runbook** - Step-by-step with verification |
+| [.github/ISSUE_TEMPLATE/release-checklist.md](.github/ISSUE_TEMPLATE/release-checklist.md) | Release checklist GitHub issue template |
 | [VERSIONING.md](VERSIONING.md) | Version numbering policy |
 | [RUNBOOK_PROD_CUTOVER.md](RUNBOOK_PROD_CUTOVER.md) | Production deployment steps |
 | [docs/SLO_WIEN_PILOT.md](docs/SLO_WIEN_PILOT.md) | Service level objectives |
 | [docs/DATA_GOVERNANCE.md](docs/DATA_GOVERNANCE.md) | Data retention and GDPR |
+
+### GA Quick Reference
+
+For GA deployments, use the 10-point Go/No-Go checklist:
+
+1. Migrations applied (`verify_billing_schema()`)
+2. App boots clean
+3. Stripe webhook verified
+4. Webhook idempotent
+5. Billing gating works
+6. Sentry sees errors
+7. Backup runs
+8. **Restore works**
+9. Grafana shows data
+10. Legal pages accessible
+
+See [DEPLOYMENT_RUNBOOK.md](docs/DEPLOYMENT_RUNBOOK.md) for full details.
 
 ---
 

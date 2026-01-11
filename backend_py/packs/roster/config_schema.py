@@ -23,6 +23,20 @@ class OptimizationGoal(str, Enum):
     BALANCE_WORKLOAD = "balance_workload"
 
 
+class SolverEngine(str, Enum):
+    """
+    Solver engine selection.
+
+    V3 = Original BlockHeuristicSolver (Min-Cost Max-Flow) - PRODUCTION DEFAULT
+    V4 = Experimental FeasibilityPipeline (Lexicographic) - R&D ONLY
+
+    IMPORTANT: V3 is the canonical solver that produces 145 FTE / 0 PT.
+    V4 is experimental and must be explicitly opted-in.
+    """
+    V3 = "v3"  # Default: Greedy Partitioning + Min-Cost Max-Flow + PT Elimination
+    V4 = "v4"  # Experimental: Complex lexicographic phase (may timeout/produce PT overflow)
+
+
 class RosterPolicyConfig(BaseModel):
     """
     Configuration schema for roster pack (v1.0).
@@ -116,6 +130,11 @@ class RosterPolicyConfig(BaseModel):
     )
 
     # === SOLVER SETTINGS (TUNABLE) ===
+
+    solver_engine: SolverEngine = Field(
+        SolverEngine.V3,
+        description="Solver engine: 'v3' (production default) or 'v4' (experimental R&D only)"
+    )
 
     solver_time_limit_seconds: int = Field(
         300,

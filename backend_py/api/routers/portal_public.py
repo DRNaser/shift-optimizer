@@ -27,7 +27,7 @@ from fastapi import APIRouter, Request, HTTPException, Query, status, Depends
 from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel, Field
 
-from ...packs.portal.models import (
+from packs.portal.models import (
     TokenScope,
     TokenStatus,
     AckStatus,
@@ -37,13 +37,13 @@ from ...packs.portal.models import (
     validate_free_text,
     hash_ip,
 )
-from ...packs.portal.token_service import (
+from packs.portal.token_service import (
     PortalTokenService,
     PortalAuthService,
     TokenConfig,
     create_mock_auth_service,
 )
-from ...packs.portal.repository import MockPortalRepository
+from packs.portal.repository import MockPortalRepository
 
 logger = logging.getLogger(__name__)
 

@@ -2,6 +2,26 @@
 SOLVEREIGN V3.3b - Microsoft Entra ID Authentication
 =====================================================
 
+!!! DEPRECATED (V4.4.0) !!!
+===========================
+This module is DEPRECATED as of V4.4.0 (2026-01-09).
+Internal RBAC (backend_py/api/security/internal_rbac.py) is now the default.
+
+REASON: Microsoft Entra ID was replaced with internal email/password authentication
+to simplify deployment and reduce external dependencies for the Wien Pilot.
+
+MIGRATION: Use internal_rbac.py instead:
+- require_session() instead of get_current_user()
+- require_permission() instead of RequireRole()
+- Session cookies instead of Bearer tokens
+
+This file is kept for reference and potential future multi-tenant SSO integration.
+DO NOT USE for new development.
+
+---
+
+Original documentation (historical):
+
 OIDC/JWT authentication with:
 - RS256 JWT validation via JWKS
 - Tenant mapping: Entra tid -> internal tenant_id via tenant_identities table

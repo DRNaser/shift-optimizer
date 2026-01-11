@@ -1,7 +1,8 @@
 // =============================================================================
-// SOLVEREIGN Platform Admin Header
+// SOLVEREIGN Platform Admin Header (V4.6)
 // =============================================================================
 // Header bar for platform-level admin console.
+// V4.6: Includes context switcher for platform admins.
 // =============================================================================
 
 'use client';
@@ -18,6 +19,8 @@ import {
   AlertTriangle,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { usePlatformUser } from '@/app/(platform)/layout-client';
+import { ContextSwitcher } from './context-switcher';
 
 interface PlatformHeaderProps {
   onMenuClick?: () => void;
@@ -26,6 +29,7 @@ interface PlatformHeaderProps {
 
 export function PlatformHeader({ onMenuClick, className }: PlatformHeaderProps) {
   const [showUserMenu, setShowUserMenu] = useState(false);
+  const user = usePlatformUser();
 
   return (
     <header
@@ -47,13 +51,23 @@ export function PlatformHeader({ onMenuClick, className }: PlatformHeaderProps) 
           <Menu className="h-5 w-5" />
         </button>
 
-        {/* Platform Badge */}
-        <div className="flex items-center gap-2 px-3 py-1.5 bg-[var(--sv-error)]/20 border border-[var(--sv-error)]/30 rounded-md">
-          <AlertTriangle className="h-4 w-4 text-[var(--sv-error)]" />
-          <span className="text-sm font-medium text-[var(--sv-error)]">
-            Platform Admin
-          </span>
-        </div>
+        {/* V4.6: Context Switcher for platform admins, static badge for others */}
+        {user.is_platform_admin ? (
+          <ContextSwitcher
+            activeTenantId={user.active_tenant_id}
+            activeSiteId={user.active_site_id}
+            activeTenantName={user.active_tenant_name}
+            activeSiteName={user.active_site_name}
+            onContextChange={user.refetchUser}
+          />
+        ) : (
+          <div className="flex items-center gap-2 px-3 py-1.5 bg-[var(--sv-primary)]/20 border border-[var(--sv-primary)]/30 rounded-md">
+            <AlertTriangle className="h-4 w-4 text-[var(--sv-primary)]" />
+            <span className="text-sm font-medium text-[var(--sv-primary)]">
+              {user.role || 'User'}
+            </span>
+          </div>
+        )}
 
         {/* Search */}
         <div className="hidden md:flex items-center gap-2 px-3 py-1.5 bg-[var(--sv-gray-800)] rounded-md w-[280px]">

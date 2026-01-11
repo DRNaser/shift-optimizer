@@ -96,6 +96,21 @@ class Config:
     FEATURE_STREAMLIT_UI: bool = os.getenv("FEATURE_STREAMLIT_UI", "true").lower() == "true"
 
     # ========================================================================
+    # Solver Engine Selection (V3 = canonical, V4 = experimental)
+    # ========================================================================
+    # CRITICAL: V3 is the ONLY production-ready solver. It produces 145 FTE / 0 PT.
+    # V4 is experimental R&D only - may timeout or produce PT overflow.
+    SOLVER_ENGINE: Literal["v3", "v4"] = os.getenv("SOLVER_ENGINE", "v3")
+
+    # Allow V4 solver output to be published (default: False for safety)
+    # Set to "true" ONLY for R&D testing - never in production!
+    ALLOW_V4_PUBLISH: bool = os.getenv("ALLOW_V4_PUBLISH", "false").lower() == "true"
+
+    # If True, V4 runs will be BLOCKED from publishing even with ALLOW_V4_PUBLISH=true
+    # This is an emergency kill switch for pilot deployment
+    V4_PUBLISH_KILL_SWITCH: bool = os.getenv("V4_PUBLISH_KILL_SWITCH", "false").lower() == "true"
+
+    # ========================================================================
     # Development
     # ========================================================================
     DEBUG: bool = os.getenv("DEBUG", "false").lower() == "true"

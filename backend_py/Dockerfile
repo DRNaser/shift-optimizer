@@ -34,6 +34,9 @@ COPY api/ ./api/
 # Core business logic (used by both APIs)
 COPY v3/ ./v3/
 
+# Business packs (portal, notify, routing, roster)
+COPY packs/ ./packs/
+
 # Database schemas
 COPY db/ ./db/
 

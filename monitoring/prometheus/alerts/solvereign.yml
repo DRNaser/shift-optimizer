@@ -1,0 +1,295 @@
+# SOLVEREIGN Prometheus Alert Rules (P2.2)
+# ==========================================
+#
+# Critical alerts for GA readiness.
+# Deploy to Prometheus: prometheus/rules/solvereign.yml
+#
+# Severity levels:
+# - critical: PagerDuty/on-call (immediate action required)
+# - warning: Slack notification (investigate soon)
+# - info: Dashboard only (informational)
+
+groups:
+  # ===========================================================================
+  # SERVICE AVAILABILITY
+  # ===========================================================================
+  - name: solvereign.availability
+    rules:
+      # API Down
+      - alert: SolvereignAPIDown
+        expr: up{job="solvereign-api"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          service: api
+        annotations:
+          summary: "SOLVEREIGN API is DOWN"
+          description: "The SOLVEREIGN API has been unreachable for more than 1 minute."
+          runbook_url: "https://docs.solvereign.com/runbooks/api-down"
+
+      # Database Down
+      - alert: SolvereignDatabaseDown
+        expr: pg_up{job="postgres"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          service: database
+        annotations:
+          summary: "PostgreSQL database is DOWN"
+          description: "The PostgreSQL database has been unreachable for more than 1 minute."
+          runbook_url: "https://docs.solvereign.com/runbooks/database-down"
+
+      # High Error Rate
+      - alert: SolvereignHighErrorRate
+        expr: |
+          sum(rate(http_requests_total{status=~"5.."}[5m]))
+          /
+          sum(rate(http_requests_total[5m]))
+          > 0.05
+        for: 5m
+        labels:
+          severity: critical
+          service: api
+        annotations:
+          summary: "High error rate detected (>5%)"
+          description: "Error rate is {{ $value | humanizePercentage }} over the last 5 minutes."
+          runbook_url: "https://docs.solvereign.com/runbooks/high-error-rate"
+
+  # ===========================================================================
+  # LATENCY / PERFORMANCE
+  # ===========================================================================
+  - name: solvereign.performance
+    rules:
+      # High Latency
+      - alert: SolvereignHighLatency
+        expr: |
+          histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket[5m])) by (le))
+          > 2
+        for: 5m
+        labels:
+          severity: warning
+          service: api
+        annotations:
+          summary: "High API latency (P95 > 2s)"
+          description: "95th percentile latency is {{ $value | humanizeDuration }}."
+          runbook_url: "https://docs.solvereign.com/runbooks/high-latency"
+
+      # Solver Timeout
+      - alert: SolvereignSolverTimeout
+        expr: |
+          histogram_quantile(0.99, sum(rate(solve_duration_seconds_bucket[1h])) by (le))
+          > 300
+        for: 10m
+        labels:
+          severity: warning
+          service: solver
+        annotations:
+          summary: "Solver runs are timing out"
+          description: "99th percentile solver duration exceeds 5 minutes."
+          runbook_url: "https://docs.solvereign.com/runbooks/solver-timeout"
+
+      # High Solver Failure Rate
+      - alert: SolvereignSolverFailures
+        expr: |
+          sum(rate(solve_total{status="failure"}[1h]))
+          /
+          sum(rate(solve_total[1h]))
+          > 0.1
+        for: 15m
+        labels:
+          severity: warning
+          service: solver
+        annotations:
+          summary: "High solver failure rate (>10%)"
+          description: "{{ $value | humanizePercentage }} of solver runs are failing."
+          runbook_url: "https://docs.solvereign.com/runbooks/solver-failures"
+
+  # ===========================================================================
+  # DATABASE
+  # ===========================================================================
+  - name: solvereign.database
+    rules:
+      # Connection Pool Exhaustion
+      - alert: SolvereignDBConnectionsHigh
+        expr: |
+          pg_stat_activity_count{state="active"}
+          /
+          pg_settings_max_connections
+          > 0.8
+        for: 5m
+        labels:
+          severity: warning
+          service: database
+        annotations:
+          summary: "Database connection usage >80%"
+          description: "{{ $value | humanizePercentage }} of max connections in use."
+          runbook_url: "https://docs.solvereign.com/runbooks/db-connections"
+
+      # Slow Queries
+      - alert: SolvereignSlowQueries
+        expr: |
+          rate(pg_stat_statements_seconds_total[5m])
+          /
+          rate(pg_stat_statements_calls_total[5m])
+          > 1
+        for: 10m
+        labels:
+          severity: warning
+          service: database
+        annotations:
+          summary: "Slow database queries detected"
+          description: "Average query time exceeds 1 second."
+          runbook_url: "https://docs.solvereign.com/runbooks/slow-queries"
+
+      # Database Size Growing
+      - alert: SolvereignDBSizeHigh
+        expr: pg_database_size_bytes{datname="solvereign"} > 50e9
+        for: 1h
+        labels:
+          severity: warning
+          service: database
+        annotations:
+          summary: "Database size exceeds 50GB"
+          description: "Current size: {{ $value | humanize1024 }}B. Consider cleanup or scaling."
+          runbook_url: "https://docs.solvereign.com/runbooks/db-size"
+
+  # ===========================================================================
+  # BACKUP
+  # ===========================================================================
+  - name: solvereign.backup
+    rules:
+      # Backup Stale
+      - alert: SolvereignBackupStale
+        expr: (time() - solvereign_backup_last_success_timestamp) > 93600
+        for: 5m
+        labels:
+          severity: critical
+          service: backup
+        annotations:
+          summary: "Database backup is stale (>26h)"
+          description: "No successful backup in {{ $value | humanizeDuration }}."
+          runbook_url: "https://docs.solvereign.com/runbooks/backup-stale"
+
+      # Backup Failed
+      - alert: SolvereignBackupFailed
+        expr: solvereign_backup_last_success == 0
+        for: 5m
+        labels:
+          severity: warning
+          service: backup
+        annotations:
+          summary: "Last database backup failed"
+          description: "The most recent backup attempt did not succeed."
+          runbook_url: "https://docs.solvereign.com/runbooks/backup-failed"
+
+  # ===========================================================================
+  # BILLING
+  # ===========================================================================
+  - name: solvereign.billing
+    rules:
+      # Webhook Processing Failures
+      - alert: SolvereignStripeWebhookFailures
+        expr: |
+          sum(rate(stripe_webhook_failures_total[1h])) > 5
+        for: 15m
+        labels:
+          severity: warning
+          service: billing
+        annotations:
+          summary: "Stripe webhook processing failures"
+          description: "{{ $value }} webhook failures in the last hour."
+          runbook_url: "https://docs.solvereign.com/runbooks/stripe-webhooks"
+
+      # Invoice Creation Failures
+      - alert: SolvereignInvoiceFailures
+        expr: |
+          sum(increase(stripe_invoice_failures_total[1h])) > 3
+        for: 30m
+        labels:
+          severity: warning
+          service: billing
+        annotations:
+          summary: "Invoice creation failures"
+          description: "{{ $value }} invoice failures in the last hour."
+          runbook_url: "https://docs.solvereign.com/runbooks/invoice-failures"
+
+  # ===========================================================================
+  # RESOURCES
+  # ===========================================================================
+  - name: solvereign.resources
+    rules:
+      # High CPU
+      - alert: SolvereignHighCPU
+        expr: |
+          rate(container_cpu_usage_seconds_total{container="api"}[5m]) > 0.9
+        for: 10m
+        labels:
+          severity: warning
+          service: api
+        annotations:
+          summary: "API container CPU >90%"
+          description: "CPU usage is {{ $value | humanizePercentage }}."
+          runbook_url: "https://docs.solvereign.com/runbooks/high-cpu"
+
+      # High Memory
+      - alert: SolvereignHighMemory
+        expr: |
+          container_memory_usage_bytes{container="api"}
+          /
+          container_spec_memory_limit_bytes{container="api"}
+          > 0.9
+        for: 10m
+        labels:
+          severity: warning
+          service: api
+        annotations:
+          summary: "API container memory >90%"
+          description: "Memory usage is {{ $value | humanizePercentage }}."
+          runbook_url: "https://docs.solvereign.com/runbooks/high-memory"
+
+      # Disk Space
+      - alert: SolvereignDiskSpaceLow
+        expr: |
+          (node_filesystem_avail_bytes{mountpoint="/data"}
+          /
+          node_filesystem_size_bytes{mountpoint="/data"})
+          < 0.1
+        for: 15m
+        labels:
+          severity: warning
+          service: infrastructure
+        annotations:
+          summary: "Disk space low (<10%)"
+          description: "Only {{ $value | humanizePercentage }} disk space remaining."
+          runbook_url: "https://docs.solvereign.com/runbooks/disk-space"
+
+  # ===========================================================================
+  # SECURITY
+  # ===========================================================================
+  - name: solvereign.security
+    rules:
+      # Auth Failures Spike
+      - alert: SolvereignAuthFailureSpike
+        expr: |
+          sum(increase(auth_failures_total[15m])) > 100
+        for: 5m
+        labels:
+          severity: warning
+          service: security
+        annotations:
+          summary: "Authentication failure spike detected"
+          description: "{{ $value }} auth failures in 15 minutes. Possible brute force attack."
+          runbook_url: "https://docs.solvereign.com/runbooks/auth-failures"
+
+      # Rate Limit Hits
+      - alert: SolvereignRateLimitHigh
+        expr: |
+          sum(rate(rate_limit_exceeded_total[5m])) > 10
+        for: 10m
+        labels:
+          severity: info
+          service: security
+        annotations:
+          summary: "High rate limit activity"
+          description: "{{ $value }} rate limit hits per second. May indicate abuse."
+          runbook_url: "https://docs.solvereign.com/runbooks/rate-limits"

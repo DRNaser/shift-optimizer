@@ -1,6 +1,21 @@
 // =============================================================================
 // SOLVEREIGN - Authenticated API Client (Browser)
 // =============================================================================
+//
+// !!! DEPRECATED (V4.4.0) !!!
+// ===========================
+// This module is DEPRECATED as of V4.4.0 (2026-01-09).
+// Internal RBAC with HttpOnly session cookies is now the default.
+//
+// MIGRATION:
+// - Portal Admin Dashboard uses BFF routes (app/api/portal-admin/*)
+// - Session cookies are forwarded automatically
+// - No Bearer tokens needed
+//
+// This file is kept for reference only. DO NOT USE for new development.
+//
+// =============================================================================
+// Original documentation (historical):
 // Browser-side API client that injects MSAL Bearer tokens into requests.
 // Uses the useAuth() hook to acquire tokens silently.
 // =============================================================================

@@ -1,0 +1,56 @@
+# SOLVEREIGN Backup Container (P0.2)
+# ===================================
+#
+# Minimal image for PostgreSQL backup to S3.
+#
+# Build:
+#   docker build -f docker/Dockerfile.backup -t ghcr.io/solvereign/backup:latest .
+#
+# Run locally:
+#   docker run --rm \
+#     -e DATABASE_URL=postgresql://... \
+#     -e BACKUP_S3_BUCKET=my-bucket \
+#     -e AWS_ACCESS_KEY_ID=... \
+#     -e AWS_SECRET_ACCESS_KEY=... \
+#     ghcr.io/solvereign/backup:latest
+
+FROM python:3.11-slim-bookworm
+
+# Install PostgreSQL client (for pg_dump)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    postgresql-client-15 \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create non-root user
+RUN groupadd -r backup && useradd -r -g backup backup
+
+# Set working directory
+WORKDIR /app
+
+# Copy only backup script and requirements
+COPY scripts/backup_database.py scripts/
+COPY docker/backup-requirements.txt requirements.txt
+
+# Install Python dependencies
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Create metrics directory
+RUN mkdir -p /var/lib/prometheus/node-exporter && \
+    chown -R backup:backup /var/lib/prometheus
+
+# Switch to non-root user
+USER backup
+
+# Default command
+CMD ["python", "scripts/backup_database.py"]
+
+# Health check (not really needed for jobs, but useful for debugging)
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD python -c "import boto3; print('ok')" || exit 1
+
+# Labels
+LABEL org.opencontainers.image.title="SOLVEREIGN Backup"
+LABEL org.opencontainers.image.description="PostgreSQL backup to S3"
+LABEL org.opencontainers.image.vendor="SOLVEREIGN"
+LABEL org.opencontainers.image.source="https://github.com/solvereign/shift-optimizer"

@@ -1,8 +1,8 @@
 // =============================================================================
-// SOLVEREIGN Platform Login Page
+// SOLVEREIGN V4.4 - Platform Login Page
 // =============================================================================
-// Login page for platform administration.
-// TODO: Integrate with Entra ID for production.
+// Login page for platform administration using internal RBAC.
+// Email + Password authentication with HttpOnly session cookie.
 // =============================================================================
 
 'use client';
@@ -10,15 +10,17 @@
 import { useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { Suspense } from 'react';
-import { Shield, LogIn, AlertCircle } from 'lucide-react';
+import { Shield, LogIn, AlertCircle, Eye, EyeOff } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
 function LoginForm() {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const returnTo = searchParams.get('returnTo') || '/platform/orgs';
+  const returnTo = searchParams.get('returnTo') || '/platform/home';
 
   const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -28,23 +30,32 @@ function LoginForm() {
     setError(null);
 
     try {
-      // TODO: Replace with real Entra ID auth flow
-      // For now, set dev cookies via API
-      const res = await fetch('/api/platform/auth/dev-login', {
+      const res = await fetch('/api/auth/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email }),
+        body: JSON.stringify({ email, password }),
+        credentials: 'include',
       });
 
+      const data = await res.json();
+
       if (!res.ok) {
-        const data = await res.json();
-        throw new Error(data.error?.message || 'Login failed');
+        // Handle specific error codes
+        if (data.error_code === 'INVALID_CREDENTIALS') {
+          throw new Error('Ungültige E-Mail oder Passwort');
+        } else if (data.error_code === 'ACCOUNT_LOCKED') {
+          throw new Error('Konto gesperrt. Bitte kontaktieren Sie den Administrator.');
+        } else if (data.error_code === 'ACCOUNT_INACTIVE') {
+          throw new Error('Konto inaktiv. Bitte kontaktieren Sie den Administrator.');
+        } else {
+          throw new Error(data.message || 'Anmeldung fehlgeschlagen');
+        }
       }
 
-      // Redirect to return URL
+      // Redirect to return URL on success
       router.push(returnTo);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Login failed');
+      setError(err instanceof Error ? err.message : 'Anmeldung fehlgeschlagen');
     } finally {
       setLoading(false);
     }
@@ -60,22 +71,24 @@ function LoginForm() {
           </div>
           <h1 className="text-2xl font-bold text-white">SOLVEREIGN Platform</h1>
           <p className="text-sm text-[var(--sv-gray-400)] mt-1">
-            Platform Administration Login
+            Portal Administration
           </p>
         </div>
 
         {/* Login Form */}
         <div className="bg-[var(--sv-gray-800)] rounded-lg border border-[var(--sv-gray-700)] p-6">
           <form onSubmit={handleLogin} className="space-y-4">
+            {/* Email Field */}
             <div>
               <label className="block text-sm font-medium text-[var(--sv-gray-300)] mb-1">
-                Email Address
+                E-Mail-Adresse
               </label>
               <input
                 type="email"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
-                placeholder="admin@solvereign.com"
+                placeholder="email@example.com"
+                autoComplete="email"
                 className={cn(
                   'w-full px-3 py-2 rounded-lg',
                   'bg-[var(--sv-gray-900)] border border-[var(--sv-gray-600)]',
@@ -86,6 +99,42 @@ function LoginForm() {
               />
             </div>
 
+            {/* Password Field */}
+            <div>
+              <label className="block text-sm font-medium text-[var(--sv-gray-300)] mb-1">
+                Passwort
+              </label>
+              <div className="relative">
+                <input
+                  type={showPassword ? 'text' : 'password'}
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  placeholder="••••••••"
+                  autoComplete="current-password"
+                  className={cn(
+                    'w-full px-3 py-2 pr-10 rounded-lg',
+                    'bg-[var(--sv-gray-900)] border border-[var(--sv-gray-600)]',
+                    'text-white placeholder-[var(--sv-gray-500)]',
+                    'focus:outline-none focus:border-[var(--sv-primary)]'
+                  )}
+                  required
+                  minLength={8}
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowPassword(!showPassword)}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 text-[var(--sv-gray-400)] hover:text-white"
+                >
+                  {showPassword ? (
+                    <EyeOff className="h-5 w-5" />
+                  ) : (
+                    <Eye className="h-5 w-5" />
+                  )}
+                </button>
+              </div>
+            </div>
+
+            {/* Error Message */}
             {error && (
               <div className="flex items-center gap-2 text-sm text-red-400 bg-red-500/10 border border-red-500/20 rounded-lg p-3">
                 <AlertCircle className="h-4 w-4 flex-shrink-0" />
@@ -93,9 +142,10 @@ function LoginForm() {
               </div>
             )}
 
+            {/* Submit Button */}
             <button
               type="submit"
-              disabled={loading || !email}
+              disabled={loading || !email || !password}
               className={cn(
                 'w-full flex items-center justify-center gap-2 px-4 py-2 rounded-lg',
                 'bg-[var(--sv-primary)] text-white font-medium',
@@ -106,40 +156,21 @@ function LoginForm() {
               {loading ? (
                 <>
                   <div className="h-4 w-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-                  Signing in...
+                  Anmeldung...
                 </>
               ) : (
                 <>
                   <LogIn className="h-4 w-4" />
-                  Sign In
+                  Anmelden
                 </>
               )}
             </button>
           </form>
-
-          {/* Entra ID SSO Button (TODO) */}
-          <div className="mt-6 pt-6 border-t border-[var(--sv-gray-700)]">
-            <button
-              type="button"
-              disabled
-              className={cn(
-                'w-full flex items-center justify-center gap-2 px-4 py-2 rounded-lg',
-                'bg-[var(--sv-gray-700)] text-[var(--sv-gray-400)]',
-                'cursor-not-allowed'
-              )}
-            >
-              <svg className="h-4 w-4" viewBox="0 0 21 21" fill="currentColor">
-                <path d="M0 0h10v10H0zM11 0h10v10H11zM0 11h10v10H0zM11 11h10v10H11z" />
-              </svg>
-              Sign in with Microsoft Entra ID
-              <span className="text-xs">(Coming Soon)</span>
-            </button>
-          </div>
         </div>
 
         {/* Help Text */}
         <p className="text-center text-xs text-[var(--sv-gray-500)] mt-4">
-          Contact IT support if you need access to platform administration.
+          Kontaktieren Sie Ihren Administrator für Zugangsdaten.
         </p>
       </div>
     </div>

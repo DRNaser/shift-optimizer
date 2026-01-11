@@ -1,0 +1,203 @@
+# SOLVEREIGN Database Backup CronJob (P0.2)
+# ==========================================
+#
+# Runs pg_dump daily at 02:00 UTC, uploads to S3 with SSE encryption.
+#
+# Prerequisites:
+# 1. Create S3 bucket with versioning enabled
+# 2. Create IAM user/role with S3 write permissions
+# 3. Create Kubernetes secrets:
+#    kubectl create secret generic backup-credentials \
+#      --from-literal=AWS_ACCESS_KEY_ID=<key> \
+#      --from-literal=AWS_SECRET_ACCESS_KEY=<secret>
+#
+# Deploy:
+#    kubectl apply -f k8s/backup-cronjob.yaml
+#
+# Manual trigger:
+#    kubectl create job --from=cronjob/solvereign-backup backup-manual-$(date +%s)
+
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: solvereign-backup
+  namespace: solvereign
+  labels:
+    app: solvereign
+    component: backup
+spec:
+  # Run daily at 02:00 UTC
+  # IMPORTANT: This is NOT 02:00 Vienna time!
+  #   - 02:00 UTC = 03:00 Vienna (Winter/CET)
+  #   - 02:00 UTC = 04:00 Vienna (Summer/CEST)
+  # To run at 02:00 Vienna local time, uncomment timeZone below (requires K8s 1.27+)
+  schedule: "0 2 * * *"
+
+  # Timezone support (requires Kubernetes 1.27+)
+  # Uncomment to use Vienna local time instead of UTC:
+  # timeZone: "Europe/Vienna"
+
+  # Don't start new job if previous still running
+  concurrencyPolicy: Forbid
+
+  # Keep last 3 successful and 1 failed job for debugging
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 1
+
+  # Start job within 5 minutes of scheduled time or skip
+  startingDeadlineSeconds: 300
+
+  jobTemplate:
+    spec:
+      # Job timeout: 1 hour
+      activeDeadlineSeconds: 3600
+
+      # Retry once on failure
+      backoffLimit: 1
+
+      template:
+        metadata:
+          labels:
+            app: solvereign
+            component: backup
+          annotations:
+            # Prevent Istio sidecar from blocking job completion
+            sidecar.istio.io/inject: "false"
+        spec:
+          restartPolicy: Never
+
+          # Run as non-root
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            fsGroup: 1000
+
+          containers:
+            - name: backup
+              image: ghcr.io/solvereign/backup:latest
+              imagePullPolicy: Always
+
+              command:
+                - python
+                - scripts/backup_database.py
+
+              env:
+                # Database connection
+                - name: DATABASE_URL
+                  valueFrom:
+                    secretKeyRef:
+                      name: solvereign-db
+                      key: DATABASE_URL
+
+                # S3 configuration
+                - name: BACKUP_S3_BUCKET
+                  value: "solvereign-backups-prod"
+                - name: BACKUP_S3_PREFIX
+                  value: "postgresql/"
+                - name: BACKUP_RETENTION_DAYS
+                  value: "30"
+                - name: AWS_DEFAULT_REGION
+                  value: "eu-central-1"
+
+                # AWS credentials
+                - name: AWS_ACCESS_KEY_ID
+                  valueFrom:
+                    secretKeyRef:
+                      name: backup-credentials
+                      key: AWS_ACCESS_KEY_ID
+                - name: AWS_SECRET_ACCESS_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: backup-credentials
+                      key: AWS_SECRET_ACCESS_KEY
+
+                # Notification webhook (Slack)
+                - name: BACKUP_WEBHOOK_URL
+                  valueFrom:
+                    secretKeyRef:
+                      name: backup-credentials
+                      key: SLACK_WEBHOOK_URL
+                      optional: true
+
+                # Environment identifier
+                - name: SOLVEREIGN_ENVIRONMENT
+                  value: "production"
+
+              resources:
+                requests:
+                  memory: "256Mi"
+                  cpu: "100m"
+                limits:
+                  memory: "1Gi"
+                  cpu: "500m"
+
+              # Security hardening
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: false  # pg_dump needs temp files
+                capabilities:
+                  drop:
+                    - ALL
+
+              # Volume for Prometheus metrics (node-exporter textfile)
+              volumeMounts:
+                - name: prometheus-metrics
+                  mountPath: /var/lib/prometheus/node-exporter
+
+          volumes:
+            - name: prometheus-metrics
+              emptyDir: {}
+
+          # Tolerate spot/preemptible nodes
+          tolerations:
+            - key: "kubernetes.io/arch"
+              operator: "Equal"
+              value: "arm64"
+              effect: "NoSchedule"
+
+---
+# ServiceMonitor for Prometheus (if using prometheus-operator)
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: solvereign-backup-alerts
+  namespace: solvereign
+  labels:
+    app: solvereign
+    component: backup
+spec:
+  groups:
+    - name: solvereign-backup
+      rules:
+        # Alert if backup hasn't succeeded in 26 hours
+        - alert: SolvereignBackupStale
+          expr: |
+            (time() - solvereign_backup_last_success_timestamp) > 93600
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: "SOLVEREIGN backup is stale"
+            description: "No successful backup in the last 26 hours. Last success: {{ $value | humanizeDuration }} ago."
+
+        # Alert if last backup failed
+        - alert: SolvereignBackupFailed
+          expr: |
+            solvereign_backup_last_success == 0
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "SOLVEREIGN backup failed"
+            description: "The last backup attempt failed. Check backup job logs."
+
+        # Alert if backup takes too long
+        - alert: SolvereignBackupSlow
+          expr: |
+            solvereign_backup_duration_seconds > 1800
+          for: 1m
+          labels:
+            severity: warning
+          annotations:
+            summary: "SOLVEREIGN backup is slow"
+            description: "Backup took {{ $value | humanizeDuration }}. Consider optimizing."

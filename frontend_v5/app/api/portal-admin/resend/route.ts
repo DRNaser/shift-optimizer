@@ -1,25 +1,47 @@
-// =============================================================================
-// SOLVEREIGN V4.3 - Portal Admin Resend BFF Route
-// =============================================================================
-// Proxies resend requests to backend with auth + audit logging.
-// RBAC: Dispatcher role required (Approver for DECLINED/SKIPPED).
-// =============================================================================
+/**
+ * SOLVEREIGN V4.4 - Portal Admin Resend BFF Route
+ *
+ * Proxies resend requests to backend with session cookie auth + audit logging.
+ * RBAC: portal.resend.write permission required.
+ * Additional: portal.approve.write for DECLINED/SKIPPED filters.
+ */
 
 import { NextRequest, NextResponse } from "next/server";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
-const BACKEND_URL = process.env.SOLVEREIGN_BACKEND_URL || "http://localhost:8000";
+const BACKEND_URL = process.env.BACKEND_URL || "http://localhost:8000";
 
 export async function POST(request: NextRequest) {
+  // Get session cookie from request
+  const sessionCookie = request.cookies.get("__Host-sv_platform_session");
+
+  if (!sessionCookie) {
+    return NextResponse.json(
+      {
+        success: false,
+        queued_count: 0,
+        skipped_count: 0,
+        error: "Not authenticated",
+        error_code: "NO_SESSION",
+      },
+      { status: 401 }
+    );
+  }
+
   try {
     const body = await request.json();
 
     // Validate required fields
     if (!body.snapshot_id) {
       return NextResponse.json(
-        { error: "snapshot_id is required" },
+        {
+          success: false,
+          queued_count: 0,
+          skipped_count: 0,
+          error: "snapshot_id is required",
+        },
         { status: 400 }
       );
     }
@@ -28,13 +50,23 @@ export async function POST(request: NextRequest) {
     if (body.filter === "DECLINED") {
       if (!body.include_declined) {
         return NextResponse.json(
-          { error: "include_declined=true required for DECLINED filter" },
+          {
+            success: false,
+            queued_count: 0,
+            skipped_count: 0,
+            error: "include_declined=true required for DECLINED filter",
+          },
           { status: 400 }
         );
       }
       if (!body.declined_reason || body.declined_reason.length < 10) {
         return NextResponse.json(
-          { error: "declined_reason (min 10 chars) required for DECLINED filter" },
+          {
+            success: false,
+            queued_count: 0,
+            skipped_count: 0,
+            error: "declined_reason (min 10 chars) required for DECLINED filter",
+          },
           { status: 400 }
         );
       }
@@ -43,13 +75,23 @@ export async function POST(request: NextRequest) {
     if (body.filter === "SKIPPED") {
       if (!body.include_skipped) {
         return NextResponse.json(
-          { error: "include_skipped=true required for SKIPPED filter" },
+          {
+            success: false,
+            queued_count: 0,
+            skipped_count: 0,
+            error: "include_skipped=true required for SKIPPED filter",
+          },
           { status: 400 }
         );
       }
       if (!body.skipped_reason || body.skipped_reason.length < 10) {
         return NextResponse.json(
-          { error: "skipped_reason (min 10 chars) required for SKIPPED filter" },
+          {
+            success: false,
+            queued_count: 0,
+            skipped_count: 0,
+            error: "skipped_reason (min 10 chars) required for SKIPPED filter",
+          },
           { status: 400 }
         );
       }
@@ -61,7 +103,7 @@ export async function POST(request: NextRequest) {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          // TODO: Add auth headers from request
+          Cookie: `__Host-sv_platform_session=${sessionCookie.value}`,
         },
         body: JSON.stringify(body),
         cache: "no-store",
@@ -82,11 +124,15 @@ export async function POST(request: NextRequest) {
     }
 
     const data = await response.json();
-    return NextResponse.json({
+
+    const res = NextResponse.json({
       success: true,
       queued_count: data.queued_count || 0,
       skipped_count: data.skipped_count || 0,
     });
+    res.headers.set("Cache-Control", "no-store, no-cache, must-revalidate");
+    res.headers.set("Pragma", "no-cache");
+    return res;
   } catch (error) {
     console.error("Portal admin resend error:", error);
     return NextResponse.json(

@@ -33,6 +33,11 @@ class DatabaseManager:
     def __init__(self):
         self._pool: Optional[AsyncConnectionPool] = None
 
+    @property
+    def pool(self) -> Optional[AsyncConnectionPool]:
+        """Access to the underlying connection pool."""
+        return self._pool
+
     async def initialize(self) -> None:
         """Initialize the connection pool."""
         self._pool = AsyncConnectionPool(

@@ -1,6 +1,21 @@
 // =============================================================================
 // SOLVEREIGN - Entra ID Authentication Context
 // =============================================================================
+//
+// !!! DEPRECATED (V4.4.0) !!!
+// ===========================
+// This module is DEPRECATED as of V4.4.0 (2026-01-09).
+// Internal RBAC with email/password authentication is now the default.
+//
+// MIGRATION:
+// - Use /platform/login page for admin authentication
+// - Session cookies (admin_session) replace MSAL tokens
+// - No React context needed - use server-side session validation
+//
+// This file is kept for reference only. DO NOT USE for new development.
+//
+// =============================================================================
+// Original documentation (historical):
 // React context for Entra ID authentication using MSAL.
 // Provides user state, login/logout functions, and token acquisition.
 // =============================================================================

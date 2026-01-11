@@ -123,6 +123,36 @@ class APISettings(BaseSettings):
     metrics_enabled: bool = Field(default=True, description="Enable Prometheus metrics")
     metrics_path: str = Field(default="/metrics", description="Metrics endpoint path")
 
+    # Sentry Error Tracking
+    sentry_dsn: Optional[str] = Field(
+        default=None,
+        description="Sentry DSN for error tracking (leave empty to disable)"
+    )
+    sentry_traces_sample_rate: float = Field(
+        default=0.1,
+        description="Sentry performance traces sample rate (0.0-1.0)"
+    )
+    sentry_profiles_sample_rate: float = Field(
+        default=0.1,
+        description="Sentry profiling sample rate (0.0-1.0)"
+    )
+
+    # ==========================================================================
+    # Stripe Billing (P1)
+    # ==========================================================================
+    stripe_api_key: Optional[str] = Field(
+        default=None,
+        description="Stripe secret API key (sk_live_... or sk_test_...)"
+    )
+    stripe_webhook_secret: Optional[str] = Field(
+        default=None,
+        description="Stripe webhook signing secret (whsec_...)"
+    )
+    stripe_default_currency: str = Field(
+        default="eur",
+        description="Default currency for billing (eur for DACH market)"
+    )
+
     # ==========================================================================
     # CORS
     # ==========================================================================
@@ -213,6 +243,11 @@ class APISettings(BaseSettings):
     def is_oidc_configured(self) -> bool:
         """Check if OIDC is properly configured."""
         return bool(self.oidc_issuer and self.oidc_audience)
+
+    @property
+    def is_stripe_configured(self) -> bool:
+        """Check if Stripe billing is properly configured."""
+        return bool(self.stripe_api_key and self.stripe_webhook_secret)
 
     class Config:
         env_prefix = "SOLVEREIGN_"

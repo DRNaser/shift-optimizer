@@ -1,12 +1,32 @@
 # SOLVEREIGN - Microsoft Entra ID Setup for LTS
 
-**Version**: 1.0
+> **!!! DEPRECATED (V4.4.0) !!!**
+>
+> This document is **DEPRECATED** as of V4.4.0 (2026-01-09).
+> Internal RBAC with email/password authentication is now the default.
+>
+> **Migration Guide:**
+> - Use `scripts/create_user.py` to create users with email/password
+> - Session cookies replace Bearer tokens
+> - No Azure AD configuration required
+>
+> **New Documentation:**
+> - [WIEN_PILOT_BLOCKERS.md](WIEN_PILOT_BLOCKERS.md) - Launch checklist with RBAC
+> - [CLAUDE.md](../CLAUDE.md) - V4.4.0 Internal RBAC section
+>
+> This document is kept for historical reference only.
+
+---
+
+**Version**: 1.0 (DEPRECATED)
 **Date**: 2026-01-05
 **Audience**: IT Administrators, DevOps
 
 ---
 
 ## Overview
+
+**NOTE: This section describes the DEPRECATED Entra ID flow. Use Internal RBAC instead.**
 
 This document describes how to configure Microsoft Entra ID (Azure AD) authentication for LTS Transport & Logistik GmbH as a production tenant on SOLVEREIGN.
 

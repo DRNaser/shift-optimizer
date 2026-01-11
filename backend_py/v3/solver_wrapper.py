@@ -7,13 +7,31 @@ M4: Integration of V2 Block Heuristic Solver with V3 Versioning.
 This module wraps the existing V2 solver (run_block_heuristic.py) and integrates
 it with V3's versioning, audit, and database infrastructure.
 
+SOLVER ENGINE SELECTION (ADR-003):
+----------------------------------
+V3 (DEFAULT) = BlockHeuristicSolver (Min-Cost Max-Flow)
+    - Greedy block partitioning (3er > 2er > 1er)
+    - Min-Cost Max-Flow assignment
+    - Consolidation + PT Elimination
+    - PRODUCTION RESULT: 145 FTE, 0 PT, 100% coverage
+
+V4 (EXPERIMENTAL) = FeasibilityPipeline (Lexicographic)
+    - Complex Phase 1 block selection (may timeout)
+    - Uses PT as overflow bucket (causes regression)
+    - R&D ONLY - not for production/pilot use
+
+IMPORTANT: V3 is ALWAYS the default. V4 must be explicitly opted-in via:
+    - Policy profile: solver_engine="v4"
+    - Environment: SOLVER_ENGINE=v4
+
 Flow:
     1. Load tour_instances from forecast_version
-    2. Run V2 solver (block heuristic + min-cost max-flow)
-    3. Store assignments in database (via tour_instance_id)
-    4. Compute output_hash for reproducibility
-    5. Run audit checks
-    6. Return plan_version_id with status=DRAFT
+    2. Determine solver engine (V3 default, V4 opt-in)
+    3. Run selected solver
+    4. Store assignments in database (via tour_instance_id)
+    5. Compute output_hash for reproducibility
+    6. Run audit checks
+    7. Return plan_version_id with status=DRAFT
 
 NOTE: This is an MVP wrapper. Full integration requires refactoring V2 solver
       to accept tour_instances directly instead of CSV files.
@@ -96,6 +114,7 @@ def solve_forecast(
     tenant_id: int = 1,  # Default tenant for backward compatibility
     tenant_uuid: Optional[str] = None,  # UUID for policy lookup (ADR-002)
     pack_id: str = "roster",  # Pack identifier for policy lookup
+    solver_engine: Optional[str] = None,  # ADR-003: Solver engine override ("v3" or "v4")
 ) -> dict:
     """
     Solve a forecast using V2 block heuristic solver.
@@ -218,15 +237,36 @@ def solve_forecast(
                     frozen_assignments[ba['tour_instance_id']] = ba['driver_id']
             print(f"[FREEZE] Preserving {len(frozen_assignments)} baseline assignments")
 
-    # Call V2 Block Heuristic Solver via integration bridge
+    # =========================================================================
+    # ADR-003: Solver Engine Selection
+    # =========================================================================
+    # Determine which solver engine to use (V3 = default, V4 = opt-in only)
+    # Returns tuple: (engine, reason) for audit trail
+    effective_engine, engine_reason = _determine_solver_engine(solver_engine, policy_snapshot)
+    print(f"[SOLVER] solver_engine_selected={effective_engine} reason={engine_reason}")
+
+    # Call selected solver
     solver_degraded = False
     solver_error_message = None
     try:
-        assignments = solve_with_v2_solver(instances, seed=seed)
+        if effective_engine == "v3":
+            # V3: Original BlockHeuristicSolver (Min-Cost Max-Flow) - PRODUCTION DEFAULT
+            # This produces 145 FTE, 0 PT for Wien pilot
+            assignments = solve_with_v2_solver(instances, seed=seed)
+        elif effective_engine == "v4":
+            # V4: Experimental FeasibilityPipeline - R&D ONLY
+            # WARNING: May timeout or produce PT overflow (regression risk)
+            print(f"[SOLVER] WARNING: V4 is EXPERIMENTAL - not for production use!")
+            assignments = _solve_with_v4_engine(instances, seed=seed, solver_config=solver_config)
+        else:
+            # Unknown engine - fall back to V3
+            print(f"[SOLVER] Unknown engine '{effective_engine}', falling back to V3")
+            assignments = solve_with_v2_solver(instances, seed=seed)
+            effective_engine = "v3"
     except Exception as e:
         solver_degraded = True
         solver_error_message = str(e)
-        print(f"[ERROR] V2 solver failed: {e}")
+        print(f"[ERROR] {effective_engine.upper()} solver failed: {e}")
         print(f"[WARN] Falling back to dummy assignments - PLAN QUALITY DEGRADED")
         assignments = _create_dummy_assignments(instances, seed)
 
@@ -247,7 +287,8 @@ def solve_forecast(
 
     # Compute solver config hash (for reproducibility)
     solver_config_dict = solver_config.to_dict()
-    solver_config_dict["version"] = "v2_block_heuristic"
+    solver_config_dict["version"] = "v2_block_heuristic" if effective_engine == "v3" else "v4_feasibility"
+    solver_config_dict["solver_engine"] = effective_engine  # ADR-003: Track engine used
     solver_config_dict["fatigue_rule"] = "no_consecutive_triples"
     solver_config_hash = hashlib.sha256(
         json.dumps(solver_config_dict, sort_keys=True).encode()
@@ -378,6 +419,10 @@ def solve_forecast(
             "policy_profile_id": policy_snapshot.profile_id if policy_snapshot else None,
             "policy_config_hash": policy_snapshot.config_hash if policy_snapshot else None,
             "policy_using_defaults": policy_snapshot.using_defaults if policy_snapshot else True,
+            # ADR-003: Solver engine tracking
+            "solver_engine": effective_engine,
+            "solver_engine_reason": engine_reason,
+            "solver_engine_publishable": effective_engine == "v3" or config.ALLOW_V4_PUBLISH,
         }
 
     else:
@@ -410,9 +455,150 @@ def solve_forecast(
             "policy_profile_id": policy_snapshot.profile_id if policy_snapshot else None,
             "policy_config_hash": policy_snapshot.config_hash if policy_snapshot else None,
             "policy_using_defaults": policy_snapshot.using_defaults if policy_snapshot else True,
+            # ADR-003: Solver engine tracking
+            "solver_engine": effective_engine,
+            "solver_engine_reason": engine_reason,
+            "solver_engine_publishable": effective_engine == "v3" or config.ALLOW_V4_PUBLISH,
         }
 
     return result
+
+
+# ============================================================================
+# ADR-003: Solver Engine Selection Helpers
+# ============================================================================
+
+def _determine_solver_engine(
+    explicit_override: Optional[str],
+    policy_snapshot: Optional[object]
+) -> tuple:
+    """
+    Determine which solver engine to use.
+
+    Priority (highest to lowest):
+    1. Explicit override parameter (solver_engine="v4")
+    2. Policy profile setting (solver_engine in config)
+    3. Environment variable (SOLVER_ENGINE)
+    4. Default: "v3" (ALWAYS)
+
+    See: docs/SOLVER_ENGINE_PRECEDENCE.md
+
+    Args:
+        explicit_override: Explicit engine override from caller
+        policy_snapshot: Policy snapshot with config
+
+    Returns:
+        Tuple of (engine, reason) where:
+        - engine: "v3" or "v4" (defaults to "v3" if unknown)
+        - reason: "explicit_override" | "policy" | "env" | "default"
+    """
+    # 1. Explicit override takes precedence
+    if explicit_override and explicit_override.lower() in ("v3", "v4"):
+        return (explicit_override.lower(), "explicit_override")
+
+    # 2. Policy profile setting
+    if policy_snapshot and hasattr(policy_snapshot, 'config'):
+        policy_config = policy_snapshot.config
+        if isinstance(policy_config, dict) and 'solver_engine' in policy_config:
+            engine = policy_config['solver_engine']
+            if engine in ("v3", "v4"):
+                return (engine, "policy")
+
+    # 3. Environment variable
+    env_engine = config.SOLVER_ENGINE
+    if env_engine in ("v3", "v4"):
+        return (env_engine, "env")
+
+    # 4. Default: V3 (ALWAYS - this is non-negotiable for production)
+    return ("v3", "default")
+
+
+def _solve_with_v4_engine(
+    instances: list[dict],
+    seed: int,
+    solver_config: Optional[SolverConfig] = None
+) -> list[dict]:
+    """
+    Solve using V4 experimental FeasibilityPipeline.
+
+    WARNING: This is EXPERIMENTAL and may:
+    - Timeout on complex inputs
+    - Produce PT overflow (regression from 145 FTE / 0 PT)
+    - Have non-deterministic behavior
+
+    Args:
+        instances: Tour instances to solve
+        seed: Random seed
+        solver_config: Solver configuration
+
+    Returns:
+        List of assignment dicts
+
+    Raises:
+        ImportError: If V4 solver not available
+        Exception: If solver fails
+    """
+    try:
+        # Attempt to import V4 solver
+        from src.services.forecast_solver_v4 import solve_forecast_fte_only, ConfigV4
+        from src.domain.models import Tour, Weekday
+
+        # Convert instances to Tour objects
+        V3_DAY_TO_WEEKDAY = {
+            1: Weekday.MONDAY,
+            2: Weekday.TUESDAY,
+            3: Weekday.WEDNESDAY,
+            4: Weekday.THURSDAY,
+            5: Weekday.FRIDAY,
+            6: Weekday.SATURDAY,
+            7: Weekday.SUNDAY,
+        }
+
+        tours = []
+        for inst in instances:
+            day = inst.get('day', 1)
+            weekday = V3_DAY_TO_WEEKDAY.get(day, Weekday.MONDAY)
+            tour = Tour(
+                id=f"T{inst['id']}",
+                day=weekday,
+                start_time=inst['start_ts'],
+                end_time=inst['end_ts'],
+            )
+            tours.append(tour)
+
+        # Run V4 solver
+        time_limit = solver_config.solver_time_limit_seconds if solver_config else 300.0
+        result = solve_forecast_fte_only(tours, time_limit=float(time_limit), seed=seed)
+
+        # Convert V4 result to assignment format
+        assignments = []
+        for driver_assignment in result.assignments:
+            driver_id = driver_assignment.driver_id
+            for block in driver_assignment.blocks:
+                for tour in block.tours:
+                    # Extract tour instance ID from tour.id (format: "T{id}")
+                    tour_instance_id = int(tour.id[1:]) if tour.id.startswith("T") else 0
+                    assignments.append({
+                        "driver_id": driver_id,
+                        "tour_instance_id": tour_instance_id,
+                        "day": list(V3_DAY_TO_WEEKDAY.keys())[
+                            list(V3_DAY_TO_WEEKDAY.values()).index(block.day)
+                        ] if block.day in V3_DAY_TO_WEEKDAY.values() else 1,
+                        "block_id": block.id,
+                        "role": "PRIMARY",
+                        "metadata": {
+                            "solver_engine": "v4",
+                            "block_type": f"{len(block.tours)}er",
+                            "driver_type": driver_assignment.driver_type,
+                        }
+                    })
+
+        return assignments
+
+    except ImportError as e:
+        raise ImportError(f"V4 solver not available: {e}. Use V3 instead.")
+    except Exception as e:
+        raise Exception(f"V4 solver failed: {e}")
 
 
 def _create_dummy_assignments(instances: list[dict], seed: int) -> list[dict]:

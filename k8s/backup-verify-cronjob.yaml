@@ -1,0 +1,151 @@
+# SOLVEREIGN Backup Verification CronJob (Hardening #1)
+# ======================================================
+#
+# Weekly verification that backups can actually be restored.
+# Runs in STAGING only - tests against staging DB.
+#
+# Deploy to staging:
+#   kubectl apply -f k8s/backup-verify-cronjob.yaml -n solvereign-staging
+
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: solvereign-backup-verify
+  namespace: solvereign-staging  # STAGING ONLY
+  labels:
+    app: solvereign
+    component: backup-verify
+spec:
+  # Run weekly on Sunday at 04:00 UTC
+  schedule: "0 4 * * 0"
+
+  # Timezone (requires Kubernetes 1.27+)
+  # timeZone: "Europe/Vienna"
+
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 4
+  failedJobsHistoryLimit: 2
+  startingDeadlineSeconds: 600
+
+  jobTemplate:
+    spec:
+      activeDeadlineSeconds: 7200  # 2 hour timeout (restore can be slow)
+      backoffLimit: 1
+
+      template:
+        metadata:
+          labels:
+            app: solvereign
+            component: backup-verify
+          annotations:
+            sidecar.istio.io/inject: "false"
+        spec:
+          restartPolicy: Never
+
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            fsGroup: 1000
+
+          containers:
+            - name: verify
+              image: ghcr.io/solvereign/backup:latest
+              imagePullPolicy: Always
+
+              command:
+                - python
+                - scripts/verify_backup_restore.py
+                - --bucket
+                - $(BACKUP_S3_BUCKET)
+                - --prefix
+                - $(BACKUP_S3_PREFIX)
+
+              env:
+                # S3 configuration (read from production bucket)
+                - name: BACKUP_S3_BUCKET
+                  value: "solvereign-backups-prod"
+                - name: BACKUP_S3_PREFIX
+                  value: "postgresql/"
+                - name: AWS_DEFAULT_REGION
+                  value: "eu-central-1"
+
+                # AWS credentials (read-only access to prod backups)
+                - name: AWS_ACCESS_KEY_ID
+                  valueFrom:
+                    secretKeyRef:
+                      name: backup-verify-credentials
+                      key: AWS_ACCESS_KEY_ID
+                - name: AWS_SECRET_ACCESS_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: backup-verify-credentials
+                      key: AWS_SECRET_ACCESS_KEY
+
+                # PostgreSQL connection for restore test
+                # Uses staging DB server, creates temp database
+                - name: PGHOST
+                  valueFrom:
+                    secretKeyRef:
+                      name: solvereign-db
+                      key: PGHOST
+                - name: PGUSER
+                  valueFrom:
+                    secretKeyRef:
+                      name: solvereign-db
+                      key: PGUSER
+                - name: PGPASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: solvereign-db
+                      key: PGPASSWORD
+
+              resources:
+                requests:
+                  memory: "512Mi"
+                  cpu: "200m"
+                limits:
+                  memory: "2Gi"
+                  cpu: "1000m"
+
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: false
+                capabilities:
+                  drop:
+                    - ALL
+
+---
+# PrometheusRule for backup verification
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: solvereign-backup-verify-alerts
+  namespace: solvereign-staging
+  labels:
+    app: solvereign
+    component: backup-verify
+spec:
+  groups:
+    - name: solvereign-backup-verify
+      rules:
+        # Alert if backup verification hasn't run in 8 days
+        - alert: SolvereignBackupVerifyStale
+          expr: |
+            (time() - solvereign_backup_verify_last_success_timestamp) > 691200
+          for: 1h
+          labels:
+            severity: warning
+          annotations:
+            summary: "Backup restore verification is stale"
+            description: "No successful backup verification in {{ $value | humanizeDuration }}."
+
+        # Alert if last verification failed
+        - alert: SolvereignBackupVerifyFailed
+          expr: |
+            solvereign_backup_verify_last_success == 0
+          for: 1h
+          labels:
+            severity: critical
+          annotations:
+            summary: "Backup restore verification FAILED"
+            description: "The last backup could not be restored. INVESTIGATE IMMEDIATELY."

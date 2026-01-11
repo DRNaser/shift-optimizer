@@ -1,6 +1,22 @@
 // =============================================================================
 // SOLVEREIGN - Entra ID (Azure AD) MSAL Configuration
 // =============================================================================
+//
+// !!! DEPRECATED (V4.4.0) !!!
+// ===========================
+// This module is DEPRECATED as of V4.4.0 (2026-01-09).
+// Internal RBAC with email/password authentication is now the default.
+//
+// MIGRATION:
+// - Use /platform/login page with email/password
+// - Session cookies (admin_session) replace Bearer tokens
+// - See: frontend_v5/app/platform/login/page.tsx
+//
+// This file is kept for reference only. DO NOT USE for new development.
+//
+// =============================================================================
+// Original documentation (historical):
+//
 // Configuration for Microsoft Authentication Library (MSAL) with Entra ID.
 //
 // Environment variables required:

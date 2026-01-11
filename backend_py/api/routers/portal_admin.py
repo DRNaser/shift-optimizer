@@ -1,9 +1,9 @@
 """
-SOLVEREIGN V4.2 - Portal Admin API
+SOLVEREIGN V4.4 - Portal Admin API
 ====================================
 
 Internal dispatcher endpoints for portal management.
-Requires Entra ID authentication with Dispatcher/Approver/Admin role.
+Uses internal RBAC authentication (replaced Entra ID in V4.4).
 
 ENDPOINTS:
     GET  /api/v1/portal/status          - Get aggregated portal status
@@ -18,20 +18,32 @@ ENDPOINTS:
     GET  /api/v1/portal/dashboard/details   - Driver table with status filters
     POST /api/v1/portal/dashboard/resend    - Resend reminder to filtered group
 
-RBAC:
-    - Dispatcher: view status, issue tokens, resend, dashboard
-    - Approver/Admin: all above + override ack
+RBAC (Internal - V4.4):
+    - Dispatcher: portal.summary.read, portal.details.read, portal.resend.write
+    - Operator Admin: all above + tenant.features.write
+    - Requires valid session cookie (admin_session)
+
+AUTH MIGRATION (V4.4):
+    - Removed Entra ID dependency
+    - Uses internal RBAC with session cookies
+    - Tenant/site isolation via user_bindings table
 """
 
 import logging
-import os
 from typing import Optional, List, Dict, Any
 from enum import Enum
 
 from fastapi import APIRouter, HTTPException, Query, Depends, status
 from pydantic import BaseModel, Field
 
-from ...packs.portal.models import (
+from ..security.internal_rbac import (
+    InternalUserContext,
+    require_session,
+    require_permission,
+    require_any_permission,
+)
+
+from packs.portal.models import (
     TokenScope,
     AckStatus,
     AckReasonCode,
@@ -39,13 +51,13 @@ from ...packs.portal.models import (
     DeliveryChannel,
     PortalStatus,
 )
-from ...packs.portal.token_service import (
+from packs.portal.token_service import (
     PortalTokenService,
     PortalAuthService,
     TokenConfig,
     create_mock_auth_service,
 )
-from ...packs.portal.repository import MockPortalRepository
+from packs.portal.repository import MockPortalRepository
 
 logger = logging.getLogger(__name__)
 
@@ -320,43 +332,14 @@ def get_repository() -> MockPortalRepository:
     return _repository
 
 
-def get_current_user():
-    """
-    Get current user from Entra ID token.
+# =============================================================================
+# RBAC DEPENDENCIES (V4.4 - Internal RBAC)
+# =============================================================================
 
-    TODO: Replace with actual Entra ID auth dependency.
-    """
-    # Mock user for development
-    return {
-        "email": os.environ.get("DEFAULT_USER", "dispatcher@solvereign.dev"),
-        "roles": ["Dispatcher"],
-        "tenant_id": int(os.environ.get("DEFAULT_TENANT_ID", "1")),
-        "site_id": int(os.environ.get("DEFAULT_SITE_ID", "1")),
-    }
-
-
-def require_dispatcher(user: dict = Depends(get_current_user)):
-    """Require Dispatcher role or higher."""
-    roles = set(user.get("roles", []))
-    allowed = {"Dispatcher", "Approver", "Admin", "SuperAdmin"}
-    if not roles & allowed:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Dispatcher role required",
-        )
-    return user
-
-
-def require_approver(user: dict = Depends(get_current_user)):
-    """Require Approver role or higher."""
-    roles = set(user.get("roles", []))
-    allowed = {"Approver", "Admin", "SuperAdmin"}
-    if not roles & allowed:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Approver role required",
-        )
-    return user
+# Permission-based dependencies using internal RBAC
+require_portal_read = require_any_permission("portal.summary.read", "portal.details.read")
+require_portal_resend = require_permission("portal.resend.write")
+require_portal_approve = require_permission("plan.approve")
 
 
 # =============================================================================
@@ -369,15 +352,16 @@ def require_approver(user: dict = Depends(get_current_user)):
 )
 async def get_portal_status(
     snapshot_id: str = Query(..., description="Snapshot UUID"),
-    user: dict = Depends(require_dispatcher),
+    user: InternalUserContext = Depends(require_portal_read),
     repository: MockPortalRepository = Depends(get_repository),
 ):
     """
     Get aggregated portal status for a snapshot.
 
     Shows read/ack counts and completion rates.
+    Requires: portal.summary.read or portal.details.read permission.
     """
-    tenant_id = user["tenant_id"]
+    tenant_id = user.tenant_id
 
     status_data = await repository.get_portal_status(tenant_id, snapshot_id)
 
@@ -402,7 +386,7 @@ async def get_portal_status(
 async def get_driver_list(
     snapshot_id: str = Query(..., description="Snapshot UUID"),
     filter_status: Optional[str] = Query(None, description="Filter: UNREAD, READ, ACCEPTED, DECLINED, PENDING"),
-    user: dict = Depends(require_dispatcher),
+    user: InternalUserContext = Depends(require_portal_read),
     repository: MockPortalRepository = Depends(get_repository),
 ):
     """
@@ -410,7 +394,7 @@ async def get_driver_list(
 
     Useful for identifying who hasn't read or acknowledged.
     """
-    tenant_id = user["tenant_id"]
+    tenant_id = user.tenant_id
 
     # Get all tokens for this snapshot
     tokens = await repository.get_tokens_for_snapshot(tenant_id, snapshot_id) if hasattr(repository, 'get_tokens_for_snapshot') else []
@@ -464,7 +448,7 @@ async def get_driver_list(
 )
 async def issue_tokens(
     request: IssueTokensRequest,
-    user: dict = Depends(require_dispatcher),
+    user: InternalUserContext = Depends(require_portal_read),
     token_service: PortalTokenService = Depends(get_token_service),
     repository: MockPortalRepository = Depends(get_repository),
 ):
@@ -473,8 +457,8 @@ async def issue_tokens(
 
     Returns portal URLs to be sent via notification.
     """
-    tenant_id = user["tenant_id"]
-    site_id = user["site_id"]
+    tenant_id = user.tenant_id
+    site_id = user.site_id
 
     # Validate scope
     try:
@@ -525,7 +509,7 @@ async def issue_tokens(
 
     logger.info(
         f"Tokens issued: snapshot={request.snapshot_id[:8]}..., "
-        f"count={len(tokens_issued)}, by={user['email']}"
+        f"count={len(tokens_issued)}, by={user.email}"
     )
 
     return IssueTokensResponse(
@@ -542,7 +526,7 @@ async def issue_tokens(
 )
 async def resend_notifications(
     request: ResendRequest,
-    user: dict = Depends(require_dispatcher),
+    user: InternalUserContext = Depends(require_portal_resend),
     repository: MockPortalRepository = Depends(get_repository),
 ):
     """
@@ -550,8 +534,9 @@ async def resend_notifications(
 
     Targets: UNREAD, UNACKED, or DECLINED drivers.
     Creates a notification job for the worker.
+    Requires: portal.resend.write permission.
     """
-    tenant_id = user["tenant_id"]
+    tenant_id = user.tenant_id
 
     # Get target drivers
     status_data = await repository.get_portal_status(tenant_id, request.snapshot_id)
@@ -575,7 +560,7 @@ async def resend_notifications(
     logger.info(
         f"Resend requested: snapshot={request.snapshot_id[:8]}..., "
         f"target={request.target_group}, count={len(target_drivers)}, "
-        f"channel={request.delivery_channel}, by={user['email']}"
+        f"channel={request.delivery_channel}, by={user.email}"
     )
 
     return ResendResponse(
@@ -592,7 +577,7 @@ async def resend_notifications(
 )
 async def override_ack(
     request: OverrideAckRequest,
-    user: dict = Depends(require_approver),
+    user: InternalUserContext = Depends(require_portal_approve),
     repository: MockPortalRepository = Depends(get_repository),
 ):
     """
@@ -601,7 +586,7 @@ async def override_ack(
     APPROVER ONLY. Requires reason (min 10 chars).
     Used for corrections when driver made a mistake.
     """
-    tenant_id = user["tenant_id"]
+    tenant_id = user.tenant_id
 
     # Validate status
     try:
@@ -626,26 +611,26 @@ async def override_ack(
             snapshot_id=request.snapshot_id,
             driver_id=request.driver_id,
             new_status=new_status,
-            override_by=user["email"],
+            override_by=user.email,
             override_reason=request.override_reason,
         )
     else:
         # Mock doesn't support override, create new
         _ack = await repository.record_ack(
             tenant_id=tenant_id,
-            site_id=user["site_id"],
+            site_id=user.site_id,
             snapshot_id=request.snapshot_id,
             driver_id=request.driver_id,
             status=new_status,
             source=AckSource.DISPATCHER_OVERRIDE,
-            override_by=user["email"],
+            override_by=user.email,
             override_reason=request.override_reason,
         )
 
     logger.info(
         f"Ack overridden: snapshot={request.snapshot_id[:8]}..., "
         f"driver={request.driver_id}, {previous_status} -> {new_status.value}, "
-        f"by={user['email']}"
+        f"by={user.email}"
     )
 
     return OverrideAckResponse(
@@ -654,7 +639,7 @@ async def override_ack(
         driver_id=request.driver_id,
         previous_status=previous_status,
         new_status=new_status.value,
-        override_by=user["email"],
+        override_by=user.email,
     )
 
 
@@ -664,7 +649,7 @@ async def override_ack(
 )
 async def revoke_tokens(
     request: RevokeTokensRequest,
-    user: dict = Depends(require_dispatcher),
+    user: InternalUserContext = Depends(require_portal_read),
     repository: MockPortalRepository = Depends(get_repository),
 ):
     """
@@ -672,7 +657,7 @@ async def revoke_tokens(
 
     Can revoke all tokens or specific drivers.
     """
-    tenant_id = user["tenant_id"]
+    tenant_id = user.tenant_id
 
     # Get tokens for snapshot
     if hasattr(repository, 'get_tokens_for_snapshot'):
@@ -694,7 +679,7 @@ async def revoke_tokens(
 
     logger.info(
         f"Tokens revoked: snapshot={request.snapshot_id[:8]}..., "
-        f"count={revoked_count}, by={user['email']}"
+        f"count={revoked_count}, by={user.email}"
     )
 
     return RevokeTokensResponse(
@@ -714,7 +699,7 @@ async def revoke_tokens(
 )
 async def get_dashboard_summary(
     snapshot_id: str = Query(..., description="Snapshot UUID"),
-    user: dict = Depends(require_dispatcher),
+    user: InternalUserContext = Depends(require_portal_read),
     repository: MockPortalRepository = Depends(get_repository),
 ):
     """
@@ -723,7 +708,7 @@ async def get_dashboard_summary(
     Uses snapshot_notify_summary view for aggregated counts.
     Returns pre-built KPI cards for frontend rendering.
     """
-    tenant_id = user["tenant_id"]
+    tenant_id = user.tenant_id
 
     # Get aggregated status (from view or calculated)
     status_data = await repository.get_portal_status(tenant_id, snapshot_id)
@@ -808,7 +793,7 @@ async def get_dashboard_details(
     filter: DashboardStatusFilter = Query(DashboardStatusFilter.ALL, description="Status filter"),
     page: int = Query(1, ge=1, description="Page number"),
     page_size: int = Query(50, ge=1, le=200, description="Items per page"),
-    user: dict = Depends(require_dispatcher),
+    user: InternalUserContext = Depends(require_portal_read),
     repository: MockPortalRepository = Depends(get_repository),
 ):
     """
@@ -817,7 +802,7 @@ async def get_dashboard_details(
     Uses notify_integration_status view for per-driver status.
     Supports filtering by overall_status.
     """
-    tenant_id = user["tenant_id"]
+    tenant_id = user.tenant_id
 
     # Get all tokens for this snapshot
     tokens = await repository.get_tokens_for_snapshot(tenant_id, snapshot_id) \
@@ -930,7 +915,7 @@ def check_resend_rate_limit(user_email: str) -> bool:
 )
 async def dashboard_resend(
     request: DashboardResendRequest,
-    user: dict = Depends(require_dispatcher),
+    user: InternalUserContext = Depends(require_portal_resend),
     repository: MockPortalRepository = Depends(get_repository),
 ):
     """
@@ -938,6 +923,7 @@ async def dashboard_resend(
 
     Uses REMINDER_24H template by default.
     Creates notification job for notify worker.
+    Requires: portal.resend.write permission.
 
     Security:
         - Rate limited: 10 resends per hour per user
@@ -945,8 +931,8 @@ async def dashboard_resend(
         - Batch hard limit: max 500 drivers per request
         - Guardrail: only latest snapshot by default
     """
-    tenant_id = user["tenant_id"]
-    user_email = user["email"]
+    tenant_id = user.tenant_id
+    user_email = user.email
 
     # Rate limit check
     if not check_resend_rate_limit(user_email):

@@ -5662,3 +5662,229 @@ def solve_capacity_phase_with_fixes(
     ]
     
     return status_str, selected_blocks
+
+
+# =============================================================================
+# FTE-ONLY SOLVER (USES FEASIBILITY PIPELINE - NO PT DRIVERS)
+# =============================================================================
+
+def solve_forecast_fte_only(
+    tours: list[Tour],
+    time_limit: float = 300.0,
+    seed: int = 42,
+) -> SolveResultV4:
+    """
+    Solve forecast with FTE-ONLY mode.
+
+    Uses feasibility_pipeline.py for Phase 2 assignment:
+    - NO PT drivers (overflow) - drivers_pt is ALWAYS 0
+    - CP-SAT with 42-53h constraints
+    - N-escalation to find minimum drivers
+
+    This is the solver that produces 145 FTE / 0 PT for the Wien pilot.
+    """
+    from time import perf_counter
+    from src.services.feasibility_pipeline import (
+        run_feasibility_pipeline,
+        solve_with_n_escalation,
+        solve_cpsat_fixed_n,
+    )
+
+    logger.info("=" * 70)
+    logger.info("SOLVER_ARCH=fte-only")
+    logger.info("FORECAST SOLVER - FTE-ONLY (Feasibility Pipeline)")
+    logger.info("=" * 70)
+    logger.info(f"Tours: {len(tours)}")
+
+    total_hours = sum(t.duration_hours for t in tours)
+    logger.info(f"Total hours: {total_hours:.1f}h")
+    logger.info(f"Expected drivers (42-53h): {int(total_hours/53)}-{int(total_hours/42)}")
+
+    # Give Phase 1 more time - it needs to solve a large block selection problem
+    config = ConfigV4(
+        seed=seed,
+        time_limit_phase1=min(180.0, time_limit * 0.6),  # 60% of budget for Phase 1
+        max_blocks=15000,  # Limit blocks to speed up Phase 1
+    )
+
+    # Phase A: Build blocks
+    t_block = perf_counter()
+    safe_print("PHASE A: Block building...", flush=True)
+    block_gen_overrides = config_to_block_gen_overrides(config)
+    blocks, block_stats = build_weekly_blocks_smart(tours, overrides=block_gen_overrides)
+    block_time = perf_counter() - t_block
+    safe_print(f"Generated {len(blocks)} blocks in {block_time:.1f}s", flush=True)
+
+    block_scores = block_stats.get("block_scores", {})
+    block_props = block_stats.get("block_props", {})
+    block_index = build_block_index(blocks)
+
+    # Phase 1: Block selection
+    t_capacity = perf_counter()
+    safe_print("PHASE 1: Block selection (CP-SAT)...", flush=True)
+    selected_blocks, phase1_stats = solve_capacity_phase(
+        blocks, tours, block_index, config,
+        block_scores=block_scores, block_props=block_props
+    )
+    capacity_time = perf_counter() - t_capacity
+
+    if phase1_stats["status"] != "OK":
+        return SolveResultV4(
+            status="FAILED",
+            assignments=[],
+            kpi={"error": "Phase 1 block selection failed"},
+            solve_times={"block_building": block_time},
+            block_stats=block_stats
+        )
+
+    safe_print(f"Selected {len(selected_blocks)} blocks in {capacity_time:.1f}s", flush=True)
+
+    # Phase 2: FEASIBILITY PIPELINE (FTE-only, NO PT)
+    safe_print("=" * 60, flush=True)
+    safe_print("PHASE 2: FTE-ONLY FEASIBILITY PIPELINE", flush=True)
+    safe_print("=" * 60, flush=True)
+
+    def log_fn(msg):
+        safe_print(msg, flush=True)
+        logger.info(msg)
+
+    # K_target is the maximum drivers we'd accept for 42h minimum
+    # total_hours / 42h = max drivers if everyone works minimum
+    k_target = int(total_hours / 42) + 5  # +5 buffer for rounding
+
+    # Run feasibility pipeline (Step 0: peak + Step 1: greedy)
+    pipeline_result = run_feasibility_pipeline(selected_blocks, k_target, log_fn)
+
+    peak = pipeline_result.get("peak_concurrency", 0)
+    n_greedy = pipeline_result.get("n_greedy", 0)
+    greedy_result = pipeline_result.get("greedy_result", {})
+    greedy_assignments = greedy_result.get("assignments", {})
+
+    if not pipeline_result.get("feasible", False):
+        return SolveResultV4(
+            status="INFEASIBLE",
+            assignments=[],
+            kpi={
+                "error": f"Peak concurrency ({peak}) > K_target ({k_target})",
+                "hint": "Phase-1 block selection creates too much overlap",
+                "peak_concurrency": peak,
+            },
+            solve_times={
+                "block_building": block_time,
+                "phase1_capacity": capacity_time,
+            },
+            block_stats=block_stats
+        )
+
+    # Step 2+3: N-escalation with hour continuation
+    # This tries N from peak to k_target, running CP-SAT with 42h-53h constraints
+    t_assign = perf_counter()
+
+    remaining_time = time_limit - (perf_counter() - t_block)
+    if remaining_time < 30:
+        remaining_time = 30  # Minimum budget
+
+    log_fn(f"Running N-escalation (peak={peak}, k_target={k_target}, budget={remaining_time:.0f}s)...")
+
+    escalation_result = solve_with_n_escalation(
+        blocks=selected_blocks,
+        peak_concurrency=peak,
+        k_target=k_target,
+        greedy_assignments=greedy_assignments,
+        log_fn=log_fn,
+    )
+
+    assign_time = perf_counter() - t_assign
+
+    # Extract final assignment from escalation or fall back to greedy
+    if escalation_result.get("success"):
+        n_drivers = escalation_result["n_drivers"]
+        best_result = escalation_result.get("best_result", {})
+        assignments_map = best_result.get("assignments", greedy_assignments)
+        driver_hours = best_result.get("driver_hours", [])
+        log_fn(f"N-escalation SUCCESS: {n_drivers} FTE drivers at 42h min")
+    else:
+        # Fallback to greedy if escalation fails
+        log_fn("N-escalation failed, using greedy result")
+        n_drivers = n_greedy
+        assignments_map = greedy_assignments
+        driver_hours = greedy_result.get("driver_hours", [])
+
+    # Build DriverAssignment objects
+    block_by_id = {b.id: b for b in selected_blocks}
+    driver_blocks = {}  # driver_index -> list of Block
+
+    for block_id, driver_idx in assignments_map.items():
+        if driver_idx not in driver_blocks:
+            driver_blocks[driver_idx] = []
+        if block_id in block_by_id:
+            driver_blocks[driver_idx].append(block_by_id[block_id])
+
+    assignments = []
+    for driver_idx in sorted(driver_blocks.keys()):
+        blocks_list = driver_blocks[driver_idx]
+        total_hours_driver = sum(b.total_work_hours for b in blocks_list)
+        days_worked = len(set(b.day.value for b in blocks_list))
+
+        assignments.append(DriverAssignment(
+            driver_id=f"FTE{driver_idx+1:03d}",
+            driver_type="FTE",
+            blocks=sorted(blocks_list, key=lambda b: (b.day.value, b.first_start)),
+            total_hours=total_hours_driver,
+            days_worked=days_worked,
+            analysis=_analyze_driver_workload(blocks_list)
+        ))
+
+    # Stats
+    fte_hours = [a.total_hours for a in assignments]
+    under_42 = sum(1 for h in fte_hours if h < 42.0)
+    over_53 = sum(1 for h in fte_hours if h > 53.0)
+
+    if under_42 > 0 or over_53 > 0:
+        status = "SOFT_FALLBACK_HOURS"
+        logger.warning(f"Hours violations: {under_42} under 42h, {over_53} over 53h")
+    else:
+        status = "HARD_OK"
+
+    kpi = {
+        "status": status,
+        "total_hours": round(total_hours, 2),
+        "drivers_fte": len(assignments),
+        "drivers_pt": 0,  # *** ALWAYS 0 FOR FTE-ONLY ***
+        "peak_concurrency": peak,
+        "n_greedy": n_greedy,
+        "n_escalation_result": n_drivers,
+        "fte_hours_min": round(min(fte_hours), 2) if fte_hours else 0,
+        "fte_hours_max": round(max(fte_hours), 2) if fte_hours else 0,
+        "fte_hours_avg": round(sum(fte_hours) / len(fte_hours), 2) if fte_hours else 0,
+        "under_42h": under_42,
+        "over_53h": over_53,
+        "blocks_selected": phase1_stats.get("selected_blocks", len(selected_blocks)),
+        "blocks_1er": phase1_stats.get("blocks_1er", 0),
+        "blocks_2er": phase1_stats.get("blocks_2er", 0),
+        "blocks_3er": phase1_stats.get("blocks_3er", 0),
+    }
+
+    solve_times = {
+        "block_building": round(block_time, 2),
+        "phase1_capacity": round(capacity_time, 2),
+        "phase2_pipeline": round(assign_time, 2),
+        "total": round(block_time + capacity_time + assign_time, 2),
+    }
+
+    logger.info("=" * 60)
+    logger.info("FTE-ONLY SOLVER COMPLETE")
+    logger.info("=" * 60)
+    logger.info(f"Status: {status}")
+    logger.info(f"Peak concurrency: {peak}")
+    logger.info(f"Drivers: {len(assignments)} FTE, 0 PT")
+    logger.info(f"Hours: {kpi['fte_hours_min']:.1f}h - {kpi['fte_hours_max']:.1f}h")
+    logger.info(f"Total time: {solve_times['total']:.1f}s")
+
+    return SolveResultV4(
+        status=status,
+        assignments=assignments,
+        kpi=kpi,
+        solve_times=solve_times,
+        block_stats=block_stats
+    )

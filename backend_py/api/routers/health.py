@@ -26,7 +26,7 @@ class HealthResponse(BaseModel):
 class ReadinessResponse(BaseModel):
     """Readiness check response with component status."""
     status: str
-    checks: dict[str, str]
+    checks: dict[str, str | dict[str, str]]
     timestamp: str
 
 
@@ -90,14 +90,21 @@ async def readiness_check(request: Request):
     # Roster pack
     try:
         import importlib
-        importlib.import_module("backend_py.packs.roster.api")
+        # Try container path first, then local path
+        try:
+            importlib.import_module("packs.roster.api")
+        except ImportError:
+            importlib.import_module("backend_py.packs.roster.api")
         packs_status["roster"] = "available"
     except ImportError as e:
         packs_status["roster"] = f"unavailable: {str(e)}"
 
     # Routing pack
     try:
-        importlib.import_module("backend_py.packs.routing.api.routers.scenarios")
+        try:
+            importlib.import_module("packs.routing.api.routers.scenarios")
+        except ImportError:
+            importlib.import_module("backend_py.packs.routing.api.routers.scenarios")
         packs_status["routing"] = "available"
     except ImportError as e:
         packs_status["routing"] = f"unavailable: {str(e)}"

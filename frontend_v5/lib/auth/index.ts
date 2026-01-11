@@ -1,6 +1,22 @@
 // =============================================================================
 // SOLVEREIGN - Auth Module Exports
 // =============================================================================
+//
+// !!! DEPRECATED (V4.4.0) !!!
+// ===========================
+// This module and all Entra ID/MSAL exports are DEPRECATED as of V4.4.0 (2026-01-09).
+// Internal RBAC with email/password authentication is now the default.
+//
+// MIGRATION:
+// - Admin auth: /platform/login page with email/password
+// - Driver portal: Magic links with session cookies
+// - API auth: BFF routes forward session cookies automatically
+//
+// These exports are kept for backwards compatibility only.
+// DO NOT USE for new development.
+//
+// =============================================================================
+// Original documentation (historical):
 // Centralized exports for authentication functionality.
 // =============================================================================
 

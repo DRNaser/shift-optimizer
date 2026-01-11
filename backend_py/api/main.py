@@ -71,6 +71,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     Application lifespan manager.
 
     Handles startup and shutdown events:
+    - Sentry error tracking initialization
     - Database connection pool initialization
     - Metrics setup
     - Cleanup on shutdown
@@ -83,6 +84,21 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             "environment": settings.environment,
         }
     )
+
+    # Startup: Initialize Sentry error tracking (P0.1)
+    try:
+        from .observability import init_sentry
+        sentry_enabled = init_sentry(
+            dsn=settings.sentry_dsn,
+            environment=settings.environment,
+            release=f"solvereign@{settings.app_version}",
+            traces_sample_rate=settings.sentry_traces_sample_rate,
+            profiles_sample_rate=settings.sentry_profiles_sample_rate,
+        )
+        if sentry_enabled:
+            logger.info("sentry_error_tracking_enabled")
+    except Exception as e:
+        logger.warning(f"sentry_init_failed: {e}")
 
     # Startup: Initialize database pool
     db_manager = DatabaseManager()
@@ -97,6 +113,27 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     app.state.policy_service = policy_service
 
     logger.info("policy_service_initialized")
+
+    # Startup: Initialize Stripe billing service (P1)
+    if settings.is_stripe_configured:
+        try:
+            from .billing import BillingService
+            from .billing.webhooks import StripeWebhookHandler
+
+            app.state.billing_service = BillingService(
+                api_key=settings.stripe_api_key,
+                webhook_secret=settings.stripe_webhook_secret,
+                default_currency=settings.stripe_default_currency,
+            )
+            app.state.webhook_handler = StripeWebhookHandler(db_manager.pool)
+            app.state.db_pool = db_manager.pool  # For billing queries
+            logger.info("stripe_billing_initialized")
+        except ImportError as e:
+            logger.warning(f"stripe_not_available: {e}")
+        except Exception as e:
+            logger.warning(f"stripe_init_failed: {e}")
+    else:
+        logger.info("stripe_billing_disabled", extra={"reason": "not_configured"})
 
     yield
 
@@ -290,39 +327,48 @@ def configure_middleware(app: FastAPI) -> None:
         request.state.request_id = request_id
         request.state.start_time = start_time
 
-        # Process request
-        response: Response = await call_next(request)
+        try:
+            # Process request
+            response: Response = await call_next(request)
 
-        # Calculate duration
-        duration_seconds = time.perf_counter() - start_time
-        duration_ms = duration_seconds * 1000
+            # Calculate duration
+            duration_seconds = time.perf_counter() - start_time
+            duration_ms = duration_seconds * 1000
 
-        # Add response headers
-        response.headers["X-Request-ID"] = request_id
-        response.headers["X-Response-Time-Ms"] = f"{duration_ms:.2f}"
+            # Add response headers
+            response.headers["X-Request-ID"] = request_id
+            response.headers["X-Response-Time-Ms"] = f"{duration_ms:.2f}"
 
-        # Record Prometheus metrics (skip /metrics endpoint itself)
-        if request.url.path != "/metrics":
-            record_http_request(
-                method=request.method,
-                endpoint=request.url.path,
-                status_code=response.status_code,
-                duration_seconds=duration_seconds
+            # Record Prometheus metrics (skip /metrics endpoint itself)
+            if request.url.path != "/metrics":
+                record_http_request(
+                    method=request.method,
+                    endpoint=request.url.path,
+                    status_code=response.status_code,
+                    duration_seconds=duration_seconds
+                )
+
+            # Log request completion
+            logger.info(
+                "request_completed",
+                extra={
+                    "request_id": request_id,
+                    "method": request.method,
+                    "path": request.url.path,
+                    "status_code": response.status_code,
+                    "duration_ms": round(duration_ms, 2),
+                }
             )
 
-        # Log request completion
-        logger.info(
-            "request_completed",
-            extra={
-                "request_id": request_id,
-                "method": request.method,
-                "path": request.url.path,
-                "status_code": response.status_code,
-                "duration_ms": round(duration_ms, 2),
-            }
-        )
-
-        return response
+            return response
+        finally:
+            # CRITICAL: Close RBAC connection to prevent pool exhaustion
+            rbac_conn = getattr(request.state, "rbac_conn", None)
+            if rbac_conn:
+                try:
+                    rbac_conn.close()
+                except Exception as e:
+                    logger.warning(f"Failed to close RBAC connection: {e}")
 
 
 # =============================================================================
@@ -337,7 +383,7 @@ def register_routers(app: FastAPI) -> None:
         health, forecasts, plans, tenants,
         simulations, runs, repair, config,
         core_tenant, platform, platform_orgs, service_status,
-        policies, dispatcher_platform, masterdata
+        policies, dispatcher_platform, masterdata, auth
     )
 
     # Health check (no auth required)
@@ -346,6 +392,13 @@ def register_routers(app: FastAPI) -> None:
         prefix="/health",
         tags=["Health"],
     )
+
+    # Internal Authentication (no auth required for login)
+    app.include_router(
+        auth.router,
+        tags=["Authentication"],
+    )
+    logger.info("auth_router_registered", extra={"paths": ["/api/auth/login", "/api/auth/logout", "/api/auth/me"]})
 
     # API v1 routes
     api_prefix = "/api/v1"
@@ -477,6 +530,92 @@ def register_routers(app: FastAPI) -> None:
         logger.warning("portal_admin_not_available", extra={"error": str(e)})
 
     # =========================================================================
+    # PLATFORM ADMINISTRATION (V4.5 SaaS Admin Core)
+    # =========================================================================
+    # Platform admin router for tenant/user/site management
+    # Accessible at /api/platform/*
+    try:
+        from .routers import platform_admin as platform_admin_router
+        app.include_router(
+            platform_admin_router.router,
+            prefix="",  # Router already has /api/platform prefix
+            tags=["Platform Administration"],
+        )
+        logger.info("platform_admin_router_registered", extra={"paths": ["/api/platform/tenants", "/api/platform/users"]})
+    except ImportError as e:
+        logger.warning("platform_admin_router_not_available", extra={"error": str(e)})
+
+    # =========================================================================
+    # CONSENT (P2.3 GDPR Consent Management)
+    # =========================================================================
+    # Consent API for audit trail (localStorage is frontend SoT)
+    # Accessible at /api/consent
+    try:
+        from .routers import consent
+        app.include_router(
+            consent.router,
+            tags=["Consent"],
+        )
+        logger.info("consent_router_registered", extra={"paths": ["/api/consent"]})
+    except ImportError as e:
+        logger.warning("consent_router_not_available", extra={"error": str(e)})
+
+    # =========================================================================
+    # BILLING (P1 Stripe Integration)
+    # =========================================================================
+    # Billing router for subscription management, webhooks, invoices
+    # Accessible at /api/billing/*
+    try:
+        from .billing.router import router as billing_router
+        app.include_router(
+            billing_router,
+            tags=["Billing"],
+        )
+        logger.info("billing_router_registered", extra={"paths": ["/api/billing/webhook", "/api/billing/status"]})
+    except ImportError as e:
+        logger.warning("billing_router_not_available", extra={"error": str(e)})
+
+    # =========================================================================
+    # TENANT DASHBOARD + EVIDENCE + AUDIT (V4.7)
+    # =========================================================================
+
+    # Tenant Dashboard (session auth + tenant context)
+    try:
+        from .routers import tenant_dashboard
+        app.include_router(
+            tenant_dashboard.router,
+            prefix="",  # Router already has /api/v1/tenant prefix
+            tags=["Tenant Dashboard"],
+        )
+        logger.info("tenant_dashboard_router_registered", extra={"paths": ["/api/v1/tenant/dashboard"]})
+    except ImportError as e:
+        logger.warning("tenant_dashboard_not_available", extra={"error": str(e)})
+
+    # Evidence Viewer (session auth + tenant context)
+    try:
+        from .routers import evidence_viewer
+        app.include_router(
+            evidence_viewer.router,
+            prefix="",  # Router already has /api/v1/evidence prefix
+            tags=["Evidence Viewer"],
+        )
+        logger.info("evidence_viewer_router_registered", extra={"paths": ["/api/v1/evidence/*"]})
+    except ImportError as e:
+        logger.warning("evidence_viewer_not_available", extra={"error": str(e)})
+
+    # Audit Log Viewer (session auth + tenant context)
+    try:
+        from .routers import audit_viewer
+        app.include_router(
+            audit_viewer.router,
+            prefix="",  # Router already has /api/v1/audit prefix
+            tags=["Audit Viewer"],
+        )
+        logger.info("audit_viewer_router_registered", extra={"paths": ["/api/v1/audit/*"]})
+    except ImportError as e:
+        logger.warning("audit_viewer_not_available", extra={"error": str(e)})
+
+    # =========================================================================
     # NOTIFICATION ROUTERS (V4.1 Notification Pipeline)
     # =========================================================================
 
@@ -499,7 +638,7 @@ def register_routers(app: FastAPI) -> None:
 
     # Roster Pack (Phase 1: wrapper around kernel routers)
     try:
-        from ..packs.roster.api import router as roster_router
+        from packs.roster.api import router as roster_router
         app.include_router(
             roster_router,
             prefix=f"{api_prefix}/roster",
@@ -509,9 +648,21 @@ def register_routers(app: FastAPI) -> None:
     except ImportError as e:
         logger.warning("roster_pack_not_available", extra={"error": str(e)})
 
+    # Roster Lifecycle API (V4.7 - Internal RBAC auth)
+    try:
+        from packs.roster.api.routers.lifecycle import router as roster_lifecycle_router
+        app.include_router(
+            roster_lifecycle_router,
+            prefix="",  # Router already has /api/v1/roster prefix
+            tags=["Roster Lifecycle"],
+        )
+        logger.info("roster_lifecycle_router_registered", extra={"paths": ["/api/v1/roster/plans", "/api/v1/roster/snapshots"]})
+    except ImportError as e:
+        logger.warning("roster_lifecycle_not_available", extra={"error": str(e)})
+
     # Routing Pack (already exists in packs/)
     try:
-        from ..packs.routing.api.routers import scenarios, routes
+        from packs.routing.api.routers import scenarios, routes
         app.include_router(
             scenarios.router,
             prefix=f"{api_prefix}/routing/scenarios",

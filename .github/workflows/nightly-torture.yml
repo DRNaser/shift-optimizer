@@ -423,22 +423,22 @@ jobs:
 
       - name: 🥇 Run Golden Dataset Validation (All)
         run: |
-          python -m backend_py.skills.golden_datasets validate \
-            --all \
-            --output golden_regression.json \
-            || echo '{"passed": false, "error": "Golden dataset manager not yet implemented"}' > golden_regression.json
+          python -m backend_py.skills.golden_datasets regression \
+            --json-output golden_regression.json \
+            || echo '{"all_passed": false, "total": 0, "failed": 0, "errors": 1, "error": "Golden dataset manager not yet implemented"}' > golden_regression.json
         env:
           DATABASE_URL: postgresql://test:test@localhost:5432/solvereign_test
 
       - name: Verify all datasets pass
         run: |
-          PASSED=$(jq '.passed // false' golden_regression.json)
-          TOTAL=$(jq '.total_datasets // 0' golden_regression.json)
-          FAILED=$(jq '.failed_datasets // 0' golden_regression.json)
-          echo "Datasets: $TOTAL total, $FAILED failed"
+          PASSED=$(jq '.all_passed // false' golden_regression.json)
+          TOTAL=$(jq '.total // 0' golden_regression.json)
+          FAILED=$(jq '.failed // 0' golden_regression.json)
+          ERRORS=$(jq '.errors // 0' golden_regression.json)
+          echo "Datasets: $TOTAL total, $FAILED failed, $ERRORS errors"
           if [ "$PASSED" != "true" ]; then
             echo "❌ GOLDEN REGRESSION FAILED!"
-            jq '.failures // []' golden_regression.json
+            jq '.datasets[] | select(.passed != true)' golden_regression.json
             exit 1
           fi
           echo "✅ All golden datasets pass"

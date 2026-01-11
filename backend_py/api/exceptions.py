@@ -210,6 +210,132 @@ class TransactionError(DatabaseError):
 
 
 # =============================================================================
+# Platform Admin Errors
+# =============================================================================
+
+class PlatformAdminError(SolvereIgnError):
+    """Base platform admin error with structured error contract."""
+
+    def __init__(
+        self,
+        code: str,
+        message: str,
+        status_code: int = 400,
+        field: str | None = None,
+        details: dict[str, Any] | None = None,
+    ):
+        self.code = code
+        self.status_code = status_code
+        self.field = field
+        super().__init__(message, details)
+
+    def to_response(self) -> dict[str, Any]:
+        """Convert to API error response format."""
+        error = {
+            "code": self.code,
+            "message": self.message,
+        }
+        if self.field:
+            error["field"] = self.field
+        if self.details:
+            error["details"] = self.details
+        return {"error": error}
+
+
+class TenantNameInvalidError(PlatformAdminError):
+    """Raised when tenant name fails validation."""
+
+    def __init__(self, reason: str):
+        super().__init__(
+            code="TENANT_NAME_INVALID",
+            message=f"Invalid tenant name: {reason}",
+            status_code=400,
+            field="name",
+        )
+
+
+class TenantAlreadyExistsError(PlatformAdminError):
+    """Raised when tenant name already exists."""
+
+    def __init__(self, name: str):
+        super().__init__(
+            code="TENANT_ALREADY_EXISTS",
+            message=f"A tenant with the name '{name}' already exists",
+            status_code=409,
+            field="name",
+        )
+
+
+class SiteAlreadyExistsError(PlatformAdminError):
+    """Raised when site name/code already exists in tenant."""
+
+    def __init__(self, field: str, value: str, tenant_id: int):
+        super().__init__(
+            code="SITE_ALREADY_EXISTS",
+            message=f"A site with this {field} already exists in this tenant",
+            status_code=409,
+            field=field,
+            details={"tenant_id": tenant_id, field: value},
+        )
+
+
+class UserAlreadyExistsError(PlatformAdminError):
+    """Raised when user email already exists."""
+
+    def __init__(self, email: str):
+        super().__init__(
+            code="USER_ALREADY_EXISTS",
+            message=f"A user with email '{email}' already exists",
+            status_code=409,
+            field="email",
+        )
+
+
+class InsufficientPermissionsError(PlatformAdminError):
+    """Raised when user lacks required permissions."""
+
+    def __init__(self, required_permission: str | None = None):
+        message = "You do not have permission to perform this action"
+        if required_permission:
+            message = f"Missing required permission: {required_permission}"
+        super().__init__(
+            code="INSUFFICIENT_PERMISSIONS",
+            message=message,
+            status_code=403,
+        )
+
+
+class ResourceNotFoundError(PlatformAdminError):
+    """Raised when requested resource doesn't exist."""
+
+    def __init__(self, resource_type: str, resource_id: Any):
+        super().__init__(
+            code=f"{resource_type.upper()}_NOT_FOUND",
+            message=f"{resource_type.title()} not found",
+            status_code=404,
+            details={"id": resource_id},
+        )
+
+
+class InternalServerError(PlatformAdminError):
+    """Raised for unexpected server errors."""
+
+    def __init__(self, correlation_id: str | None = None):
+        details = {}
+        if correlation_id:
+            details["correlation_id"] = correlation_id
+            message = f"An unexpected error occurred. Reference: {correlation_id}"
+        else:
+            message = "An unexpected error occurred. Please try again."
+        super().__init__(
+            code="INTERNAL_ERROR",
+            message=message,
+            status_code=500,
+            details=details if details else None,
+        )
+
+
+# =============================================================================
 # Service Status Errors (Escalation)
 # =============================================================================
 
