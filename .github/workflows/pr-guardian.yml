@@ -749,7 +749,7 @@ jobs:
           python-version: '3.11'
 
       - name: Install dependencies
-        run: pip install "psycopg[binary]" python-dotenv
+        run: pip install -r backend_py/requirements.txt
 
       - name: Run roster gate
         id: roster_gate
@@ -805,7 +805,7 @@ jobs:
           python-version: '3.11'
 
       - name: Install dependencies
-        run: pip install "psycopg[binary]" python-dotenv jsonschema
+        run: pip install -r backend_py/requirements.txt
 
       - name: Create artifacts directory
         run: mkdir -p artifacts/drills
@@ -1127,7 +1127,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install ortools
+          pip install -r backend_py/requirements.txt
 
       - name: Run V3 solver regression test
         id: regression
