@@ -1,5 +1,5 @@
 -- ============================================================================
--- Migration 002: Add week_anchor_date and week_key to forecast_versions
+-- Migration 002a: Add week_anchor_date and week_key to forecast_versions
 -- ============================================================================
 -- Purpose: Enable deterministic datetime computation for tours
 -- Created: 2026-01-05
@@ -23,11 +23,11 @@ CREATE INDEX IF NOT EXISTS idx_forecast_versions_week_key ON forecast_versions(w
 
 -- Record migration
 INSERT INTO schema_migrations (version, description, applied_at)
-VALUES ('002', 'Add week_anchor_date and week_key to forecast_versions', NOW())
+VALUES ('002a', 'Add week_anchor_date and week_key to forecast_versions', NOW())
 ON CONFLICT (version) DO NOTHING;
 
 -- Success message
 DO $$
 BEGIN
-    RAISE NOTICE '✅ Migration 002 Applied: week_anchor_date and week_key added to forecast_versions';
+    RAISE NOTICE '✅ Migration 002a Applied: week_anchor_date and week_key added to forecast_versions';
 END $$;
