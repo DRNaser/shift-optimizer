@@ -8,6 +8,7 @@ Core metrics required for production monitoring:
 - audit_failures_total (Counter)
 - http_requests_total (Counter)
 - http_request_duration_seconds (Histogram)
+- celery_queue_length (Gauge) - P2 FIX: Queue depth visibility
 
 Usage:
     from api.metrics import (
@@ -16,11 +17,14 @@ Usage:
         AUDIT_FAILURES,
         record_solve,
         record_audit_failure,
+        update_queue_metrics,
     )
 """
 
 import logging
-from prometheus_client import Counter, Histogram, Info, REGISTRY, generate_latest, CONTENT_TYPE_LATEST
+import os
+import time
+from prometheus_client import Counter, Histogram, Info, Gauge, REGISTRY, generate_latest, CONTENT_TYPE_LATEST
 
 logger = logging.getLogger(__name__)
 
@@ -31,12 +35,23 @@ logger = logging.getLogger(__name__)
 
 def _safe_counter(name: str, description: str, labelnames: list = None):
     """Create Counter, return existing if already registered."""
+    # Counters strip _total suffix from name, e.g. 'solve_failures_total' -> _name='solve_failures'
+    # Check both the passed name and the base name (without _total)
+    base_name = name.removesuffix('_total') if name.endswith('_total') else name
+
+    # Check if already registered under the base name or the full name
+    for check_name in [name, base_name]:
+        if check_name in REGISTRY._names_to_collectors:
+            collector = REGISTRY._names_to_collectors[check_name]
+            if hasattr(collector, '_name') and collector._name == base_name:
+                return collector
+
     try:
         return Counter(name, description, labelnames or [])
     except ValueError:
-        # Already registered
+        # Already registered - find by iterating
         for collector in REGISTRY._names_to_collectors.values():
-            if hasattr(collector, '_name') and collector._name == name:
+            if hasattr(collector, '_name') and collector._name == base_name:
                 return collector
         raise
 
@@ -61,6 +76,17 @@ def _safe_info(name: str, description: str):
     """Create Info metric, return existing if already registered."""
     try:
         return Info(name, description)
+    except ValueError:
+        for collector in REGISTRY._names_to_collectors.values():
+            if hasattr(collector, '_name') and collector._name == name:
+                return collector
+        raise
+
+
+def _safe_gauge(name: str, description: str, labelnames: list = None):
+    """Create Gauge, return existing if already registered."""
+    try:
+        return Gauge(name, description, labelnames or [])
     except ValueError:
         for collector in REGISTRY._names_to_collectors.values():
             if hasattr(collector, '_name') and collector._name == name:
@@ -130,6 +156,95 @@ BUILD_INFO.info({
     'component': 'api'
 })
 
+# =============================================================================
+# CELERY QUEUE METRICS (P2 FIX: Queue Depth Visibility)
+# =============================================================================
+
+# Queue depth gauge - tracks pending tasks in Celery queues
+CELERY_QUEUE_LENGTH = _safe_gauge(
+    'celery_queue_length',
+    'Number of pending tasks in Celery queue',
+    labelnames=['queue']
+)
+
+# Solver memory limit info gauge
+SOLVER_MEMORY_LIMIT = _safe_gauge(
+    'solver_memory_limit_bytes',
+    'Configured memory limit for solver processes',
+    labelnames=['component']
+)
+
+# Cache for queue metrics (avoid hammering Redis on every /metrics call)
+_queue_metrics_cache = {
+    'last_update': 0,
+    'values': {},
+    'ttl_seconds': 5,  # Refresh every 5 seconds max
+}
+
+
+def update_queue_metrics():
+    """
+    Update Celery queue depth metrics from Redis.
+
+    Uses Redis LLEN to check queue length directly.
+    Results are cached for 5 seconds to avoid Redis hammering.
+
+    Queue format in Redis (Celery default): celery (or custom queue name)
+    """
+    current_time = time.time()
+
+    # Check cache TTL
+    if current_time - _queue_metrics_cache['last_update'] < _queue_metrics_cache['ttl_seconds']:
+        return _queue_metrics_cache['values']
+
+    try:
+        import redis
+
+        # Get Redis URL from environment (same as Celery uses)
+        redis_url = os.getenv("CELERY_BROKER_URL", "redis://localhost:6379/0")
+
+        # Quick connection with short timeout (don't block /metrics)
+        client = redis.from_url(redis_url, socket_timeout=1.0, socket_connect_timeout=1.0)
+
+        # Check known queue names used by SOLVEREIGN
+        queue_names = ["routing", "celery"]  # routing is our main queue
+
+        values = {}
+        for queue_name in queue_names:
+            try:
+                # Celery stores tasks as Redis list with key = queue name
+                length = client.llen(queue_name)
+                CELERY_QUEUE_LENGTH.labels(queue=queue_name).set(length)
+                values[queue_name] = length
+            except Exception as e:
+                logger.debug(f"Failed to get queue length for {queue_name}: {e}")
+                # Set to -1 to indicate error (distinguishes from 0 = empty)
+                CELERY_QUEUE_LENGTH.labels(queue=queue_name).set(-1)
+                values[queue_name] = -1
+
+        # Update cache
+        _queue_metrics_cache['last_update'] = current_time
+        _queue_metrics_cache['values'] = values
+
+        client.close()
+        return values
+
+    except ImportError:
+        logger.warning("redis package not installed, queue metrics unavailable")
+        return {}
+    except Exception as e:
+        logger.warning(f"Failed to update queue metrics: {e}")
+        return {}
+
+
+def set_solver_memory_limit(limit_bytes: int, component: str = "solver"):
+    """
+    Record the configured solver memory limit.
+
+    Called at startup when memory limits are applied.
+    """
+    SOLVER_MEMORY_LIMIT.labels(component=component).set(limit_bytes)
+
 
 # =============================================================================
 # HELPER FUNCTIONS
@@ -186,6 +301,9 @@ def record_http_request(method: str, endpoint: str, status_code: int, duration_s
 
 def get_metrics_response():
     """Generate Prometheus metrics response."""
+    # Update queue metrics before generating response (P2 FIX)
+    update_queue_metrics()
+
     from fastapi.responses import Response
     return Response(
         content=generate_latest(),
