@@ -114,3 +114,10 @@ ShiftOptimizer.spec
 **/error_dump*.json
 data/osrm/
 dist_final/
+
+# =============================================================================
+# Frontend build & test artifacts
+# =============================================================================
+frontend_v5/.next/
+frontend_v5/playwright-report/
+frontend_v5/test-results/
