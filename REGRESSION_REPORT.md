@@ -2,6 +2,20 @@
 
 **Generated**: 2026-01-07T14:43:32.411238+00:00
 
+## Validation Mode
+
+**Current Mode**: STATIC VALIDATION (solve_duration_ms=0)
+
+This report was generated using static validation, which compares expected output
+files against each other without executing the actual solver. This verifies:
+- Dataset structure integrity
+- Input/output file consistency
+- KPI and audit field presence
+
+For real solver regression testing, inject a solver instance via
+`GoldenDatasetManager.validate_dataset(solver=your_solver)`. Real execution will
+show `solve_duration_ms > 0` in the report.
+
 ## Summary
 
 | Metric | Count |

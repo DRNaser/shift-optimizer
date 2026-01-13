@@ -6,6 +6,18 @@ Provides:
 - Validation against expected outputs
 - Regression suite execution
 - Dataset creation and updates
+
+IMPORTANT - Static vs Real Solver Validation:
+---------------------------------------------
+By default (solver=None), this manager performs STATIC VALIDATION only:
+- Compares expected output files against each other
+- solve_duration_ms=0 indicates no actual solver execution
+- Useful for verifying dataset structure and file integrity
+
+For REAL SOLVER REGRESSION testing:
+- Pass a solver instance to validate_dataset(solver=your_solver)
+- This will actually execute the solver and compare outputs
+- solve_duration_ms > 0 indicates real execution time
 """
 
 import json
@@ -199,18 +211,21 @@ class GoldenDatasetManager:
                 validation_duration_ms=int((time.time() - start) * 1000),
             )
 
-        # For now, we do static validation (no solver run)
-        # In production, this would run the solver
+        # Static vs Real Solver Validation:
+        # - solver=None: Static validation (compare expected files only)
+        # - solver=<instance>: Real regression (execute solver and compare)
+        # NOTE: solve_duration_ms=0 indicates static validation, NOT execution
         solve_start = time.time()
 
         if solver:
-            # Run actual solver
+            # REAL REGRESSION: Execute solver and compare outputs
             actual_output = solver.solve(input_data, seed=manifest.solver_seed)
             solve_duration = int((time.time() - solve_start) * 1000)
         else:
-            # Static validation: just compare expected files exist
+            # STATIC VALIDATION: Compare expected files only (no solver run)
+            # solve_duration=0 signals "not executed" in reports
             actual_output = self._load_expected(dataset_path)
-            solve_duration = 0
+            solve_duration = 0  # Explicitly 0 = static validation
 
         # For known_failure datasets, verify the failure matches
         if manifest.expected_failure:
