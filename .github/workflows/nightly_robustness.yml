@@ -11,7 +11,7 @@ on:
         default: '120'
 
 env:
-  PYTHON_VERSION: "3.11"
+  PYTHON_VERSION: "3.12"
   PYTHONHASHSEED: "0"
 
 # Prevent concurrent nightly runs (cancel in-progress if new one starts)
