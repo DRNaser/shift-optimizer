@@ -337,9 +337,12 @@ export function createSignedSessionToken(
   const payload = `${userId}:${role}:${expiry}`;
   const payloadB64 = Buffer.from(payload).toString('base64');
 
-  // Always use primary secret for signing
+  // SECURITY: Always use primary secret for signing - FAIL CLOSED
   const secrets = getSessionSecrets();
-  const secret = secrets[0] || 'dev_secret_unsafe';
+  if (secrets.length === 0) {
+    throw new Error("CRITICAL: No session secret configured");
+  }
+  const secret = secrets[0];
   const signature = createHmacSignature(payloadB64, secret);
 
   return `${payloadB64}.${signature}`;
