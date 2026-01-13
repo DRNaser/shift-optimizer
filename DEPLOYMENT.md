@@ -37,9 +37,33 @@ uvicorn src.main:app --reload --port 8000
 | Service | Port | Description |
 |---------|------|-------------|
 | API | 8000 | SOLVEREIGN Enterprise API |
-| PostgreSQL | 5432 | Database |
+| Frontend (BFF) | 3000 | Next.js frontend |
+| PostgreSQL | 5432 | Database (local only) |
 | Prometheus | 9090 | Metrics collection |
-| Grafana | 3000 | Dashboards (admin/admin) |
+| Grafana | 3001 | Dashboards |
+
+### Production Deployment
+
+For production, use `docker-compose.prod.yml` with proper secrets:
+
+```bash
+# 1. Copy the example env file
+cp .env.prod.example .env.prod
+
+# 2. Edit .env.prod with secure values
+#    - POSTGRES_PASSWORD: strong random password
+#    - SOLVEREIGN_SESSION_SECRET: openssl rand -hex 32
+#    - GRAFANA_ADMIN_PASSWORD: strong password
+
+# 3. Deploy with production compose
+docker compose -f docker-compose.prod.yml --env-file .env.prod up -d
+```
+
+**Key differences from local compose:**
+- No exposed PostgreSQL/Redis ports (internal network only)
+- No default passwords (must be set in .env.prod)
+- Bootstrap disabled by default
+- SOLVEREIGN_ENVIRONMENT=production
 
 ---
 
