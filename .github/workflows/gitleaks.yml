@@ -1,0 +1,35 @@
+# =============================================================================
+# Gitleaks Secret Scanner
+# =============================================================================
+#
+# Scans for hardcoded secrets, API keys, and credentials in commits.
+# Runs on every PR and push to main.
+#
+# Documentation: https://github.com/gitleaks/gitleaks-action
+#
+
+name: Gitleaks Secret Scan
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  gitleaks:
+    name: Secret Detection
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Full history needed for scanning
+
+      - name: Run Gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Scan mode: detect (fail on secrets) or protect (warn only)
+          GITLEAKS_ENABLE_COMMENTS: true

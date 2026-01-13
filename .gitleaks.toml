@@ -1,0 +1,29 @@
+# Gitleaks Configuration for SOLVEREIGN
+# ======================================
+#
+# Allowlist for known dev/test secrets that are safe to commit.
+# Production secrets must NEVER be committed.
+
+title = "SOLVEREIGN Gitleaks Config"
+
+[allowlist]
+  description = "Known safe patterns for local development"
+
+  # Dev compose passwords (intentional for local dev)
+  regexes = [
+    '''dev_password_change_in_production''',
+    '''pilot_dev_password''',
+    '''admin/admin''',  # Default Grafana creds in docs
+  ]
+
+  # Paths that are safe to ignore
+  paths = [
+    '''\.env\..*\.example$''',
+    '''test.*\.py$''',
+    '''.*_test\.go$''',
+    '''.*\.test\.ts$''',
+    '''.*\.spec\.ts$''',
+  ]
+
+  # Commits that are known safe (add specific SHAs if needed)
+  commits = []
