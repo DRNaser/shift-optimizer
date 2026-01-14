@@ -1,15 +1,19 @@
 /**
- * SOLVEREIGN V4.5 - Platform Admin Sites BFF Route
+ * SOLVEREIGN - Platform Admin Sites BFF Route
  *
- * Proxies site management requests to backend.
+ * Uses centralized proxy.ts for consistent error handling.
  */
 
-import { NextRequest, NextResponse } from "next/server";
+import { NextRequest } from 'next/server';
+import {
+  getSessionCookie,
+  proxyToBackend,
+  proxyResultToResponse,
+  unauthorizedResponse,
+} from '@/lib/bff/proxy';
 
-export const dynamic = "force-dynamic";
+export const dynamic = 'force-dynamic';
 export const revalidate = 0;
-
-const BACKEND_URL = process.env.BACKEND_URL || "http://localhost:8000";
 
 interface RouteContext {
   params: Promise<{ tenantId: string }>;
@@ -20,38 +24,20 @@ interface RouteContext {
  * List sites for a tenant
  */
 export async function GET(request: NextRequest, context: RouteContext) {
-  try {
-    const { tenantId } = await context.params;
-    const sessionCookie = request.cookies.get("__Host-sv_platform_session");
+  const { tenantId } = await context.params;
+  const traceId = `sites-list-${tenantId}-${Date.now()}`;
 
-    if (!sessionCookie) {
-      return NextResponse.json(
-        { success: false, error_code: "NO_SESSION", message: "Not authenticated" },
-        { status: 401 }
-      );
-    }
-
-    const backendResponse = await fetch(
-      `${BACKEND_URL}/api/platform/tenants/${tenantId}/sites`,
-      {
-        method: "GET",
-        headers: {
-          "Content-Type": "application/json",
-          Cookie: `__Host-sv_platform_session=${sessionCookie.value}`,
-        },
-      }
-    );
-
-    const data = await backendResponse.json();
-
-    return NextResponse.json(data, { status: backendResponse.status });
-  } catch (error) {
-    console.error("Platform sites BFF error:", error);
-    return NextResponse.json(
-      { success: false, error_code: "BFF_ERROR", message: "Internal server error" },
-      { status: 500 }
-    );
+  const session = await getSessionCookie();
+  if (!session) {
+    return unauthorizedResponse(traceId);
   }
+
+  const result = await proxyToBackend(`/api/platform/tenants/${tenantId}/sites`, session, {
+    method: 'GET',
+    traceId,
+  });
+
+  return proxyResultToResponse(result);
 }
 
 /**
@@ -59,39 +45,32 @@ export async function GET(request: NextRequest, context: RouteContext) {
  * Create a new site
  */
 export async function POST(request: NextRequest, context: RouteContext) {
-  try {
-    const { tenantId } = await context.params;
-    const sessionCookie = request.cookies.get("__Host-sv_platform_session");
+  const { tenantId } = await context.params;
+  const traceId = `sites-create-${tenantId}-${Date.now()}`;
 
-    if (!sessionCookie) {
-      return NextResponse.json(
-        { success: false, error_code: "NO_SESSION", message: "Not authenticated" },
-        { status: 401 }
-      );
-    }
-
-    const body = await request.json();
-
-    const backendResponse = await fetch(
-      `${BACKEND_URL}/api/platform/tenants/${tenantId}/sites`,
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Cookie: `__Host-sv_platform_session=${sessionCookie.value}`,
-        },
-        body: JSON.stringify(body),
-      }
-    );
-
-    const data = await backendResponse.json();
-
-    return NextResponse.json(data, { status: backendResponse.status });
-  } catch (error) {
-    console.error("Platform sites BFF error:", error);
-    return NextResponse.json(
-      { success: false, error_code: "BFF_ERROR", message: "Internal server error" },
-      { status: 500 }
-    );
+  const session = await getSessionCookie();
+  if (!session) {
+    return unauthorizedResponse(traceId);
   }
+
+  let body: unknown;
+  try {
+    body = await request.json();
+  } catch {
+    return proxyResultToResponse({
+      ok: false,
+      status: 400,
+      data: { error_code: 'INVALID_JSON', message: 'Request body must be valid JSON' },
+      traceId,
+      contentType: 'application/json',
+    });
+  }
+
+  const result = await proxyToBackend(`/api/platform/tenants/${tenantId}/sites`, session, {
+    method: 'POST',
+    body,
+    traceId,
+  });
+
+  return proxyResultToResponse(result);
 }

@@ -193,9 +193,9 @@ export default function RosterWorkbench() {
         ["Zuweisungsrate (%)", (stats.assignment_rate * 100).toFixed(1)].join(SEPARATOR) + LINE_END +
         ["Durchschn. Auslastung (%)", (stats.average_driver_utilization * 100).toFixed(1)].join(SEPARATOR) + LINE_END +
         ["Durchschn. Arbeitsstunden", stats.average_work_hours?.toFixed(1) || "-"].join(SEPARATOR) + LINE_END +
-        ["Blöcke 1er", stats.block_counts["1er"] || 0].join(SEPARATOR) + LINE_END +
-        ["Blöcke 2er", stats.block_counts["2er"] || 0].join(SEPARATOR) + LINE_END +
-        ["Blöcke 3er", stats.block_counts["3er"] || 0].join(SEPARATOR) + LINE_END +
+        ["Blöcke 1er", stats.block_counts?.["1er"] || 0].join(SEPARATOR) + LINE_END +
+        ["Blöcke 2er", stats.block_counts?.["2er"] || 0].join(SEPARATOR) + LINE_END +
+        ["Blöcke 3er", stats.block_counts?.["3er"] || 0].join(SEPARATOR) + LINE_END +
         // Fleet Counter metrics (v7.2.0)
         ["Fahrzeuge Peak", stats.fleet_peak_count || 0].join(SEPARATOR) + LINE_END +
         ["Peak Tag", stats.fleet_peak_day || "N/A"].join(SEPARATOR) + LINE_END +
@@ -217,7 +217,7 @@ export default function RosterWorkbench() {
 
   // Derived Data
   const driverRows: DriverRow[] = result
-    ? assignmentsToDriverRows(result.assignments)
+    ? assignmentsToDriverRows(result.assignments).rows
     : [];
 
   // SSR Guard

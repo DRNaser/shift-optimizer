@@ -1,37 +1,36 @@
 /**
- * BFF Route: Audit Event Types API
+ * SOLVEREIGN - Audit Event Types BFF Route
  *
- * Proxies requests to /api/v1/audit/event-types on the backend
+ * Uses centralized proxy.ts for consistent error handling.
  */
 
-import { NextRequest, NextResponse } from 'next/server';
-import { cookies } from 'next/headers';
+import { NextRequest } from 'next/server';
+import {
+  getSessionCookie,
+  proxyToBackend,
+  proxyResultToResponse,
+  unauthorizedResponse,
+} from '@/lib/bff/proxy';
 
-const BACKEND_URL = process.env.SOLVEREIGN_BACKEND_URL || 'http://localhost:8000';
+export const dynamic = 'force-dynamic';
+export const revalidate = 0;
 
+/**
+ * GET /api/audit/event-types
+ * List available event types
+ */
 export async function GET(request: NextRequest) {
-  const cookieStore = await cookies();
-  const sessionCookie = cookieStore.get('__Host-sv_platform_session') || cookieStore.get('sv_platform_session');
+  const traceId = `audit-event-types-${Date.now()}`;
 
-  if (!sessionCookie) {
-    return NextResponse.json({ success: false, error: 'Unauthorized' }, { status: 401 });
+  const session = await getSessionCookie();
+  if (!session) {
+    return unauthorizedResponse(traceId);
   }
 
-  try {
-    const response = await fetch(`${BACKEND_URL}/api/v1/audit/event-types`, {
-      headers: {
-        Cookie: `${sessionCookie.name}=${sessionCookie.value}`,
-      },
-      cache: 'no-store',
-    });
+  const result = await proxyToBackend('/api/v1/audit/event-types', session, {
+    method: 'GET',
+    traceId,
+  });
 
-    const data = await response.json();
-    return NextResponse.json(data, { status: response.status });
-  } catch (error) {
-    console.error('Failed to fetch event types:', error);
-    return NextResponse.json(
-      { success: false, error: 'Backend connection failed' },
-      { status: 502 }
-    );
-  }
+  return proxyResultToResponse(result);
 }

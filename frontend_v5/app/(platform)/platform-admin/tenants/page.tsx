@@ -2,6 +2,7 @@
 // SOLVEREIGN V4.5 - Platform Admin Tenants List (Redesigned)
 // =============================================================================
 // List and manage tenants with modern design system.
+// Uses Zod validation for type safety.
 // =============================================================================
 
 'use client';
@@ -26,20 +27,20 @@ import { Card } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Spinner } from '@/components/ui/spinner';
 import { SkeletonTable } from '@/components/ui/skeleton';
+import { ApiError } from '@/components/ui/api-error';
+import { parseTenantListResponse, type Tenant } from '@/lib/schemas/platform-admin-schemas';
 
-interface Tenant {
-  id: number;
-  name: string;
-  is_active: boolean;
-  created_at: string;
-  user_count?: number;
-  site_count?: number;
+interface ApiErrorState {
+  code: string;
+  message: string;
+  traceId?: string;
 }
 
 export default function TenantsListPage() {
   const [tenants, setTenants] = useState<Tenant[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [apiError, setApiError] = useState<ApiErrorState | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [viewMode, setViewMode] = useState<'list' | 'grid'>('list');
 
@@ -49,10 +50,21 @@ export default function TenantsListPage() {
         const res = await fetch('/api/platform-admin/tenants?include_counts=true');
         if (!res.ok) {
           const data = await res.json();
+          // Handle 403 Forbidden explicitly
+          if (res.status === 403) {
+            setApiError({
+              code: data.error_code || 'FORBIDDEN',
+              message: data.message || 'Access denied',
+              traceId: data.trace_id,
+            });
+            return;
+          }
           throw new Error(data.message || 'Failed to load tenants');
         }
         const data = await res.json();
-        setTenants(data);
+        // Zod validation for type safety
+        const validated = parseTenantListResponse(data);
+        setTenants(validated);
       } catch (err) {
         setError(err instanceof Error ? err.message : 'Failed to load tenants');
       } finally {
@@ -140,8 +152,19 @@ export default function TenantsListPage() {
         {/* Loading State */}
         {loading && <SkeletonTable rows={5} />}
 
+        {/* Access Denied State (403 Forbidden) */}
+        {apiError && (
+          <ApiError
+            code={apiError.code}
+            message={apiError.message}
+            traceId={apiError.traceId}
+            showBackLink={true}
+            backHref="/platform-admin"
+          />
+        )}
+
         {/* Error State */}
-        {error && (
+        {!apiError && error && (
           <Card variant="outline" className="border-error/30 bg-error-light p-6">
             <div className="flex items-center gap-3 text-error">
               <div className="p-2 rounded-full bg-error/10">
@@ -156,7 +179,7 @@ export default function TenantsListPage() {
         )}
 
         {/* Empty State */}
-        {!loading && !error && filteredTenants.length === 0 && (
+        {!loading && !error && !apiError && filteredTenants.length === 0 && (
           <Card className="p-12 text-center">
             <div className="inline-flex items-center justify-center w-16 h-16 rounded-full bg-muted mb-4">
               <Building2 className="h-8 w-8 text-foreground-muted" />
@@ -178,7 +201,7 @@ export default function TenantsListPage() {
         )}
 
         {/* List View */}
-        {!loading && !error && filteredTenants.length > 0 && viewMode === 'list' && (
+        {!loading && !error && !apiError && filteredTenants.length > 0 && viewMode === 'list' && (
           <Card padding="none">
             <div className="divide-y divide-border">
               {filteredTenants.map((tenant, index) => (
@@ -229,7 +252,7 @@ export default function TenantsListPage() {
         )}
 
         {/* Grid View */}
-        {!loading && !error && filteredTenants.length > 0 && viewMode === 'grid' && (
+        {!loading && !error && !apiError && filteredTenants.length > 0 && viewMode === 'grid' && (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 stagger-children">
             {filteredTenants.map((tenant) => (
               <Link key={tenant.id} href={`/platform-admin/tenants/${tenant.id}`}>

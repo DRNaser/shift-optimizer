@@ -1,0 +1,71 @@
+# ============================================================================
+# SOLVEREIGN Pilot Migration Manifest
+# ============================================================================
+# Bootstrap sequence:
+#   1. init.sql (base schema - applied by run-migrations.ps1)
+#   2. Numbered migrations in lexicographic order
+#
+# All entries are relative to backend_py/db/migrations/
+# Lines starting with # are ignored
+# ============================================================================
+
+# Base migrations (depend on init.sql)
+001_tour_instances.sql
+002_compose_scenarios.sql
+002_week_anchor_date.sql
+003_split_shift_fixes.sql
+004_triggers_and_statuses.sql
+005_indexes_and_constraints.sql
+006_multi_tenant.sql
+007_idempotency_keys.sql
+008_tour_segments.sql
+009_plan_versions_extended.sql
+010_fix_expand_tenant_id.sql
+010_security_layer.sql
+011_driver_model.sql
+012_tenant_identities.sql
+013_core_tenants_sites.sql
+014_seed_tenants_sites.sql
+015_core_organizations.sql
+016_seed_organizations.sql
+017_service_status.sql
+018_security_hardening.sql
+022_replay_protection.sql
+023_policy_profiles.sql
+024_import_runs_evidence.sql
+025_tenants_rls_fix.sql
+025a_rls_hardening.sql
+025b_rls_role_lockdown.sql
+025c_rls_boundary_fix.sql
+025d_definer_owner_hardening.sql
+025e_final_hardening.sql
+025f_acl_fix.sql
+026_solver_runs.sql
+026a_state_atomicity.sql
+027_plan_versioning.sql
+027a_snapshot_fixes.sql
+028_masterdata.sql
+031_dispatch_lifecycle.sql
+033_portal_magic_links.sql
+034_notifications.sql
+035_notifications_hardening.sql
+036_notifications_retention.sql
+037_portal_notify_integration.sql
+037a_portal_notify_hardening.sql
+038_bounce_dnc.sql
+039_internal_rbac.sql
+040_platform_admin_model.sql
+041_platform_context_switching.sql
+042_tenant_packs.sql
+043_email_verified.sql
+044_idempotency_keys.sql
+044_legal_acceptance.sql
+045_stripe_billing.sql
+046_consent_management.sql
+047_billing_override.sql
+048_roster_pack_enhanced.sql
+048a_roster_pack_constraints.sql
+048b_roster_undo_columns.sql
+049_auth_schema_drift_fix.sql
+050_fix_bootstrap_dependencies.sql
+051_fix_function_signatures.sql

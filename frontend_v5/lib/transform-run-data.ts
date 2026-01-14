@@ -61,7 +61,31 @@ function getDriverType(weeklyHours: number): DriverType {
     return 'PT_flex';
 }
 
+/**
+ * Transforms a schedule response into the RunDetailData format.
+ * SAFE: Handles edge cases like undefined blocks, missing fields, empty assignments.
+ */
 export function transformScheduleToRunDetail(schedule: ScheduleResponse): RunDetailData {
+    // Guard: Handle empty or invalid schedule
+    if (!schedule || !schedule.assignments || !Array.isArray(schedule.assignments)) {
+        console.warn('[transform-run-data] Invalid schedule - returning empty roster');
+        return {
+            id: schedule?.id || 'unknown',
+            roster: [],
+            insights: {
+                total_hours: 0,
+                core_share: 0,
+                orphans_count: 0,
+                violation_count: 0,
+                drivers_total: 0,
+                drivers_fte: 0,
+                drivers_pt: 0,
+                assignment_rate: 0,
+                avg_utilization: 0,
+            },
+        };
+    }
+
     // Group assignments by driver
     const driverMap = new Map<string, {
         name: string;
@@ -70,23 +94,32 @@ export function transformScheduleToRunDetail(schedule: ScheduleResponse): RunDet
     }>();
 
     for (const assignment of schedule.assignments) {
+        // Guard: Skip assignments with missing critical data
+        if (!assignment || !assignment.driver_id) {
+            console.warn('[transform-run-data] Skipping invalid assignment:', assignment);
+            continue;
+        }
+
         if (!driverMap.has(assignment.driver_id)) {
             driverMap.set(assignment.driver_id, {
-                name: assignment.driver_name,
+                name: assignment.driver_name || 'Unknown',
                 totalHours: 0,
                 shifts: [null, null, null, null, null, null], // Mon-Sat
             });
         }
 
         const driver = driverMap.get(assignment.driver_id)!;
-        driver.totalHours += assignment.block.total_work_hours;
+
+        // Guard: Handle missing block safely
+        const workHours = assignment.block?.total_work_hours ?? 0;
+        driver.totalHours += workHours;
 
         const dayIdx = DAY_INDEX[assignment.day] ?? -1;
-        if (dayIdx >= 0 && dayIdx <= 5) {
+        if (dayIdx >= 0 && dayIdx <= 5 && assignment.block) {
             const tours = assignment.block.tours || [];
             const startTime = tours[0]?.start_time || "00:00";
             const endTime = tours[tours.length - 1]?.end_time || "00:00";
-            const shiftType = normalizeShiftType(assignment.block.block_type);
+            const shiftType = normalizeShiftType(assignment.block.block_type || '1er');
 
             driver.shifts[dayIdx] = {
                 day_index: dayIdx,
@@ -116,18 +149,21 @@ export function transformScheduleToRunDetail(schedule: ScheduleResponse): RunDet
             return b.weekly_hours - a.weekly_hours;
         });
 
-    // Build insights
+    // Build insights with safe access to stats and validation
+    const stats = schedule.stats || {};
+    const validation = schedule.validation || { is_valid: true, hard_violations: [] };
+
     const insights: RunInsights = {
-        total_hours: schedule.stats.total_hours || roster.reduce((sum, r) => sum + r.weekly_hours, 0),
-        core_share: schedule.stats.drivers_pt / (schedule.stats.total_drivers || 1) * 100,
-        orphans_count: schedule.stats.total_tours_unassigned,
-        violation_count: schedule.validation.hard_violations.length,
-        drivers_total: schedule.stats.total_drivers,
-        drivers_fte: schedule.stats.drivers_fte,
-        drivers_pt: schedule.stats.drivers_pt,
-        assignment_rate: schedule.stats.assignment_rate,
-        avg_utilization: schedule.stats.average_driver_utilization,
-        ...schedule.stats.block_counts,
+        total_hours: stats.total_hours || roster.reduce((sum, r) => sum + r.weekly_hours, 0),
+        core_share: (stats.drivers_pt || 0) / (stats.total_drivers || 1) * 100,
+        orphans_count: stats.total_tours_unassigned || 0,
+        violation_count: validation.hard_violations?.length || 0,
+        drivers_total: stats.total_drivers || 0,
+        drivers_fte: stats.drivers_fte || 0,
+        drivers_pt: stats.drivers_pt || 0,
+        assignment_rate: stats.assignment_rate || 0,
+        avg_utilization: stats.average_driver_utilization || 0,
+        ...(stats.block_counts || {}),
     };
 
     return {

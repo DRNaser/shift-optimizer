@@ -26,6 +26,7 @@ NON-NEGOTIABLES:
 import json
 import logging
 import hashlib
+import time
 from datetime import datetime, timezone
 from typing import Optional, List
 from uuid import UUID, uuid4
@@ -671,6 +672,9 @@ async def publish_snapshot(
         logger.info(f"Idempotent return for key {idempotency_key}")
         return PublishSnapshotResponse(**cached)
 
+    # Start timing for observability
+    start_time = time.time()
+
     conn = getattr(request.state, "conn", None)
     if not conn:
         raise HTTPException(status_code=500, detail="Database connection not available")
@@ -688,6 +692,137 @@ async def publish_snapshot(
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Plan {body.plan_version_id} not found",
+            )
+
+        # =================================================================
+        # RELEASE 1: Force Publish Disabled
+        # =================================================================
+        # Per policy: No force publish in Release 1.
+        # force_during_freeze is ignored.
+        if body.force_during_freeze:
+            logger.warning(
+                "force_publish_rejected_r1",
+                extra={
+                    "plan_version_id": body.plan_version_id,
+                    "tenant_id": ctx.tenant_id,
+                    "user_id": performed_by,
+                    "force_reason": body.force_reason,
+                }
+            )
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail={
+                    "error_code": "FORCE_PUBLISH_DISABLED",
+                    "message": "Force publish is disabled for Release 1",
+                    "action_required": "Wait for freeze window to expire or resolve blocking issues",
+                },
+            )
+
+        # =================================================================
+        # P0 CRITICAL: Server-Side Data Quality Gate
+        # =================================================================
+        # Missing assignments (unfilled slots) block publish.
+        # This ensures no plan goes live with gaps.
+        cur.execute("""
+            SELECT COUNT(*) as missing_count
+            FROM tour_instances ti
+            WHERE ti.plan_version_id = %s
+              AND ti.assigned_driver_id IS NULL
+              AND ti.is_active = true
+        """, (body.plan_version_id,))
+        missing_result = cur.fetchone()
+        missing_count = missing_result[0] if missing_result else 0
+
+        if missing_count > 0:
+            gate_duration_ms = (time.time() - start_time) * 1000
+            logger.warning(
+                "publish_gate_data_quality_blocked",
+                extra={
+                    "plan_version_id": body.plan_version_id,
+                    "tenant_id": ctx.tenant_id,
+                    "site_id": ctx.site_id,
+                    "user_id": performed_by,
+                    "missing_count": missing_count,
+                    "gate_passed": False,
+                    "duration_ms": round(gate_duration_ms, 2),
+                }
+            )
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "error_code": "DATA_QUALITY_BLOCK_PUBLISH",
+                    "message": f"Cannot publish: {missing_count} tour(s) have no driver assigned",
+                    "missing_count": missing_count,
+                    "action_required": "Assign drivers to all active tours before publishing",
+                },
+            )
+
+        # =================================================================
+        # P0 CRITICAL: Server-Side Violation Block Gate
+        # =================================================================
+        # BLOCK violations MUST be resolved before publishing.
+        # This is the authoritative check - UI gate is for UX only.
+        #
+        # Uses shared violations module for consistent rules across:
+        # - Publish Gate (here)
+        # - Repair Preview/Apply
+        # - Violations Cache
+        from packs.roster.core.violations import compute_violations_sync
+
+        violation_counts, _ = compute_violations_sync(cur, body.plan_version_id)
+        block_count = violation_counts.block_count
+        warn_count = violation_counts.warn_count
+
+        if block_count > 0:
+            # Observability: Log gate failure
+            gate_duration_ms = (time.time() - start_time) * 1000
+            logger.warning(
+                "publish_gate_blocked",
+                extra={
+                    "plan_version_id": body.plan_version_id,
+                    "tenant_id": ctx.tenant_id,
+                    "site_id": ctx.site_id,
+                    "user_id": performed_by,
+                    "block_count": block_count,
+                    "warn_count": warn_count,
+                    "gate_passed": False,
+                    "violations_source": "live",  # Never from cache
+                    "duration_ms": round(gate_duration_ms, 2),
+                }
+            )
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "error_code": "VIOLATIONS_BLOCK_PUBLISH",
+                    "message": f"Cannot publish: {block_count} blocking violation(s) must be resolved first",
+                    "block_count": block_count,
+                    "warn_count": warn_count,
+                    "action_required": "Resolve all BLOCK-severity violations before publishing",
+                },
+            )
+
+        # Observability: Log violation gate check duration and counts
+        violation_check_duration_ms = (time.time() - start_time) * 1000
+        logger.info(
+            "publish_gate_violation_check",
+            extra={
+                "plan_version_id": body.plan_version_id,
+                "tenant_id": ctx.tenant_id,
+                "site_id": ctx.site_id,
+                "user_id": performed_by,
+                "block_count": block_count,
+                "warn_count": warn_count,
+                "gate_passed": True,
+                "violations_source": "live",  # Never from cache
+                "duration_ms": round(violation_check_duration_ms, 2),
+            }
+        )
+
+        # Log warning count for observability
+        if warn_count > 0:
+            logger.warning(
+                f"Publishing plan {body.plan_version_id} with {warn_count} warnings "
+                f"(tenant={ctx.tenant_id}, user={performed_by})"
             )
 
         # =================================================================

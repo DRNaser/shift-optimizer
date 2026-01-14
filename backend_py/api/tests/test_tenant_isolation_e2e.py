@@ -26,7 +26,7 @@ class TestTenantIsolation:
         """
         Tenant A user should not be able to access Tenant B's evidence files.
         """
-        from routers.evidence_viewer import _validate_evidence_filename
+        from ..routers.evidence_viewer import _validate_evidence_filename
 
         # Tenant B's evidence file
         tenant_b_filename = "roster_publish_2_20_456_20260110T120000.json"
@@ -42,7 +42,7 @@ class TestTenantIsolation:
         """
         Tenant A user should be able to access their own evidence files.
         """
-        from routers.evidence_viewer import _validate_evidence_filename
+        from ..routers.evidence_viewer import _validate_evidence_filename
 
         # Tenant A's evidence file
         tenant_a_filename = "roster_publish_1_10_123_20260110T120000.json"
@@ -56,7 +56,7 @@ class TestTenantIsolation:
         Platform admin with context switching should be able to access any tenant's evidence.
         This is tested by verifying the validation passes when tenant IDs match.
         """
-        from routers.evidence_viewer import _validate_evidence_filename
+        from ..routers.evidence_viewer import _validate_evidence_filename
 
         # Platform admin has set context to tenant 2
         tenant_b_filename = "roster_publish_2_20_456_20260110T120000.json"
@@ -93,42 +93,27 @@ class TestWriteGuards:
         """
         Snapshot publish should require x-idempotency-key header.
         """
-        # Import the lifecycle router to check its implementation
-        import sys
-        import os
-        sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
         from packs.roster.api.routers.lifecycle import require_idempotency_key
-        from fastapi import Request
 
-        # Mock request without idempotency key
-        mock_request = MagicMock()
-        mock_request.headers = {}
-
+        # Call the dependency function directly with no key (None)
         # Should raise exception when key is missing
         with pytest.raises(HTTPException) as exc:
-            require_idempotency_key(mock_request)
+            require_idempotency_key(x_idempotency_key=None)
 
         assert exc.value.status_code == 400
-        assert "idempotency" in exc.value.detail.lower()
+        # detail may be dict or string
+        detail = exc.value.detail
+        detail_str = str(detail).lower() if isinstance(detail, dict) else detail.lower()
+        assert "idempotency" in detail_str
 
     def test_idempotency_key_accepted_when_present(self):
         """
         Valid idempotency key should be accepted.
         """
-        import sys
-        import os
-        sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
         from packs.roster.api.routers.lifecycle import require_idempotency_key
-        from fastapi import Request
 
-        # Mock request with valid idempotency key
-        mock_request = MagicMock()
-        mock_request.headers = {'x-idempotency-key': '550e8400-e29b-41d4-a716-446655440000'}
-
-        # Should return the key
-        key = require_idempotency_key(mock_request)
+        # Call the dependency function directly with a valid UUID
+        key = require_idempotency_key(x_idempotency_key='550e8400-e29b-41d4-a716-446655440000')
         assert key == '550e8400-e29b-41d4-a716-446655440000'
 
 
@@ -146,7 +131,7 @@ class TestEvidenceCreation:
             "routing_solve_1_10_789_20260110T160000.json",
         ]
 
-        from routers.evidence_viewer import _validate_evidence_filename
+        from ..routers.evidence_viewer import _validate_evidence_filename
 
         for filename in valid_filenames:
             # Extract tenant ID from filename
@@ -161,7 +146,7 @@ class TestEvidenceCreation:
         """
         Evidence access should be restricted to the evidence/ directory.
         """
-        from routers.evidence_viewer import _validate_evidence_filename
+        from ..routers.evidence_viewer import _validate_evidence_filename
 
         # Attempt to escape evidence directory
         escape_attempts = [
@@ -182,19 +167,16 @@ class TestEvidenceCreation:
 class TestCrossOriginProtection:
     """Tests for CSRF protection."""
 
-    def test_csrf_check_blocks_cross_origin_requests(self):
+    @pytest.mark.asyncio
+    async def test_csrf_check_blocks_cross_origin_requests(self):
         """
         CSRF check should block requests from different origins.
         """
-        import sys
-        import os
-        sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-        from packs.roster.api.routers.lifecycle import require_csrf_check
-        from fastapi import Request
+        from ..security.internal_rbac import require_csrf_check
 
         # Mock cross-origin request
         mock_request = MagicMock()
+        mock_request.method = "POST"
         mock_request.headers = {
             'origin': 'https://evil.com',
         }
@@ -204,7 +186,7 @@ class TestCrossOriginProtection:
 
         # Should raise exception for cross-origin request
         with pytest.raises(HTTPException) as exc:
-            require_csrf_check(mock_request)
+            await require_csrf_check(mock_request)
 
         assert exc.value.status_code == 403
 
@@ -228,7 +210,7 @@ class TestAuditLogIsolation:
         import os
         sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-        from routers.audit_viewer import router
+        from ..routers.audit_viewer import router
 
         # Should have audit endpoints
         routes = [r.path for r in router.routes]

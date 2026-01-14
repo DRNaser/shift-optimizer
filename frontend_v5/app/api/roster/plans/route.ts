@@ -1,89 +1,99 @@
 /**
- * BFF Route: Roster Plans API
+ * SOLVEREIGN - Roster Plans BFF Route
  *
- * Proxies requests to /api/v1/roster/plans on the backend
+ * Uses centralized proxy.ts for consistent error handling.
  */
 
 import { NextRequest, NextResponse } from 'next/server';
-import { cookies } from 'next/headers';
+import {
+  getSessionCookie,
+  proxyToBackend,
+  proxyResultToResponse,
+  unauthorizedResponse,
+} from '@/lib/bff/proxy';
 
-const BACKEND_URL = process.env.SOLVEREIGN_BACKEND_URL || 'http://localhost:8000';
+export const dynamic = 'force-dynamic';
+export const revalidate = 0;
 
+/**
+ * GET /api/roster/plans
+ * List plans with optional filtering
+ */
 export async function GET(request: NextRequest) {
-  const cookieStore = await cookies();
-  const sessionCookie = cookieStore.get('__Host-sv_platform_session') || cookieStore.get('sv_platform_session');
+  const traceId = `plans-list-${Date.now()}`;
 
-  if (!sessionCookie) {
-    return NextResponse.json({ success: false, error: 'Unauthorized' }, { status: 401 });
+  const session = await getSessionCookie();
+  if (!session) {
+    return unauthorizedResponse(traceId);
   }
 
   const { searchParams } = new URL(request.url);
   const limit = searchParams.get('limit') || '50';
   const offset = searchParams.get('offset') || '0';
-  const status_filter = searchParams.get('status');
+  const statusFilter = searchParams.get('status');
 
-  let url = `${BACKEND_URL}/api/v1/roster/plans?limit=${limit}&offset=${offset}`;
-  if (status_filter) {
-    url += `&status_filter=${status_filter}`;
+  const params = new URLSearchParams();
+  params.set('limit', limit);
+  params.set('offset', offset);
+  if (statusFilter) {
+    params.set('status_filter', statusFilter);
   }
 
-  try {
-    const response = await fetch(url, {
-      headers: {
-        Cookie: `${sessionCookie.name}=${sessionCookie.value}`,
-      },
-      cache: 'no-store',
-    });
+  const result = await proxyToBackend(`/api/v1/roster/plans?${params.toString()}`, session, {
+    method: 'GET',
+    traceId,
+  });
 
-    const data = await response.json();
-    return NextResponse.json(data, { status: response.status });
-  } catch (error) {
-    console.error('Failed to fetch plans:', error);
-    return NextResponse.json(
-      { success: false, error: 'Backend connection failed' },
-      { status: 502 }
-    );
-  }
+  return proxyResultToResponse(result);
 }
 
+/**
+ * POST /api/roster/plans
+ * Create a new plan (requires idempotency key)
+ */
 export async function POST(request: NextRequest) {
-  const cookieStore = await cookies();
-  const sessionCookie = cookieStore.get('__Host-sv_platform_session') || cookieStore.get('sv_platform_session');
+  const traceId = `plans-create-${Date.now()}`;
 
-  if (!sessionCookie) {
-    return NextResponse.json({ success: false, error: 'Unauthorized' }, { status: 401 });
+  const session = await getSessionCookie();
+  if (!session) {
+    return unauthorizedResponse(traceId);
   }
 
-  const body = await request.json();
+  // Require idempotency key
   const idempotencyKey = request.headers.get('x-idempotency-key');
-
   if (!idempotencyKey) {
     return NextResponse.json(
-      { success: false, error: 'x-idempotency-key header required' },
+      {
+        error_code: 'IDEMPOTENCY_KEY_REQUIRED',
+        message: 'x-idempotency-key header is required for plan creation',
+        trace_id: traceId,
+      },
       { status: 400 }
     );
   }
 
+  let body: unknown;
   try {
-    const response = await fetch(`${BACKEND_URL}/api/v1/roster/plans`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Cookie: `${sessionCookie.name}=${sessionCookie.value}`,
-        'x-idempotency-key': idempotencyKey,
-        Origin: request.headers.get('origin') || 'http://localhost:3000',
-      },
-      body: JSON.stringify(body),
-      cache: 'no-store',
+    body = await request.json();
+  } catch {
+    return proxyResultToResponse({
+      ok: false,
+      status: 400,
+      data: { error_code: 'INVALID_JSON', message: 'Request body must be valid JSON' },
+      traceId,
+      contentType: 'application/json',
     });
-
-    const data = await response.json();
-    return NextResponse.json(data, { status: response.status });
-  } catch (error) {
-    console.error('Failed to create plan:', error);
-    return NextResponse.json(
-      { success: false, error: 'Backend connection failed' },
-      { status: 502 }
-    );
   }
+
+  const result = await proxyToBackend('/api/v1/roster/plans', session, {
+    method: 'POST',
+    body,
+    headers: {
+      'x-idempotency-key': idempotencyKey,
+      Origin: request.headers.get('origin') || 'http://localhost:3000',
+    },
+    traceId,
+  });
+
+  return proxyResultToResponse(result);
 }

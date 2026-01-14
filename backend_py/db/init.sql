@@ -4,6 +4,8 @@
 -- Purpose: Single Source of Truth for Forecast & Plan Versioning
 -- Created: 2026-01-04
 -- Version: 3.0.0-mvp
+--
+-- IDEMPOTENT: Safe to run multiple times (uses IF NOT EXISTS)
 -- ============================================================================
 
 -- Enable UUID extension (for future use)
@@ -15,7 +17,7 @@ CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 -- Tracks each input forecast (from Slack, CSV, or manual entry)
 -- ============================================================================
 
-CREATE TABLE forecast_versions (
+CREATE TABLE IF NOT EXISTS forecast_versions (
     id                  SERIAL PRIMARY KEY,
     created_at          TIMESTAMP NOT NULL DEFAULT NOW(),
     source              VARCHAR(50) NOT NULL CHECK (source IN ('slack', 'csv', 'manual')),
@@ -28,8 +30,8 @@ CREATE TABLE forecast_versions (
     CONSTRAINT forecast_versions_unique_hash UNIQUE (input_hash)
 );
 
-CREATE INDEX idx_forecast_versions_created_at ON forecast_versions(created_at DESC);
-CREATE INDEX idx_forecast_versions_status ON forecast_versions(status);
+CREATE INDEX IF NOT EXISTS idx_forecast_versions_created_at ON forecast_versions(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_forecast_versions_status ON forecast_versions(status);
 
 COMMENT ON TABLE forecast_versions IS 'Master table for input forecast versions with validation status';
 COMMENT ON COLUMN forecast_versions.input_hash IS 'SHA256 hash of canonicalized input for deduplication';
@@ -42,7 +44,7 @@ COMMENT ON COLUMN forecast_versions.status IS 'PASS = proceed, WARN = review rec
 -- Raw input lines with parse status (before normalization)
 -- ============================================================================
 
-CREATE TABLE tours_raw (
+CREATE TABLE IF NOT EXISTS tours_raw (
     id                  SERIAL PRIMARY KEY,
     forecast_version_id INTEGER NOT NULL REFERENCES forecast_versions(id) ON DELETE CASCADE,
     line_no             INTEGER NOT NULL,
@@ -54,8 +56,8 @@ CREATE TABLE tours_raw (
     CONSTRAINT tours_raw_unique_line UNIQUE (forecast_version_id, line_no)
 );
 
-CREATE INDEX idx_tours_raw_forecast_version ON tours_raw(forecast_version_id);
-CREATE INDEX idx_tours_raw_parse_status ON tours_raw(parse_status);
+CREATE INDEX IF NOT EXISTS idx_tours_raw_forecast_version ON tours_raw(forecast_version_id);
+CREATE INDEX IF NOT EXISTS idx_tours_raw_parse_status ON tours_raw(parse_status);
 
 COMMENT ON TABLE tours_raw IS 'Unparsed input lines with validation results';
 COMMENT ON COLUMN tours_raw.canonical_text IS 'Standardized format (e.g., "Mo 06:00-14:00 (3)") for hashing';
@@ -67,7 +69,7 @@ COMMENT ON COLUMN tours_raw.parse_errors IS 'JSON array of error objects for fai
 -- Normalized tour data (ready for solver)
 -- ============================================================================
 
-CREATE TABLE tours_normalized (
+CREATE TABLE IF NOT EXISTS tours_normalized (
     id                  SERIAL PRIMARY KEY,  -- Stable ID across versions (via fingerprint matching)
     forecast_version_id INTEGER NOT NULL REFERENCES forecast_versions(id) ON DELETE CASCADE,
     day                 INTEGER NOT NULL CHECK (day BETWEEN 1 AND 7),  -- 1=Mo, 7=So
@@ -84,9 +86,9 @@ CREATE TABLE tours_normalized (
     CONSTRAINT tours_normalized_unique_tour UNIQUE (forecast_version_id, tour_fingerprint)
 );
 
-CREATE INDEX idx_tours_normalized_forecast_version ON tours_normalized(forecast_version_id);
-CREATE INDEX idx_tours_normalized_fingerprint ON tours_normalized(tour_fingerprint);
-CREATE INDEX idx_tours_normalized_day ON tours_normalized(day);
+CREATE INDEX IF NOT EXISTS idx_tours_normalized_forecast_version ON tours_normalized(forecast_version_id);
+CREATE INDEX IF NOT EXISTS idx_tours_normalized_fingerprint ON tours_normalized(tour_fingerprint);
+CREATE INDEX IF NOT EXISTS idx_tours_normalized_day ON tours_normalized(day);
 
 COMMENT ON TABLE tours_normalized IS 'Canonical tour representation for solver input';
 COMMENT ON COLUMN tours_normalized.tour_fingerprint IS 'Stable identity for diff matching across versions';
@@ -99,7 +101,7 @@ COMMENT ON COLUMN tours_normalized.span_group_key IS 'Links split shift segments
 -- Solver output versions (DRAFT → LOCKED)
 -- ============================================================================
 
-CREATE TABLE plan_versions (
+CREATE TABLE IF NOT EXISTS plan_versions (
     id                  SERIAL PRIMARY KEY,
     forecast_version_id INTEGER NOT NULL REFERENCES forecast_versions(id) ON DELETE CASCADE,
     created_at          TIMESTAMP NOT NULL DEFAULT NOW(),
@@ -116,9 +118,9 @@ CREATE TABLE plan_versions (
     )
 );
 
-CREATE INDEX idx_plan_versions_forecast_version ON plan_versions(forecast_version_id);
-CREATE INDEX idx_plan_versions_status ON plan_versions(status);
-CREATE INDEX idx_plan_versions_created_at ON plan_versions(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_plan_versions_forecast_version ON plan_versions(forecast_version_id);
+CREATE INDEX IF NOT EXISTS idx_plan_versions_status ON plan_versions(status);
+CREATE INDEX IF NOT EXISTS idx_plan_versions_created_at ON plan_versions(created_at DESC);
 
 COMMENT ON TABLE plan_versions IS 'Immutable solver output versions';
 COMMENT ON COLUMN plan_versions.seed IS 'Partition seed for reproducibility (e.g., 94 for normal forecast)';
@@ -131,7 +133,7 @@ COMMENT ON COLUMN plan_versions.status IS 'DRAFT = under review, LOCKED = releas
 -- Driver-to-tour assignments for each plan version
 -- ============================================================================
 
-CREATE TABLE assignments (
+CREATE TABLE IF NOT EXISTS assignments (
     id                  SERIAL PRIMARY KEY,
     plan_version_id     INTEGER NOT NULL REFERENCES plan_versions(id) ON DELETE CASCADE,
     driver_id           VARCHAR(50) NOT NULL,  -- roster_id or driver identifier (e.g., "D001", "D002")
@@ -143,10 +145,10 @@ CREATE TABLE assignments (
     CONSTRAINT assignments_unique_tour_assignment UNIQUE (plan_version_id, tour_id)
 );
 
-CREATE INDEX idx_assignments_plan_version ON assignments(plan_version_id);
-CREATE INDEX idx_assignments_driver ON assignments(driver_id);
-CREATE INDEX idx_assignments_tour ON assignments(tour_id);
-CREATE INDEX idx_assignments_day ON assignments(day);
+CREATE INDEX IF NOT EXISTS idx_assignments_plan_version ON assignments(plan_version_id);
+CREATE INDEX IF NOT EXISTS idx_assignments_driver ON assignments(driver_id);
+CREATE INDEX IF NOT EXISTS idx_assignments_tour ON assignments(tour_id);
+CREATE INDEX IF NOT EXISTS idx_assignments_day ON assignments(day);
 
 COMMENT ON TABLE assignments IS 'Driver-to-tour mappings for each plan version';
 COMMENT ON COLUMN assignments.driver_id IS 'Roster identifier (not FK yet - drivers table in V4+)';
@@ -158,7 +160,7 @@ COMMENT ON COLUMN assignments.block_id IS 'Daily block identifier (e.g., D1_B3 =
 -- Automated validation checks for each plan version
 -- ============================================================================
 
-CREATE TABLE audit_log (
+CREATE TABLE IF NOT EXISTS audit_log (
     id                  SERIAL PRIMARY KEY,
     plan_version_id     INTEGER NOT NULL REFERENCES plan_versions(id) ON DELETE CASCADE,
     check_name          VARCHAR(100) NOT NULL,  -- 'COVERAGE' | 'REST' | 'OVERLAP' | 'SPAN' | 'REPRODUCIBILITY'
@@ -173,9 +175,9 @@ CREATE TABLE audit_log (
     )
 );
 
-CREATE INDEX idx_audit_log_plan_version ON audit_log(plan_version_id);
-CREATE INDEX idx_audit_log_check_name ON audit_log(check_name);
-CREATE INDEX idx_audit_log_status ON audit_log(status);
+CREATE INDEX IF NOT EXISTS idx_audit_log_plan_version ON audit_log(plan_version_id);
+CREATE INDEX IF NOT EXISTS idx_audit_log_check_name ON audit_log(check_name);
+CREATE INDEX IF NOT EXISTS idx_audit_log_status ON audit_log(status);
 
 COMMENT ON TABLE audit_log IS 'Write-only validation log for audit trail';
 COMMENT ON COLUMN audit_log.check_name IS 'Standardized check identifier (see roadmap section 8)';
@@ -187,7 +189,7 @@ COMMENT ON COLUMN audit_log.details_json IS 'Full violation details for debuggin
 -- Operational stability rules for last-minute plan changes
 -- ============================================================================
 
-CREATE TABLE freeze_windows (
+CREATE TABLE IF NOT EXISTS freeze_windows (
     id                  SERIAL PRIMARY KEY,
     rule_name           VARCHAR(100) NOT NULL UNIQUE,  -- 'PRE_SHIFT_12H' | 'SAME_DAY'
     minutes_before_start INTEGER NOT NULL CHECK (minutes_before_start > 0),  -- Freeze threshold
@@ -212,7 +214,7 @@ COMMENT ON COLUMN freeze_windows.behavior IS 'FROZEN = block changes, OVERRIDE_R
 -- Pre-computed diff between forecast versions (performance optimization)
 -- ============================================================================
 
-CREATE TABLE diff_results (
+CREATE TABLE IF NOT EXISTS diff_results (
     id                  SERIAL PRIMARY KEY,
     forecast_version_old INTEGER NOT NULL REFERENCES forecast_versions(id) ON DELETE CASCADE,
     forecast_version_new INTEGER NOT NULL REFERENCES forecast_versions(id) ON DELETE CASCADE,
@@ -225,8 +227,8 @@ CREATE TABLE diff_results (
     CONSTRAINT diff_results_unique_diff UNIQUE (forecast_version_old, forecast_version_new, tour_fingerprint)
 );
 
-CREATE INDEX idx_diff_results_versions ON diff_results(forecast_version_old, forecast_version_new);
-CREATE INDEX idx_diff_results_type ON diff_results(diff_type);
+CREATE INDEX IF NOT EXISTS idx_diff_results_versions ON diff_results(forecast_version_old, forecast_version_new);
+CREATE INDEX IF NOT EXISTS idx_diff_results_type ON diff_results(diff_type);
 
 COMMENT ON TABLE diff_results IS 'Cached diff results for performance (compute once, query many)';
 COMMENT ON COLUMN diff_results.diff_type IS 'ADDED = new tour, REMOVED = deleted tour, CHANGED = modified attributes';
@@ -236,7 +238,7 @@ COMMENT ON COLUMN diff_results.diff_type IS 'ADDED = new tour, REMOVED = deleted
 -- ============================================================================
 
 -- View: Latest LOCKED plan per forecast
-CREATE VIEW latest_locked_plans AS
+CREATE OR REPLACE VIEW latest_locked_plans AS
 SELECT DISTINCT ON (forecast_version_id)
     forecast_version_id,
     id AS plan_version_id,
@@ -250,7 +252,7 @@ ORDER BY forecast_version_id, locked_at DESC;
 COMMENT ON VIEW latest_locked_plans IS 'Most recent LOCKED plan for each forecast version';
 
 -- View: Release-ready DRAFT plans (all gates passed)
-CREATE VIEW release_ready_plans AS
+CREATE OR REPLACE VIEW release_ready_plans AS
 SELECT
     pv.id AS plan_version_id,
     pv.forecast_version_id,
@@ -281,6 +283,7 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
+DROP TRIGGER IF EXISTS prevent_locked_plan_modification_trigger ON plan_versions;
 CREATE TRIGGER prevent_locked_plan_modification_trigger
 BEFORE UPDATE ON plan_versions
 FOR EACH ROW
@@ -314,6 +317,7 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
+DROP TRIGGER IF EXISTS prevent_locked_assignments_modification_trigger ON assignments;
 CREATE TRIGGER prevent_locked_assignments_modification_trigger
 BEFORE UPDATE OR DELETE ON assignments
 FOR EACH ROW
@@ -334,6 +338,7 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
+DROP TRIGGER IF EXISTS audit_log_append_only_trigger ON audit_log;
 CREATE TRIGGER audit_log_append_only_trigger
 BEFORE UPDATE OR DELETE ON audit_log
 FOR EACH ROW

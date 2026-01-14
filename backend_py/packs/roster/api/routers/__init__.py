@@ -99,6 +99,66 @@ except ImportError as e:
     _repair_available = False
     _repair_import_error = f"{type(e).__name__}: {e}"
 
+# Include Violations/Matrix router (V4.6)
+_violations_import_error = None
+try:
+    from packs.roster.api.routers.violations import router as violations_router
+    router.include_router(violations_router)
+    _violations_available = True
+except ImportError as e:
+    _violations_available = False
+    _violations_import_error = f"{type(e).__name__}: {e}"
+
+# Include Pins router (V4.6)
+_pins_import_error = None
+try:
+    from packs.roster.api.routers.pins import router as pins_router
+    router.include_router(pins_router)
+    _pins_available = True
+except ImportError as e:
+    _pins_available = False
+    _pins_import_error = f"{type(e).__name__}: {e}"
+
+# Include Diff router (V4.6)
+_diff_import_error = None
+try:
+    from packs.roster.api.routers.diff import router as diff_router
+    router.include_router(diff_router)
+    _diff_available = True
+except ImportError as e:
+    _diff_available = False
+    _diff_import_error = f"{type(e).__name__}: {e}"
+
+# Include Repair Sessions router (V4.6)
+_repair_sessions_import_error = None
+try:
+    from packs.roster.api.routers.repair_sessions import router as repair_sessions_router
+    router.include_router(repair_sessions_router)
+    _repair_sessions_available = True
+except ImportError as e:
+    _repair_sessions_available = False
+    _repair_sessions_import_error = f"{type(e).__name__}: {e}"
+
+# Include Runs router (V4.8 - Session Auth for Workbench)
+_runs_import_error = None
+try:
+    from packs.roster.api.routers.runs import router as runs_router
+    router.include_router(runs_router)
+    _runs_available = True
+except ImportError as e:
+    _runs_available = False
+    _runs_import_error = f"{type(e).__name__}: {e}"
+
+# Include Repair Orchestrator router (V4.8 - Top-K Proposals)
+_repair_orchestrator_import_error = None
+try:
+    from packs.roster.api.routers.repair_orchestrator import router as repair_orchestrator_router
+    router.include_router(repair_orchestrator_router)
+    _repair_orchestrator_available = True
+except ImportError as e:
+    _repair_orchestrator_available = False
+    _repair_orchestrator_import_error = f"{type(e).__name__}: {e}"
+
 
 # Health check for roster pack
 @router.get("/health", summary="Roster Pack Health")
@@ -110,11 +170,17 @@ async def roster_health():
     response = {
         "pack": "roster",
         "status": status,
-        "version": "1.2.0",  # V1.2 = Repair MVP
+        "version": "1.6.0",  # V1.6 = Repair Orchestrator (Top-K)
         "kernel_routers_available": _kernel_routers_available,
         "dispatch_assist_available": _dispatch_available,
         "lifecycle_available": _lifecycle_available,
         "repair_available": _repair_available,
+        "violations_available": _violations_available,
+        "pins_available": _pins_available,
+        "diff_available": _diff_available,
+        "repair_sessions_available": _repair_sessions_available,
+        "runs_available": _runs_available,
+        "repair_orchestrator_available": _repair_orchestrator_available,
         "migration_phase": 1  # 1=wrapper, 2=moving, 3=complete
     }
 
@@ -127,6 +193,18 @@ async def roster_health():
         response["lifecycle_error"] = _lifecycle_import_error
     if not _repair_available and _repair_import_error:
         response["repair_error"] = _repair_import_error
+    if not _violations_available and _violations_import_error:
+        response["violations_error"] = _violations_import_error
+    if not _pins_available and _pins_import_error:
+        response["pins_error"] = _pins_import_error
+    if not _diff_available and _diff_import_error:
+        response["diff_error"] = _diff_import_error
+    if not _repair_sessions_available and _repair_sessions_import_error:
+        response["repair_sessions_error"] = _repair_sessions_import_error
+    if not _runs_available and _runs_import_error:
+        response["runs_error"] = _runs_import_error
+    if not _repair_orchestrator_available and _repair_orchestrator_import_error:
+        response["repair_orchestrator_error"] = _repair_orchestrator_import_error
 
     return response
 

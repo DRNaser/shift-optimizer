@@ -1,43 +1,41 @@
 /**
- * BFF Route: Roster Snapshot Detail API
+ * SOLVEREIGN - Roster Snapshot Detail BFF Route
  *
- * Proxies requests to /api/v1/roster/snapshots/{id} on the backend
+ * Uses centralized proxy.ts for consistent error handling.
  */
 
-import { NextRequest, NextResponse } from 'next/server';
-import { cookies } from 'next/headers';
+import { NextRequest } from 'next/server';
+import {
+  getSessionCookie,
+  proxyToBackend,
+  proxyResultToResponse,
+  unauthorizedResponse,
+} from '@/lib/bff/proxy';
 
-const BACKEND_URL = process.env.SOLVEREIGN_BACKEND_URL || 'http://localhost:8000';
+export const dynamic = 'force-dynamic';
+export const revalidate = 0;
 
 interface RouteParams {
   params: Promise<{ id: string }>;
 }
 
+/**
+ * GET /api/roster/snapshots/[id]
+ * Get snapshot details
+ */
 export async function GET(request: NextRequest, { params }: RouteParams) {
-  const cookieStore = await cookies();
-  const sessionCookie = cookieStore.get('__Host-sv_platform_session') || cookieStore.get('sv_platform_session');
-
-  if (!sessionCookie) {
-    return NextResponse.json({ success: false, error: 'Unauthorized' }, { status: 401 });
-  }
-
   const { id } = await params;
+  const traceId = `snapshot-detail-${id}-${Date.now()}`;
 
-  try {
-    const response = await fetch(`${BACKEND_URL}/api/v1/roster/snapshots/${id}`, {
-      headers: {
-        Cookie: `${sessionCookie.name}=${sessionCookie.value}`,
-      },
-      cache: 'no-store',
-    });
-
-    const data = await response.json();
-    return NextResponse.json(data, { status: response.status });
-  } catch (error) {
-    console.error('Failed to fetch snapshot:', error);
-    return NextResponse.json(
-      { success: false, error: 'Backend connection failed' },
-      { status: 502 }
-    );
+  const session = await getSessionCookie();
+  if (!session) {
+    return unauthorizedResponse(traceId);
   }
+
+  const result = await proxyToBackend(`/api/v1/roster/snapshots/${id}`, session, {
+    method: 'GET',
+    traceId,
+  });
+
+  return proxyResultToResponse(result);
 }

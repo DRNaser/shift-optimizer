@@ -2,6 +2,7 @@
 // SOLVEREIGN V4.5 - Platform Admin Users List
 // =============================================================================
 // List and manage users across all tenants.
+// Uses Zod validation for type safety.
 // =============================================================================
 
 'use client';
@@ -10,30 +11,27 @@ import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { Users, Plus, Building2, Shield, Search, ChevronRight } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { ApiError } from '@/components/ui/api-error';
+import {
+  parseUserListResponse,
+  parseTenantListResponse,
+  type User,
+  type Tenant,
+} from '@/lib/schemas/platform-admin-schemas';
+
+interface ApiErrorState {
+  code: string;
+  message: string;
+  traceId?: string;
+}
 
 interface UserBinding {
-  id: number;
-  tenant_id: number;
-  site_id: number | null;
-  role_id: number;
+  id?: number;
+  tenant_id: number | null;
+  site_id?: number | null;
+  role_id?: number;
   role_name: string;
-  is_active: boolean;
-}
-
-interface User {
-  id: string;
-  email: string;
-  display_name: string | null;
-  is_active: boolean;
-  is_locked: boolean;
-  created_at: string;
-  last_login_at: string | null;
-  bindings: UserBinding[];
-}
-
-interface Tenant {
-  id: number;
-  name: string;
+  is_active?: boolean;
 }
 
 export default function UsersListPage() {
@@ -41,6 +39,7 @@ export default function UsersListPage() {
   const [tenants, setTenants] = useState<Tenant[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [apiError, setApiError] = useState<ApiErrorState | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [filterTenant, setFilterTenant] = useState<string>('');
 
@@ -52,12 +51,28 @@ export default function UsersListPage() {
           fetch('/api/platform-admin/tenants'),
         ]);
 
+        // Handle 403 Forbidden explicitly
+        if (usersRes.status === 403 || tenantsRes.status === 403) {
+          const errorRes = usersRes.status === 403 ? usersRes : tenantsRes;
+          const data = await errorRes.json();
+          setApiError({
+            code: data.error_code || 'FORBIDDEN',
+            message: data.message || 'Access denied',
+            traceId: data.trace_id,
+          });
+          return;
+        }
+
         if (!usersRes.ok || !tenantsRes.ok) {
           throw new Error('Failed to load data');
         }
 
-        setUsers(await usersRes.json());
-        setTenants(await tenantsRes.json());
+        const usersData = await usersRes.json();
+        const tenantsData = await tenantsRes.json();
+
+        // Zod validation for type safety
+        setUsers(parseUserListResponse(usersData));
+        setTenants(parseTenantListResponse(tenantsData));
       } catch (err) {
         setError(err instanceof Error ? err.message : 'Failed to load users');
       } finally {
@@ -169,15 +184,26 @@ export default function UsersListPage() {
           </div>
         )}
 
+        {/* Access Denied State (403 Forbidden) */}
+        {apiError && (
+          <ApiError
+            code={apiError.code}
+            message={apiError.message}
+            traceId={apiError.traceId}
+            showBackLink={true}
+            backHref="/platform-admin"
+          />
+        )}
+
         {/* Error State */}
-        {error && (
+        {!apiError && error && (
           <div className="bg-red-500/10 border border-red-500/20 rounded-lg p-4 text-red-400">
             {error}
           </div>
         )}
 
         {/* Users List */}
-        {!loading && !error && (
+        {!loading && !error && !apiError && (
           <div className="bg-[var(--sv-gray-800)] rounded-lg border border-[var(--sv-gray-700)] overflow-hidden">
             {filteredUsers.length === 0 ? (
               <div className="p-8 text-center text-[var(--sv-gray-400)]">
@@ -208,9 +234,9 @@ export default function UsersListPage() {
                     <div className="flex items-center gap-3">
                       {/* Bindings */}
                       <div className="flex flex-wrap gap-1">
-                        {user.bindings.slice(0, 2).map((binding) => (
+                        {user.bindings.slice(0, 2).map((binding, idx) => (
                           <span
-                            key={binding.id}
+                            key={binding.id ?? `${user.id}-${binding.role_name}-${idx}`}
                             className={cn(
                               'px-2 py-0.5 rounded text-xs',
                               getRoleColor(binding.role_name)
@@ -218,7 +244,7 @@ export default function UsersListPage() {
                           >
                             {binding.role_name.replace('_', ' ')}
                             <span className="opacity-60 ml-1">
-                              @ {getTenantName(binding.tenant_id)}
+                              @ {getTenantName(binding.tenant_id ?? 0)}
                             </span>
                           </span>
                         ))}

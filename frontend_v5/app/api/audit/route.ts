@@ -1,51 +1,52 @@
 /**
- * BFF Route: Audit Log Viewer API
+ * SOLVEREIGN - Audit Log Viewer BFF Route
  *
- * Proxies requests to /api/v1/audit on the backend
+ * Uses centralized proxy.ts for consistent error handling.
  */
 
-import { NextRequest, NextResponse } from 'next/server';
-import { cookies } from 'next/headers';
+import { NextRequest } from 'next/server';
+import {
+  getSessionCookie,
+  proxyToBackend,
+  proxyResultToResponse,
+  unauthorizedResponse,
+} from '@/lib/bff/proxy';
 
-const BACKEND_URL = process.env.SOLVEREIGN_BACKEND_URL || 'http://localhost:8000';
+export const dynamic = 'force-dynamic';
+export const revalidate = 0;
 
+/**
+ * GET /api/audit
+ * List audit log entries with filtering
+ */
 export async function GET(request: NextRequest) {
-  const cookieStore = await cookies();
-  const sessionCookie = cookieStore.get('__Host-sv_platform_session') || cookieStore.get('sv_platform_session');
+  const traceId = `audit-list-${Date.now()}`;
 
-  if (!sessionCookie) {
-    return NextResponse.json({ success: false, error: 'Unauthorized' }, { status: 401 });
+  const session = await getSessionCookie();
+  if (!session) {
+    return unauthorizedResponse(traceId);
   }
 
   const { searchParams } = new URL(request.url);
-  const limit = searchParams.get('limit') || '50';
-  const offset = searchParams.get('offset') || '0';
-  const event_type = searchParams.get('event_type');
-  const from_date = searchParams.get('from_date');
-  const to_date = searchParams.get('to_date');
-  const user_email = searchParams.get('user_email');
+  const params = new URLSearchParams();
 
-  let url = `${BACKEND_URL}/api/v1/audit?limit=${limit}&offset=${offset}`;
-  if (event_type) url += `&event_type=${encodeURIComponent(event_type)}`;
-  if (from_date) url += `&from_date=${encodeURIComponent(from_date)}`;
-  if (to_date) url += `&to_date=${encodeURIComponent(to_date)}`;
-  if (user_email) url += `&user_email=${encodeURIComponent(user_email)}`;
+  params.set('limit', searchParams.get('limit') || '50');
+  params.set('offset', searchParams.get('offset') || '0');
 
-  try {
-    const response = await fetch(url, {
-      headers: {
-        Cookie: `${sessionCookie.name}=${sessionCookie.value}`,
-      },
-      cache: 'no-store',
-    });
+  const eventType = searchParams.get('event_type');
+  const fromDate = searchParams.get('from_date');
+  const toDate = searchParams.get('to_date');
+  const userEmail = searchParams.get('user_email');
 
-    const data = await response.json();
-    return NextResponse.json(data, { status: response.status });
-  } catch (error) {
-    console.error('Failed to fetch audit log:', error);
-    return NextResponse.json(
-      { success: false, error: 'Backend connection failed' },
-      { status: 502 }
-    );
-  }
+  if (eventType) params.set('event_type', eventType);
+  if (fromDate) params.set('from_date', fromDate);
+  if (toDate) params.set('to_date', toDate);
+  if (userEmail) params.set('user_email', userEmail);
+
+  const result = await proxyToBackend(`/api/v1/audit?${params.toString()}`, session, {
+    method: 'GET',
+    traceId,
+  });
+
+  return proxyResultToResponse(result);
 }

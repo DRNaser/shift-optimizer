@@ -103,7 +103,7 @@ class TestScopeBlockingEnforcement:
         mock_request.app.state.db = mock_db
 
         # Mock is_scope_blocked to return False
-        with patch('backend_py.api.dependencies.is_scope_blocked', new_callable=AsyncMock) as mock_blocked:
+        with patch('api.dependencies.is_scope_blocked', new_callable=AsyncMock) as mock_blocked:
             mock_blocked.return_value = False
 
             tenant = TenantContext(
@@ -129,7 +129,7 @@ class TestScopeBlockingEnforcement:
         mock_db = AsyncMock()
         mock_request.app.state.db = mock_db
 
-        with patch('backend_py.api.dependencies.is_scope_blocked', new_callable=AsyncMock) as mock_blocked:
+        with patch('api.dependencies.is_scope_blocked', new_callable=AsyncMock) as mock_blocked:
             mock_blocked.return_value = True  # Scope is blocked!
 
             tenant = TenantContext(
@@ -157,7 +157,7 @@ class TestScopeBlockingEnforcement:
         mock_db = AsyncMock()
         mock_request.app.state.db = mock_db
 
-        with patch('backend_py.api.dependencies.is_scope_blocked', new_callable=AsyncMock) as mock_blocked:
+        with patch('api.dependencies.is_scope_blocked', new_callable=AsyncMock) as mock_blocked:
             mock_blocked.return_value = False
 
             tenant = CoreTenantContext(

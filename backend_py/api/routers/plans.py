@@ -135,6 +135,16 @@ class LockResponse(BaseModel):
     locked_at: datetime
     locked_by: str
     message: str
+    idempotent: bool = False  # True if plan was already locked
+
+
+class ViolationBlockResponse(BaseModel):
+    """Response when lock is blocked due to violations."""
+    code: str = "VIOLATIONS_PRESENT"
+    block_count: int
+    warn_count: int
+    violations: List[dict]
+    message: str
 
 
 class ExportResponse(BaseModel):
@@ -446,7 +456,7 @@ async def get_plan_audit(
             )
 
 
-@router.post("/{plan_id}/lock", response_model=LockResponse)
+@router.post("/{plan_id}/lock", response_model=LockResponse, responses={409: {"model": ViolationBlockResponse}})
 async def lock_plan(
     plan_id: int,
     request: LockRequest,
@@ -466,7 +476,18 @@ async def lock_plan(
     - All audit checks must pass
     - User must have APPROVER role
     - Tenant scope must not be blocked
+    - **No BLOCK-level violations** (re-checked at lock time)
+
+    Idempotency:
+    - Locking an already-locked plan returns 200 with idempotent=True
+
+    Error Codes:
+    - 403: Not authorized (RBAC-first: checked before revealing state)
+    - 404: Plan not found
+    - 409: Violations present (returns violation list)
+    - 422: Invalid state (audit failures, wrong status)
     """
+    # RBAC-first: Check authorization before revealing ANY plan state
     # Check if tenant scope is blocked (Fix C: write-block enforcement)
     blocked = await is_scope_blocked(db, "tenant", str(user.tenant_id))
     if blocked:
@@ -511,7 +532,7 @@ async def lock_plan(
             # Get plan - RLS enforced + explicit tenant_id filter (defense in depth)
             await cur.execute(
                 """
-                SELECT id, status, audit_failed_count
+                SELECT id, status, audit_failed_count, locked_at, locked_by
                 FROM plan_versions
                 WHERE id = %s AND tenant_id = %s
                 FOR UPDATE
@@ -523,8 +544,24 @@ async def lock_plan(
             if not plan:
                 raise PlanNotFoundError(plan_id, user.tenant_id)
 
+            # IDEMPOTENCY: If already locked, return success with idempotent flag
             if plan["status"] == "LOCKED":
-                raise PlanLockedError(plan_id)
+                logger.info(
+                    "plan_lock_idempotent",
+                    extra={
+                        "plan_id": plan_id,
+                        "already_locked_by": plan["locked_by"],
+                        "user_id": user.user_id,
+                    }
+                )
+                return LockResponse(
+                    plan_version_id=plan_id,
+                    status="LOCKED",
+                    locked_at=plan["locked_at"],
+                    locked_by=plan["locked_by"],
+                    message=f"Plan {plan_id} was already locked by {plan['locked_by']}",
+                    idempotent=True,
+                )
 
             if plan["status"] != "DRAFT":
                 raise HTTPException(
@@ -537,6 +574,103 @@ async def lock_plan(
                     status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                     detail=f"Cannot lock plan with {plan['audit_failed_count']} failed audits."
                 )
+
+            # ================================================================
+            # P1 FIX: RE-CHECK VIOLATIONS LIVE BEFORE LOCKING
+            # ================================================================
+            # Re-compute violations in the same transaction to prevent race conditions.
+            # Uses canonical violation query from packs/roster/core/violations.py.
+            await cur.execute("""
+                WITH violation_data AS (
+                    -- OVERLAP: Same driver on same day with overlapping times
+                    SELECT
+                        'OVERLAP' as violation_type,
+                        'BLOCK' as severity,
+                        a1.driver_id::text as driver_id,
+                        a1.day_of_week as day,
+                        format('Driver %%s has overlapping assignments on %%s', a1.driver_id, a1.day_of_week) as message
+                    FROM assignments a1
+                    JOIN assignments a2 ON a1.driver_id = a2.driver_id
+                        AND a1.id < a2.id
+                        AND a1.plan_version_id = a2.plan_version_id
+                        AND a1.day_of_week = a2.day_of_week
+                    WHERE a1.plan_version_id = %s
+
+                    UNION ALL
+
+                    -- UNASSIGNED: Tours without drivers
+                    SELECT
+                        'UNASSIGNED' as violation_type,
+                        'BLOCK' as severity,
+                        'NONE' as driver_id,
+                        ti.day_of_week as day,
+                        format('Tour %%s on %%s has no driver', ti.tour_id, ti.day_of_week) as message
+                    FROM tour_instances ti
+                    LEFT JOIN assignments a ON ti.id = a.tour_instance_id
+                        AND a.plan_version_id = %s
+                    WHERE ti.plan_version_id = %s
+                      AND a.id IS NULL
+
+                    UNION ALL
+
+                    -- REST: Drivers with insufficient rest (simplified: works >5 days)
+                    SELECT
+                        'REST' as violation_type,
+                        'WARN' as severity,
+                        driver_id::text as driver_id,
+                        NULL as day,
+                        format('Driver %%s may have rest violations (works %%s days)', driver_id, COUNT(DISTINCT day_of_week)) as message
+                    FROM assignments
+                    WHERE plan_version_id = %s
+                    GROUP BY driver_id
+                    HAVING COUNT(DISTINCT day_of_week) > 5
+                )
+                SELECT
+                    violation_type,
+                    severity,
+                    driver_id,
+                    day,
+                    message
+                FROM violation_data
+            """, (plan_id, plan_id, plan_id, plan_id))
+
+            violations = await cur.fetchall()
+
+            # Count by severity
+            block_violations = [v for v in violations if v["severity"] == "BLOCK"]
+            warn_violations = [v for v in violations if v["severity"] == "WARN"]
+
+            if block_violations:
+                logger.warning(
+                    "plan_lock_blocked_violations",
+                    extra={
+                        "plan_id": plan_id,
+                        "block_count": len(block_violations),
+                        "warn_count": len(warn_violations),
+                        "user_id": user.user_id,
+                        "tenant_id": user.tenant_id,
+                    }
+                )
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail={
+                        "code": "VIOLATIONS_PRESENT",
+                        "block_count": len(block_violations),
+                        "warn_count": len(warn_violations),
+                        "violations": [
+                            {
+                                "type": v["violation_type"],
+                                "severity": v["severity"],
+                                "driver_id": v["driver_id"],
+                                "day": v["day"],
+                                "message": v["message"],
+                            }
+                            for v in block_violations[:20]  # Limit to 20 for response size
+                        ],
+                        "message": f"Cannot lock plan: {len(block_violations)} BLOCK violations must be resolved first.",
+                    }
+                )
+            # ================================================================
 
             # Use user info from JWT for locked_by (not from request body for security)
             locked_by = user.email or user.name or user.user_id
@@ -565,6 +699,35 @@ async def lock_plan(
                 (plan_id, plan_id)
             )
 
+            # Write audit log entry for lock action
+            await cur.execute(
+                """
+                INSERT INTO auth.audit_log (
+                    user_id, tenant_id, action, resource_type, resource_id, details
+                )
+                SELECT
+                    u.id, %s, 'PLAN_LOCKED', 'plan_version', %s::text,
+                    jsonb_build_object(
+                        'locked_by', %s,
+                        'notes', %s,
+                        'block_violations_checked', 0,
+                        'warn_violations', %s
+                    )
+                FROM auth.users u
+                WHERE u.email = %s OR u.display_name = %s
+                LIMIT 1
+                """,
+                (
+                    user.tenant_id,
+                    plan_id,
+                    locked_by,
+                    request.notes,
+                    len(warn_violations) if warn_violations else 0,
+                    user.email,
+                    user.name,
+                )
+            )
+
             logger.info(
                 "plan_locked",
                 extra={
@@ -572,6 +735,7 @@ async def lock_plan(
                     "locked_by": locked_by,
                     "tenant_id": user.tenant_id,
                     "user_id": user.user_id,
+                    "warn_violations": len(warn_violations) if warn_violations else 0,
                 }
             )
 
@@ -581,6 +745,7 @@ async def lock_plan(
                 locked_at=result["locked_at"],
                 locked_by=locked_by,
                 message=f"Plan {plan_id} locked successfully by {locked_by}",
+                idempotent=False,
             )
 
 

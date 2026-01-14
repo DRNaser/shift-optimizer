@@ -20,7 +20,11 @@ export type IdempotentAction =
   | 'roster.plan.reject'
   | 'roster.snapshot.publish'
   | 'roster.snapshot.archive'
-  | 'roster.repair.commit';
+  | 'roster.repair.commit'
+  | 'roster.repair.apply'  // Session-based repair apply (canonical)
+  | 'roster.repair.prepare'  // Orchestrated repair: prepare draft
+  | 'roster.repair.confirm'  // Orchestrated repair: confirm draft
+  | 'roster.pin.create';
 
 /**
  * Session-scoped key storage to maintain stability during retries

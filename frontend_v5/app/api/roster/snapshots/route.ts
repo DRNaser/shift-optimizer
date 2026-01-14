@@ -1,47 +1,48 @@
 /**
- * BFF Route: Roster Snapshots API
+ * SOLVEREIGN - Roster Snapshots BFF Route
  *
- * Proxies requests to /api/v1/roster/snapshots on the backend
+ * Uses centralized proxy.ts for consistent error handling.
  */
 
-import { NextRequest, NextResponse } from 'next/server';
-import { cookies } from 'next/headers';
+import { NextRequest } from 'next/server';
+import {
+  getSessionCookie,
+  proxyToBackend,
+  proxyResultToResponse,
+  unauthorizedResponse,
+} from '@/lib/bff/proxy';
 
-const BACKEND_URL = process.env.SOLVEREIGN_BACKEND_URL || 'http://localhost:8000';
+export const dynamic = 'force-dynamic';
+export const revalidate = 0;
 
+/**
+ * GET /api/roster/snapshots
+ * List snapshots with optional filtering
+ */
 export async function GET(request: NextRequest) {
-  const cookieStore = await cookies();
-  const sessionCookie = cookieStore.get('__Host-sv_platform_session') || cookieStore.get('sv_platform_session');
+  const traceId = `snapshots-list-${Date.now()}`;
 
-  if (!sessionCookie) {
-    return NextResponse.json({ success: false, error: 'Unauthorized' }, { status: 401 });
+  const session = await getSessionCookie();
+  if (!session) {
+    return unauthorizedResponse(traceId);
   }
 
   const { searchParams } = new URL(request.url);
   const limit = searchParams.get('limit') || '50';
   const offset = searchParams.get('offset') || '0';
-  const status_filter = searchParams.get('status');
+  const statusFilter = searchParams.get('status');
 
-  let url = `${BACKEND_URL}/api/v1/roster/snapshots?limit=${limit}&offset=${offset}`;
-  if (status_filter) {
-    url += `&status_filter=${status_filter}`;
+  const params = new URLSearchParams();
+  params.set('limit', limit);
+  params.set('offset', offset);
+  if (statusFilter) {
+    params.set('status_filter', statusFilter);
   }
 
-  try {
-    const response = await fetch(url, {
-      headers: {
-        Cookie: `${sessionCookie.name}=${sessionCookie.value}`,
-      },
-      cache: 'no-store',
-    });
+  const result = await proxyToBackend(`/api/v1/roster/snapshots?${params.toString()}`, session, {
+    method: 'GET',
+    traceId,
+  });
 
-    const data = await response.json();
-    return NextResponse.json(data, { status: response.status });
-  } catch (error) {
-    console.error('Failed to fetch snapshots:', error);
-    return NextResponse.json(
-      { success: false, error: 'Backend connection failed' },
-      { status: 502 }
-    );
-  }
+  return proxyResultToResponse(result);
 }

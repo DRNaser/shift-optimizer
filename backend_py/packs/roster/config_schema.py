@@ -171,6 +171,54 @@ class RosterPolicyConfig(BaseModel):
         description="Minimum coverage percentage to pass audit"
     )
 
+    # === FEATURE CAPABILITY FLAGS (P0 WIEN PILOT) ===
+    # These flags control which roster pack features are available.
+    # All P0 features default to True for Wien Pilot.
+
+    enable_pins: bool = Field(
+        True,
+        description="Enable pin/lock feature for anti-churn (prevents solver changes to pinned assignments)"
+    )
+
+    enable_repairs: bool = Field(
+        True,
+        description="Enable repair workflow (SWAP/MOVE/FILL/CLEAR actions with preview and apply)"
+    )
+
+    enable_violations_overlay: bool = Field(
+        True,
+        description="Enable violations overlay in matrix view (BLOCK/WARN badges on cells)"
+    )
+
+    enable_diff_preview: bool = Field(
+        True,
+        description="Enable diff preview before publish (KPI delta, churn count, change list)"
+    )
+
+    enable_publish_gate: bool = Field(
+        True,
+        description="Enable server-side publish gate (blocks publish when BLOCK violations exist)"
+    )
+
+    enable_audit_notes: bool = Field(
+        True,
+        description="Require audit notes (reason_code + note) on all mutations"
+    )
+
+    repair_session_timeout_minutes: int = Field(
+        30,
+        ge=5,
+        le=120,
+        description="Repair session expiry timeout in minutes"
+    )
+
+    max_repair_actions_per_session: int = Field(
+        100,
+        ge=10,
+        le=500,
+        description="Maximum number of repair actions allowed per session"
+    )
+
     # === VALIDATORS ===
 
     @validator('max_split_break_minutes')
@@ -221,6 +269,13 @@ class RosterPolicyConfig(BaseModel):
                 "span_split",
                 "fatigue",
                 "max_hours"
+            ],
+
+            # P0 Wien Pilot: These features MUST remain enabled
+            # (cannot be disabled for compliance/safety)
+            "mandatory_features": [
+                "enable_publish_gate",  # Server-side violation gate (safety)
+                "enable_audit_notes",   # Audit trail (compliance)
             ]
         }
 
@@ -237,7 +292,7 @@ DEFAULT_ROSTER_POLICY = RosterPolicyConfig()
 
 # === SCHEMA VERSION ===
 
-ROSTER_SCHEMA_VERSION = "1.0"
+ROSTER_SCHEMA_VERSION = "1.1"  # Added feature capability flags for Wien Pilot
 
 
 def validate_roster_config(config: dict) -> RosterPolicyConfig:

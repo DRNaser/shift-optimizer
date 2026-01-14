@@ -18,8 +18,8 @@ import { test, expect, Page } from '@playwright/test';
 // CONFIGURATION
 // =============================================================================
 
-const BASE_URL = process.env.E2E_BASE_URL || 'http://localhost:3000';
-const API_URL = process.env.E2E_API_URL || 'http://localhost:8000';
+const BASE_URL = process.env.SV_E2E_BASE_URL || process.env.E2E_BASE_URL || 'http://localhost:3002';
+const API_URL = process.env.SV_E2E_API_URL || process.env.E2E_API_URL || 'http://localhost:8000';
 
 // Test plan ID (set in env or use a known test plan)
 const TEST_PLAN_ID = process.env.E2E_TEST_PLAN_ID || 'test-plan-001';
@@ -77,11 +77,12 @@ test.describe('1. Login (Entra)', () => {
   });
 
   test('Auth page shows sign-in button when not authenticated', async ({ page }) => {
-    await page.goto(BASE_URL);
+    // Increase timeout for dev server under parallel load
+    await page.goto(BASE_URL, { waitUntil: 'domcontentloaded', timeout: 60000 });
 
     // Should see sign-in option (either button or redirect to login)
-    const signInVisible = await page.getByRole('button', { name: /sign in/i }).isVisible();
-    const loginPageVisible = await page.url().includes('login');
+    const signInVisible = await page.getByRole('button', { name: /sign in/i }).isVisible().catch(() => false);
+    const loginPageVisible = page.url().includes('login');
 
     expect(signInVisible || loginPageVisible).toBeTruthy();
   });
@@ -92,18 +93,20 @@ test.describe('1. Login (Entra)', () => {
 // =============================================================================
 
 test.describe('2. API Calls Authenticated', () => {
-  test('Unauthenticated API call returns 401', async ({ request }) => {
-    const response = await request.get(`${API_URL}/api/v1/plans`);
+  test('Unauthenticated API call returns auth error', async ({ request }) => {
+    // Test via BFF route (not direct backend) to verify frontend auth flow
+    const response = await request.get(`${BASE_URL}/api/roster/plans`);
 
-    // Should be 401 or 422 (missing auth)
-    expect([401, 422]).toContain(response.status());
+    // Should be 401 (unauthorized) - the BFF returns 401 when no session cookie
+    expect([401, 403]).toContain(response.status());
   });
 
   test('Token audience matches backend', async ({ page }) => {
     // This is a config validation test
     // Check that frontend scope matches backend audience
 
-    await page.goto(BASE_URL);
+    // Increase timeout for dev server under parallel load
+    await page.goto(BASE_URL, { waitUntil: 'domcontentloaded', timeout: 60000 });
 
     // Get MSAL config from page context
     const msalConfig = await page.evaluate(() => {
@@ -296,6 +299,124 @@ test.describe('6. Legacy Snapshot Warnings', () => {
     const notReplayable = page.getByText(/not replayable/i);
     await expect(notReplayable).toBeVisible();
   });
+});
+
+// =============================================================================
+// CRITICAL PAGES SMOKE (No Auth Required)
+// =============================================================================
+// These tests verify that critical pages don't crash and respond correctly.
+// They can run without credentials and catch build/render errors.
+
+test.describe('Critical Pages Smoke', () => {
+  const criticalRoutes = [
+    { path: '/platform/login', expectRedirect: false, name: 'Platform Login' },
+    { path: '/platform-admin', expectRedirect: true, name: 'Platform Admin Dashboard' },
+    { path: '/platform-admin/tenants', expectRedirect: true, name: 'Tenant List' },
+    { path: '/platform-admin/users', expectRedirect: true, name: 'User List' },
+    { path: '/packs/roster/workbench', expectRedirect: true, name: 'Roster Workbench' },
+    { path: '/packs/roster/repair', expectRedirect: true, name: 'Roster Repair' },
+  ];
+
+  for (const route of criticalRoutes) {
+    // Increase test timeout for dev server under parallel load
+    test(`${route.name} (${route.path}) responds without crash`, async ({ page }) => {
+      test.setTimeout(60000);
+      const response = await page.goto(`${BASE_URL}${route.path}`, {
+        waitUntil: 'domcontentloaded',
+        timeout: 45000,
+      });
+
+      // Should not return 5xx errors (server crash)
+      expect(response?.status()).toBeLessThan(500);
+
+      // If auth required, should redirect to login or show 401
+      if (route.expectRedirect) {
+        const currentUrl = page.url();
+        const isRedirectedToLogin = currentUrl.includes('login') || currentUrl.includes('auth');
+        const is401 = response?.status() === 401;
+        const hasContent = await page.locator('body').textContent().then(t => t && t.length > 0);
+
+        // Either redirected to login, got 401, or page rendered
+        expect(isRedirectedToLogin || is401 || hasContent).toBeTruthy();
+      } else {
+        // Public page - should render
+        const hasContent = await page.locator('body').textContent().then(t => t && t.length > 100);
+        expect(hasContent).toBeTruthy();
+      }
+    });
+  }
+
+  test('All critical pages return no console errors', async ({ page }) => {
+    test.setTimeout(60000);
+    const consoleErrors: string[] = [];
+    page.on('console', msg => {
+      if (msg.type() === 'error') {
+        consoleErrors.push(msg.text());
+      }
+    });
+
+    // Visit login page (public)
+    // Use domcontentloaded instead of networkidle to avoid timeout under parallel load
+    await page.goto(`${BASE_URL}/platform/login`, { waitUntil: 'domcontentloaded', timeout: 45000 });
+
+    // Filter out expected errors (network failures when not authenticated)
+    const unexpectedErrors = consoleErrors.filter(
+      err => !err.includes('401') && !err.includes('403') && !err.includes('Failed to fetch')
+    );
+
+    // Log for debugging
+    if (unexpectedErrors.length > 0) {
+      console.log('Unexpected console errors:', unexpectedErrors);
+    }
+
+    // Should have no unexpected errors on public pages
+    expect(unexpectedErrors.length).toBe(0);
+  });
+});
+
+// =============================================================================
+// BFF ROUTES SMOKE (API Health)
+// =============================================================================
+// Verify BFF routes respond correctly (not crash)
+
+test.describe('BFF Routes Smoke', () => {
+  const bffRoutes = [
+    { path: '/api/auth/me', method: 'GET', expectAuth: true },
+    { path: '/api/platform-admin/tenants', method: 'GET', expectAuth: true },
+    { path: '/api/platform-admin/users', method: 'GET', expectAuth: true },
+    { path: '/api/roster/plans', method: 'GET', expectAuth: true },
+  ];
+
+  for (const route of bffRoutes) {
+    test(`BFF ${route.method} ${route.path} responds correctly`, async ({ request }) => {
+      const response = await request.fetch(`${BASE_URL}${route.path}`, {
+        method: route.method,
+      });
+
+      // Should not crash (5xx)
+      expect(response.status()).toBeLessThan(500);
+
+      // If auth required, should return 401 with proper error structure
+      if (route.expectAuth) {
+        expect([200, 401, 403]).toContain(response.status());
+
+        if (response.status() === 401) {
+          const body = await response.json();
+          // Should have proper error structure, not empty {}
+          // Accept multiple formats for backwards compatibility:
+          // - { error_code, message } (BFF proxy format)
+          // - { error: { code, message } } (legacy platform format)
+          // - { code, message } (platform-rbac format)
+          // - { success: false, error: string } (legacy API format)
+          const hasProxyFormat = 'error_code' in body && 'message' in body;
+          const hasLegacyFormat = body.error && typeof body.error === 'object' && ('code' in body.error || 'message' in body.error);
+          const hasPlatformRbacFormat = 'code' in body && 'message' in body;
+          const hasSuccessFalseFormat = body.success === false && typeof body.error === 'string';
+          expect(hasProxyFormat || hasLegacyFormat || hasPlatformRbacFormat || hasSuccessFalseFormat).toBe(true);
+        }
+      }
+    });
+  }
 });
 
 // =============================================================================

@@ -223,3 +223,57 @@ class TestWhatsAppWebhookSecurity:
         if response.status_code in (400, 401):
             # Should indicate auth/signature requirement
             pass  # Just ensure it's not 402
+
+
+class TestWebhookRouteRegistration:
+    """
+    Regression test: Verify webhook routes are properly registered.
+
+    This test prevents the scenario where routes exist in code but
+    are not registered in the FastAPI app (e.g., due to import issues
+    or feature flag gating).
+    """
+
+    def test_billing_webhook_route_exists(self):
+        """
+        /api/billing/webhook must be registered in the app.
+
+        Failure indicates: Billing router not included in main app.
+        """
+        route_paths = [route.path for route in app.routes if hasattr(route, 'path')]
+        assert any('/billing/webhook' in path for path in route_paths), \
+            "Billing webhook route not registered. Check main.py include_router."
+
+    def test_notification_webhook_routes_exist(self):
+        """
+        Notification webhook routes must be registered.
+
+        Failure indicates: Notifications router not included or gated.
+        """
+        route_paths = [route.path for route in app.routes if hasattr(route, 'path')]
+
+        # At least one of these should exist
+        whatsapp_exists = any('webhook/whatsapp' in path for path in route_paths)
+        sendgrid_exists = any('webhook/sendgrid' in path for path in route_paths)
+
+        assert whatsapp_exists or sendgrid_exists, \
+            "No notification webhook routes registered. Check notifications router."
+
+    def test_webhook_paths_in_openapi(self):
+        """
+        Webhook paths should appear in OpenAPI spec.
+
+        This ensures routes are not just registered but discoverable.
+        """
+        from fastapi.testclient import TestClient
+        client = TestClient(app)
+
+        response = client.get("/openapi.json")
+        assert response.status_code == 200
+
+        openapi = response.json()
+        paths = openapi.get("paths", {})
+
+        # Billing webhook must be in OpenAPI
+        billing_webhook_found = any('/billing/webhook' in path for path in paths)
+        assert billing_webhook_found, "Billing webhook not in OpenAPI spec."

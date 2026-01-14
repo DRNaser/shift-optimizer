@@ -4,12 +4,22 @@ const BACKEND_URL = process.env.BACKEND_URL || "http://localhost:8000";
 
 const nextConfig: NextConfig = {
   async rewrites() {
-    return [
-      {
-        source: "/api/:path*",
-        destination: `${BACKEND_URL}/api/:path*`,
-      },
-    ];
+    return {
+      // beforeFiles runs BEFORE checking API routes
+      // afterFiles runs AFTER checking API routes (this is what we want)
+      afterFiles: [
+        // Only rewrite paths that don't have BFF routes
+        // BFF routes are: /api/auth/*, /api/platform-admin/*, /api/roster/*, /api/portal/*, /api/tenant/*
+        {
+          source: "/api/v1/:path*",
+          destination: `${BACKEND_URL}/api/v1/:path*`,
+        },
+        {
+          source: "/api/health",
+          destination: `${BACKEND_URL}/api/health`,
+        },
+      ],
+    };
   },
 
   // Security headers for portal pages

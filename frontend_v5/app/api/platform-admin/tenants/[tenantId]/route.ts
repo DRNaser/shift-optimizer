@@ -1,15 +1,19 @@
 /**
- * SOLVEREIGN V4.5 - Platform Admin Tenant Detail BFF Route
+ * SOLVEREIGN - Platform Admin Tenant Detail BFF Route
  *
- * Proxies single tenant requests to backend.
+ * Uses centralized proxy.ts for consistent error handling.
  */
 
-import { NextRequest, NextResponse } from "next/server";
+import { NextRequest } from 'next/server';
+import {
+  getSessionCookie,
+  proxyToBackend,
+  proxyResultToResponse,
+  unauthorizedResponse,
+} from '@/lib/bff/proxy';
 
-export const dynamic = "force-dynamic";
+export const dynamic = 'force-dynamic';
 export const revalidate = 0;
-
-const BACKEND_URL = process.env.BACKEND_URL || "http://localhost:8000";
 
 interface RouteContext {
   params: Promise<{ tenantId: string }>;
@@ -20,36 +24,18 @@ interface RouteContext {
  * Get tenant details
  */
 export async function GET(request: NextRequest, context: RouteContext) {
-  try {
-    const { tenantId } = await context.params;
-    const sessionCookie = request.cookies.get("__Host-sv_platform_session");
+  const { tenantId } = await context.params;
+  const traceId = `tenant-detail-${tenantId}-${Date.now()}`;
 
-    if (!sessionCookie) {
-      return NextResponse.json(
-        { success: false, error_code: "NO_SESSION", message: "Not authenticated" },
-        { status: 401 }
-      );
-    }
-
-    const backendResponse = await fetch(
-      `${BACKEND_URL}/api/platform/tenants/${tenantId}`,
-      {
-        method: "GET",
-        headers: {
-          "Content-Type": "application/json",
-          Cookie: `__Host-sv_platform_session=${sessionCookie.value}`,
-        },
-      }
-    );
-
-    const data = await backendResponse.json();
-
-    return NextResponse.json(data, { status: backendResponse.status });
-  } catch (error) {
-    console.error("Platform tenant detail BFF error:", error);
-    return NextResponse.json(
-      { success: false, error_code: "BFF_ERROR", message: "Internal server error" },
-      { status: 500 }
-    );
+  const session = await getSessionCookie();
+  if (!session) {
+    return unauthorizedResponse(traceId);
   }
+
+  const result = await proxyToBackend(`/api/platform/tenants/${tenantId}`, session, {
+    method: 'GET',
+    traceId,
+  });
+
+  return proxyResultToResponse(result);
 }

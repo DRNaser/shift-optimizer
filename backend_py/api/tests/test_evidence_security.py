@@ -10,12 +10,8 @@ Run with: pytest backend_py/api/tests/test_evidence_security.py -v
 import pytest
 from fastapi import HTTPException
 
-# Import the validation function from evidence_viewer
-import sys
-import os
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-from routers.evidence_viewer import _validate_evidence_filename
+# Import the validation function from evidence_viewer (relative import)
+from ..routers.evidence_viewer import _validate_evidence_filename
 
 
 class TestValidEvidenceFilenames:

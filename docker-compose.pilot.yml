@@ -1,0 +1,71 @@
+# =============================================================================
+# SOLVEREIGN - Pilot Stack (Local Development)
+# =============================================================================
+# Stack for local E2E testing: Postgres + API Backend.
+# Frontend runs natively for faster iteration.
+#
+# Usage:
+#   docker-compose -f docker-compose.pilot.yml up -d
+#   # Then run migrations and seed via scripts
+#
+# Full pilot-up ritual:
+#   .\scripts\pilot-up.ps1
+# =============================================================================
+
+services:
+  # PostgreSQL Database (single source of truth)
+  postgres:
+    image: postgres:16-alpine
+    container_name: solvereign-pilot-db
+    environment:
+      POSTGRES_DB: solvereign
+      POSTGRES_USER: solvereign
+      POSTGRES_PASSWORD: pilot_dev_password
+      PGDATA: /var/lib/postgresql/data/pgdata
+    ports:
+      - "5432:5432"
+    volumes:
+      - pilot_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U solvereign -d solvereign"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+    restart: unless-stopped
+
+  # SOLVEREIGN API Backend (runs in Docker to avoid Windows psycopg issues)
+  api:
+    build:
+      context: ./backend_py
+      dockerfile: Dockerfile
+    container_name: solvereign-pilot-api
+    ports:
+      - "8000:8000"
+    environment:
+      - PYTHONUNBUFFERED=1
+      # Database connection (postgres = Docker service name)
+      - DATABASE_URL=postgresql://solvereign:pilot_dev_password@postgres:5432/solvereign
+      - SOLVEREIGN_DATABASE_URL=postgresql://solvereign:pilot_dev_password@postgres:5432/solvereign
+      - SOLVEREIGN_ENVIRONMENT=development
+      - SOLVEREIGN_LOG_LEVEL=INFO
+      # E2E Testing: Bypass login rate limiting (only for dev/E2E environments!)
+      - E2E_BYPASS_RATE_LIMIT=true
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+
+volumes:
+  pilot_postgres_data:
+    name: solvereign-pilot-db-data
+
+networks:
+  default:
+    name: solvereign-pilot-network

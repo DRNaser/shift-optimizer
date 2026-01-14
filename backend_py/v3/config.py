@@ -38,6 +38,11 @@ class Config:
     SOLVER_NUM_WORKERS: int = int(os.getenv("SOLVER_NUM_WORKERS", "1"))  # Must be 1 for determinism
     SOLVER_TIMEOUT_SECONDS: int = int(os.getenv("SOLVER_TIMEOUT_SECONDS", "300"))  # 5 minutes
 
+    # Memory limit for solver (P2 FIX: OOM Prevention)
+    # Default: 6GB (leaves 2GB for OS/other processes in 8GB container)
+    # Set to 0 to disable (relies on Docker memory limit only)
+    SOLVER_MAX_MEM_MB: int = int(os.getenv("SOLVER_MAX_MEM_MB", "6144"))
+
     # ========================================================================
     # Operational Rules
     # ========================================================================

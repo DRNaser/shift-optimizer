@@ -1,52 +1,40 @@
 /**
- * SOLVEREIGN V4.5 - Platform Admin Permissions BFF Route
+ * SOLVEREIGN - Platform Admin Permissions BFF Route
  *
- * Proxies permission listing requests to backend.
+ * Uses centralized proxy.ts for consistent error handling.
  */
 
-import { NextRequest, NextResponse } from "next/server";
+import { NextRequest } from 'next/server';
+import {
+  getSessionCookie,
+  proxyToBackend,
+  proxyResultToResponse,
+  unauthorizedResponse,
+} from '@/lib/bff/proxy';
 
-export const dynamic = "force-dynamic";
+export const dynamic = 'force-dynamic';
 export const revalidate = 0;
-
-const BACKEND_URL = process.env.BACKEND_URL || "http://localhost:8000";
 
 /**
  * GET /api/platform-admin/permissions
- * List all permissions
+ * List all permissions (optionally filtered by category)
  */
 export async function GET(request: NextRequest) {
-  try {
-    const sessionCookie = request.cookies.get("__Host-sv_platform_session");
+  const traceId = `permissions-list-${Date.now()}`;
 
-    if (!sessionCookie) {
-      return NextResponse.json(
-        { success: false, error_code: "NO_SESSION", message: "Not authenticated" },
-        { status: 401 }
-      );
-    }
-
-    // Get query params
-    const { searchParams } = new URL(request.url);
-    const category = searchParams.get("category");
-    const queryString = category ? `?category=${category}` : "";
-
-    const backendResponse = await fetch(`${BACKEND_URL}/api/platform/permissions${queryString}`, {
-      method: "GET",
-      headers: {
-        "Content-Type": "application/json",
-        Cookie: `__Host-sv_platform_session=${sessionCookie.value}`,
-      },
-    });
-
-    const data = await backendResponse.json();
-
-    return NextResponse.json(data, { status: backendResponse.status });
-  } catch (error) {
-    console.error("Platform permissions BFF error:", error);
-    return NextResponse.json(
-      { success: false, error_code: "BFF_ERROR", message: "Internal server error" },
-      { status: 500 }
-    );
+  const session = await getSessionCookie();
+  if (!session) {
+    return unauthorizedResponse(traceId);
   }
+
+  const { searchParams } = new URL(request.url);
+  const category = searchParams.get('category');
+  const queryString = category ? `?category=${category}` : '';
+
+  const result = await proxyToBackend(`/api/platform/permissions${queryString}`, session, {
+    method: 'GET',
+    traceId,
+  });
+
+  return proxyResultToResponse(result);
 }

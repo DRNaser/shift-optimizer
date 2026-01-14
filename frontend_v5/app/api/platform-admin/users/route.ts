@@ -1,56 +1,42 @@
 /**
- * SOLVEREIGN V4.5 - Platform Admin Users BFF Route
+ * SOLVEREIGN - Platform Admin Users BFF Route
  *
- * Proxies user management requests to backend.
+ * Uses centralized proxy.ts for consistent error handling.
  */
 
-import { NextRequest, NextResponse } from "next/server";
+import { NextRequest } from 'next/server';
+import {
+  getSessionCookie,
+  proxyToBackend,
+  proxyResultToResponse,
+  unauthorizedResponse,
+} from '@/lib/bff/proxy';
 
-export const dynamic = "force-dynamic";
+export const dynamic = 'force-dynamic';
 export const revalidate = 0;
-
-const BACKEND_URL = process.env.BACKEND_URL || "http://localhost:8000";
 
 /**
  * GET /api/platform-admin/users
  * List all users (optionally filtered by tenant)
  */
 export async function GET(request: NextRequest) {
-  try {
-    const sessionCookie = request.cookies.get("__Host-sv_platform_session");
+  const traceId = `users-list-${Date.now()}`;
 
-    if (!sessionCookie) {
-      return NextResponse.json(
-        { success: false, error_code: "NO_SESSION", message: "Not authenticated" },
-        { status: 401 }
-      );
-    }
-
-    const { searchParams } = new URL(request.url);
-    const tenantId = searchParams.get("tenant_id");
-
-    const url = tenantId
-      ? `${BACKEND_URL}/api/platform/users?tenant_id=${tenantId}`
-      : `${BACKEND_URL}/api/platform/users`;
-
-    const backendResponse = await fetch(url, {
-      method: "GET",
-      headers: {
-        "Content-Type": "application/json",
-        Cookie: `__Host-sv_platform_session=${sessionCookie.value}`,
-      },
-    });
-
-    const data = await backendResponse.json();
-
-    return NextResponse.json(data, { status: backendResponse.status });
-  } catch (error) {
-    console.error("Platform users BFF error:", error);
-    return NextResponse.json(
-      { success: false, error_code: "BFF_ERROR", message: "Internal server error" },
-      { status: 500 }
-    );
+  const session = await getSessionCookie();
+  if (!session) {
+    return unauthorizedResponse(traceId);
   }
+
+  const { searchParams } = new URL(request.url);
+  const tenantId = searchParams.get('tenant_id');
+  const queryString = tenantId ? `?tenant_id=${tenantId}` : '';
+
+  const result = await proxyToBackend(`/api/platform/users${queryString}`, session, {
+    method: 'GET',
+    traceId,
+  });
+
+  return proxyResultToResponse(result);
 }
 
 /**
@@ -58,35 +44,31 @@ export async function GET(request: NextRequest) {
  * Create a new user with binding
  */
 export async function POST(request: NextRequest) {
-  try {
-    const sessionCookie = request.cookies.get("__Host-sv_platform_session");
+  const traceId = `users-create-${Date.now()}`;
 
-    if (!sessionCookie) {
-      return NextResponse.json(
-        { success: false, error_code: "NO_SESSION", message: "Not authenticated" },
-        { status: 401 }
-      );
-    }
-
-    const body = await request.json();
-
-    const backendResponse = await fetch(`${BACKEND_URL}/api/platform/users`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Cookie: `__Host-sv_platform_session=${sessionCookie.value}`,
-      },
-      body: JSON.stringify(body),
-    });
-
-    const data = await backendResponse.json();
-
-    return NextResponse.json(data, { status: backendResponse.status });
-  } catch (error) {
-    console.error("Platform users BFF error:", error);
-    return NextResponse.json(
-      { success: false, error_code: "BFF_ERROR", message: "Internal server error" },
-      { status: 500 }
-    );
+  const session = await getSessionCookie();
+  if (!session) {
+    return unauthorizedResponse(traceId);
   }
+
+  let body: unknown;
+  try {
+    body = await request.json();
+  } catch {
+    return proxyResultToResponse({
+      ok: false,
+      status: 400,
+      data: { error_code: 'INVALID_JSON', message: 'Request body must be valid JSON' },
+      traceId,
+      contentType: 'application/json',
+    });
+  }
+
+  const result = await proxyToBackend('/api/platform/users', session, {
+    method: 'POST',
+    body,
+    traceId,
+  });
+
+  return proxyResultToResponse(result);
 }

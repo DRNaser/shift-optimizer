@@ -165,7 +165,7 @@ class TestFreezeEnforcementSQL:
 
         -- Expected: {"success": false, "error": "Cannot publish during freeze window..."}
         """
-        return sql
+        assert "publish_plan_snapshot" in sql  # Validates SQL doc is present
 
     @staticmethod
     def test_freeze_allows_force_with_reason_sql():
@@ -199,7 +199,7 @@ class TestFreezeEnforcementSQL:
 
         -- Expected: TRUE, 'CRITICAL: Driver sick call requires immediate re-publish'
         """
-        return sql
+        assert "force_during_freeze" in sql  # Validates SQL doc is present
 
     @staticmethod
     def test_force_requires_min_reason_length_sql():
@@ -222,7 +222,7 @@ class TestFreezeEnforcementSQL:
 
         -- Expected: {"success": false, "error": "Force during freeze requires force_reason (min 10 chars)"}
         """
-        return sql
+        assert "force_reason" in sql  # Validates SQL doc is present
 
 
 # =============================================================================

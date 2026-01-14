@@ -14,6 +14,7 @@ NON-NEGOTIABLES:
 - No secrets/passwords in logs
 """
 
+import os
 import hashlib
 import secrets
 import logging
@@ -56,10 +57,15 @@ def _get_session_cookie_name() -> str:
         return "sv_platform_session"
 
 SESSION_COOKIE_NAME = _get_session_cookie_name()
-SESSION_COOKIE_MAX_AGE = 8 * 60 * 60  # 8 hours in seconds
+SESSION_COOKIE_MAX_AGE = 8 * 60 * 60  # 8 hours sliding window
+SESSION_ABSOLUTE_MAX_AGE = 24 * 60 * 60  # 24 hours absolute cap
 SESSION_COOKIE_HTTPONLY = True
 SESSION_COOKIE_SAMESITE = "strict"  # Strict for CSRF protection on admin ops
 SESSION_COOKIE_PATH = "/"  # Global path - different name from portal_session avoids collision
+
+# Repair session TTL configuration
+REPAIR_SESSION_SLIDING_TTL_MINUTES = 30  # 30 minutes sliding window
+REPAIR_SESSION_ABSOLUTE_CAP_MINUTES = 120  # 2 hours absolute cap
 
 
 def _get_cookie_secure_flag() -> bool:
@@ -84,8 +90,10 @@ def _get_cookie_secure_flag() -> bool:
 MAX_FAILED_ATTEMPTS = 10  # Lock account after this many failures
 
 # Rate limiting
+# E2E_BYPASS_RATE_LIMIT can be set to disable rate limiting during E2E tests
+E2E_BYPASS_RATE_LIMIT = os.environ.get("E2E_BYPASS_RATE_LIMIT", "").lower() in ("1", "true", "yes")
 LOGIN_RATE_LIMIT_WINDOW = 15 * 60  # 15 minutes
-LOGIN_RATE_LIMIT_MAX = 5  # Max attempts per IP in window
+LOGIN_RATE_LIMIT_MAX = 5 if not E2E_BYPASS_RATE_LIMIT else 1000  # Max attempts per IP in window
 
 
 # =============================================================================

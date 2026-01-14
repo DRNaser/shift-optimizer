@@ -28,6 +28,11 @@ const ERROR_MESSAGES: Record<string, { title: string; message: string; icon: Rea
     message: 'This feature is not available for your account or tenant.',
     icon: Lock,
   },
+  FORBIDDEN: {
+    title: 'Access Denied',
+    message: 'You do not have permission to access this page. This area is restricted to platform administrators.',
+    icon: Lock,
+  },
   UNAUTHORIZED: {
     title: 'Not Authorized',
     message: 'You do not have permission to access this resource.',
@@ -59,17 +64,24 @@ const ERROR_MESSAGES: Record<string, { title: string; message: string; icon: Rea
 interface ApiErrorProps {
   code?: string;
   message?: string;
+  traceId?: string;
+  runId?: string;
   showBackLink?: boolean;
   backHref?: string;
   onRetry?: () => void;
+  /** Raw error data for debugging when trace_id is missing */
+  rawError?: unknown;
 }
 
 export function ApiError({
   code = 'UNKNOWN',
   message,
+  traceId,
+  runId,
   showBackLink = true,
   backHref = '/platform/home',
   onRetry,
+  rawError,
 }: ApiErrorProps) {
   const errorConfig = ERROR_MESSAGES[code] || {
     title: 'Error',
@@ -78,6 +90,13 @@ export function ApiError({
   };
 
   const Icon = errorConfig.icon;
+  const isDev = process.env.NODE_ENV === 'development';
+  const isMissingTraceId = !traceId && code !== 'UNKNOWN' && code !== 'HTTP_ERROR';
+
+  // Log warning in dev when trace_id is missing
+  if (isDev && isMissingTraceId) {
+    console.warn('[STABILITY] MISSING_TRACE_ID for error:', { code, message, rawError });
+  }
 
   return (
     <div className="min-h-[400px] flex items-center justify-center p-8">
@@ -129,24 +148,68 @@ export function ApiError({
           )}
         </div>
 
-        {/* Error code (for debugging) */}
-        <p className="mt-4 text-xs text-slate-600">
-          Error code: {code}
-        </p>
+        {/* Error code, trace_id, and run_id (for debugging/support) */}
+        <div className="mt-4 text-xs text-slate-600 space-y-1">
+          <p>Error code: {code}</p>
+          {runId && (
+            <p className="font-mono">
+              Run ID: <span className="text-slate-500 select-all">{runId}</span>
+            </p>
+          )}
+          {traceId ? (
+            <p className="font-mono">
+              Trace ID: <span className="text-slate-500 select-all">{traceId}</span>
+            </p>
+          ) : isMissingTraceId && isDev ? (
+            <p className="font-mono text-amber-500">
+              MISSING_TRACE_ID (debugging blind)
+            </p>
+          ) : null}
+        </div>
       </div>
     </div>
   );
 }
 
+/** Parsed error result with full debugging context */
+export interface ParsedApiError {
+  code: string;
+  message: string;
+  traceId?: string;
+  runId?: string;
+  rawError: unknown;
+}
+
 // Hook for handling API errors
 export function useApiError() {
-  const handleError = (error: unknown): { code: string; message: string } => {
+  const handleError = (error: unknown): ParsedApiError => {
+    // Always preserve raw error for debugging
+    const rawError = error;
+
     if (error instanceof Response) {
-      return { code: 'HTTP_ERROR', message: `HTTP ${error.status}` };
+      return { code: 'HTTP_ERROR', message: `HTTP ${error.status}`, rawError };
     }
 
     if (typeof error === 'object' && error !== null) {
-      const err = error as { detail?: { error_code?: string; message?: string } | string; error_code?: string; message?: string };
+      const err = error as {
+        detail?: { error_code?: string; message?: string; trace_id?: string; run_id?: string } | string;
+        error_code?: string;
+        message?: string;
+        trace_id?: string;
+        run_id?: string;
+        error?: { code?: string; message?: string; trace_id?: string; run_id?: string };
+      };
+
+      // Handle normalized error format (from BFF)
+      if (err.error && typeof err.error === 'object') {
+        return {
+          code: err.error.code || 'UNKNOWN',
+          message: err.error.message || 'An error occurred',
+          traceId: err.error.trace_id,
+          runId: err.error.run_id,
+          rawError,
+        };
+      }
 
       // Handle FastAPI error format
       if (err.detail) {
@@ -154,18 +217,24 @@ export function useApiError() {
           return {
             code: err.detail.error_code || 'UNKNOWN',
             message: err.detail.message || 'An error occurred',
+            traceId: err.detail.trace_id || err.trace_id,
+            runId: err.detail.run_id || err.run_id,
+            rawError,
           };
         }
-        return { code: 'UNKNOWN', message: String(err.detail) };
+        return { code: 'UNKNOWN', message: String(err.detail), traceId: err.trace_id, runId: err.run_id, rawError };
       }
 
       return {
         code: err.error_code || 'UNKNOWN',
         message: err.message || 'An error occurred',
+        traceId: err.trace_id,
+        runId: err.run_id,
+        rawError,
       };
     }
 
-    return { code: 'UNKNOWN', message: String(error) };
+    return { code: 'UNKNOWN', message: String(error), rawError };
   };
 
   return { handleError };

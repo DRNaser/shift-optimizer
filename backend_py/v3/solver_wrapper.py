@@ -24,14 +24,21 @@ IMPORTANT: V3 is ALWAYS the default. V4 must be explicitly opted-in via:
     - Policy profile: solver_engine="v4"
     - Environment: SOLVER_ENGINE=v4
 
+MEMORY LIMIT (P2 FIX):
+----------------------
+On Linux, applies RLIMIT_AS before solver execution to prevent OOM kills.
+Configured via SOLVER_MAX_MEM_MB environment variable (default: 6144 MB = 6GB).
+Set to 0 to disable (rely on Docker memory limit only).
+
 Flow:
     1. Load tour_instances from forecast_version
-    2. Determine solver engine (V3 default, V4 opt-in)
-    3. Run selected solver
-    4. Store assignments in database (via tour_instance_id)
-    5. Compute output_hash for reproducibility
-    6. Run audit checks
-    7. Return plan_version_id with status=DRAFT
+    2. Apply memory limit (Linux only)
+    3. Determine solver engine (V3 default, V4 opt-in)
+    4. Run selected solver
+    5. Store assignments in database (via tour_instance_id)
+    6. Compute output_hash for reproducibility
+    7. Run audit checks
+    8. Return plan_version_id with status=DRAFT
 
 NOTE: This is an MVP wrapper. Full integration requires refactoring V2 solver
       to accept tour_instances directly instead of CSV files.
@@ -39,8 +46,10 @@ NOTE: This is an MVP wrapper. Full integration requires refactoring V2 solver
 
 import hashlib
 import json
+import platform
+import sys
 from datetime import datetime
-from typing import Optional
+from typing import Optional, Tuple
 
 from .config import config
 from .db import (
@@ -78,6 +87,100 @@ DEFAULT_SOLVER_CONFIG = SolverConfig(
     span_regular_max=840,
     span_split_max=960,
 )
+
+
+# ============================================================================
+# Memory Limit Enforcement (P2 FIX: OOM Prevention)
+# ============================================================================
+
+_memory_limit_applied = False  # Track if limit was applied this process
+
+
+def apply_memory_limit() -> Tuple[bool, int, str]:
+    """
+    Apply memory limit to current process (Linux only).
+
+    Uses RLIMIT_AS (address space limit) which OR-Tools respects.
+    On Windows/macOS, logs warning but continues (relies on Docker limit).
+
+    Returns:
+        Tuple of (success, limit_bytes, message)
+    """
+    global _memory_limit_applied
+
+    limit_mb = config.SOLVER_MAX_MEM_MB
+
+    # Skip if disabled
+    if limit_mb <= 0:
+        return (True, 0, "Memory limit disabled (SOLVER_MAX_MEM_MB=0)")
+
+    # Skip if already applied (avoid re-applying on each solve)
+    if _memory_limit_applied:
+        limit_bytes = limit_mb * 1024 * 1024
+        return (True, limit_bytes, "Memory limit already applied")
+
+    limit_bytes = limit_mb * 1024 * 1024
+
+    # Platform check
+    current_platform = platform.system().lower()
+
+    if current_platform == "linux":
+        try:
+            import resource
+
+            # Set soft and hard limits for address space
+            soft, hard = resource.getrlimit(resource.RLIMIT_AS)
+            new_limit = min(limit_bytes, hard) if hard > 0 else limit_bytes
+
+            resource.setrlimit(resource.RLIMIT_AS, (new_limit, hard))
+
+            _memory_limit_applied = True
+            print(f"[MEMORY] Applied RLIMIT_AS: {new_limit / (1024*1024):.0f}MB")
+
+            # Try to expose metric (optional - may not be available in worker)
+            try:
+                from api.metrics import set_solver_memory_limit
+                set_solver_memory_limit(new_limit, component="solver")
+            except ImportError:
+                pass
+
+            return (True, new_limit, f"RLIMIT_AS set to {new_limit / (1024*1024):.0f}MB")
+
+        except (ImportError, OSError, ValueError) as e:
+            print(f"[MEMORY] Failed to set RLIMIT_AS: {e}")
+            return (False, limit_bytes, f"Failed to set limit: {e}")
+
+    elif current_platform == "darwin":
+        # macOS: RLIMIT_AS not reliably enforced, warn and continue
+        print(f"[MEMORY] macOS detected - RLIMIT not enforced, relying on Docker limit")
+        return (True, limit_bytes, "macOS: relying on Docker memory limit")
+
+    else:
+        # Windows or other: warn and continue
+        print(f"[MEMORY] {current_platform} detected - no RLIMIT support, relying on Docker limit")
+        return (True, limit_bytes, f"{current_platform}: relying on Docker memory limit")
+
+
+def get_memory_limit_status() -> dict:
+    """Get current memory limit status for diagnostics."""
+    limit_mb = config.SOLVER_MAX_MEM_MB
+
+    result = {
+        "configured_mb": limit_mb,
+        "platform": platform.system(),
+        "applied": _memory_limit_applied,
+    }
+
+    if platform.system().lower() == "linux":
+        try:
+            import resource
+            soft, hard = resource.getrlimit(resource.RLIMIT_AS)
+            result["rlimit_soft_bytes"] = soft if soft != resource.RLIM_INFINITY else -1
+            result["rlimit_hard_bytes"] = hard if hard != resource.RLIM_INFINITY else -1
+        except Exception as e:
+            result["rlimit_error"] = str(e)
+
+    return result
 
 
 def run_crash_recovery(max_age_minutes: int = 60) -> int:
@@ -142,6 +245,11 @@ def solve_forecast(
     Raises:
         ValueError: If forecast_version not found or has no instances
     """
+    # P2 FIX: Apply memory limit before solver execution
+    mem_success, mem_limit, mem_msg = apply_memory_limit()
+    if mem_limit > 0:
+        print(f"[SOLVER] Memory limit: {mem_msg}")
+
     # ADR-002: Fetch policy snapshot for this tenant/pack
     policy_snapshot = None
     if tenant_uuid:

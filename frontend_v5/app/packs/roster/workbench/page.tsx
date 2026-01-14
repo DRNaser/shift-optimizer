@@ -8,14 +8,23 @@ import { useMounted } from "@/lib/hooks/use-mounted";
 import { LiveConsole, type LogEntry } from "@/components/ui/live-console";
 import { KPICards } from "@/components/ui/kpi-cards";
 import { MatrixView, type DriverRow } from "@/components/ui/matrix-view";
-import { exportToCSV, assignmentsToDriverRows } from "@/lib/export";
+import {
+  exportToCSV,
+  assignmentsToDriverRows,
+  analyzeAssignments,
+  type DataQualityReport,
+} from "@/lib/export";
 import {
   createRun,
   getRunStatus,
   getRunResult,
   parseCSV,
+  isRunFailed,
+  isRunCompleted,
+  isRunInProgress,
   type ScheduleResponse,
   type TourInput,
+  type RunStatusResponse,
 } from "@/lib/api";
 
 export default function RosterWorkbench() {
@@ -30,6 +39,16 @@ export default function RosterWorkbench() {
   const [error, setError] = useState<string | null>(null);
   const [activeNav, setActiveNav] = useState("dashboard");
   const [optimizeMode, setOptimizeMode] = useState<"fast" | "deep">("fast");
+
+  // Failed run details (from discriminated union)
+  const [failedRunDetails, setFailedRunDetails] = useState<{
+    error_code?: string;
+    error_message?: string;
+    trace_id?: string;
+  } | null>(null);
+
+  // Data quality tracking - NEVER silently drop data
+  const [dataQuality, setDataQuality] = useState<DataQualityReport | null>(null);
 
   // Helpers
   const addLog = useCallback(
@@ -71,6 +90,9 @@ export default function RosterWorkbench() {
 
     try {
       setError(null);
+      setFailedRunDetails(null); // Clear previous failure details
+      setResult(null); // Clear previous result
+      setDataQuality(null); // Clear previous data quality
       setIsRunning(true);
       const timeBudget = optimizeMode === "fast" ? 120 : 600;
       addLog("INFO", `Submitting optimization (${optimizeMode} mode, ${timeBudget}s budget)...`);
@@ -134,6 +156,14 @@ export default function RosterWorkbench() {
             setResult(plan);
             setIsRunning(false);
 
+            // Analyze data quality - NEVER silently drop data
+            const quality = analyzeAssignments(plan.assignments);
+            setDataQuality(quality);
+
+            if (quality.has_data_loss) {
+              addLog("WARN", `⚠ Data quality issue: ${quality.missing_block_count} assignments missing block data`);
+            }
+
             const gapToLB = plan.stats.average_driver_utilization > 0.9 ? 0 : 0.05;
             addLog(
               "FINAL",
@@ -144,10 +174,25 @@ export default function RosterWorkbench() {
             setError(`Result fetch failed: ${lastFetchError?.message}`);
             setIsRunning(false);
           }
-        } else if (status.status === "FAILED" || status.status === "CANCELLED") {
-          addLog("ERROR", `✗ Run ${status.status}`);
+        } else if (isRunFailed(status)) {
+          // Use discriminated union type for detailed error info
+          const errorMsg = status.error_message || `Run failed`;
+          const errorCode = status.error_code || 'UNKNOWN';
+          addLog("ERROR", `✗ Run FAILED [${errorCode}]: ${errorMsg}`);
+          if (status.trace_id) {
+            addLog("INFO", `Trace ID: ${status.trace_id}`);
+          }
           setIsRunning(false);
-          setError(`Run ${status.status}`);
+          setError(`Run FAILED: ${errorMsg}`);
+          setFailedRunDetails({
+            error_code: status.error_code,
+            error_message: status.error_message,
+            trace_id: status.trace_id,
+          });
+        } else if (status.status === "CANCELLED") {
+          addLog("ERROR", `✗ Run CANCELLED`);
+          setIsRunning(false);
+          setError(`Run CANCELLED`);
         }
 
         lastStatus = status.status;
@@ -162,11 +207,20 @@ export default function RosterWorkbench() {
     return () => clearInterval(interval);
   }, [runId, isRunning, addLog]);
 
-  // Export Handler
+  // Export Handler - uses runId state (always valid) instead of result.id (may be undefined)
   const handleExport = () => {
     if (!result) return;
 
-    exportToCSV(result.assignments, `solvereign_v5_${result.id}`);
+    // Use runId from state (guaranteed to be set from createRun response)
+    // Fallback to result.id if available, then timestamp as last resort
+    const exportId = runId || result.id || `export_${Date.now()}`;
+    const shortId = exportId.slice(0, 8);
+
+    // Export returns quality report - log it for visibility
+    const exportQuality = exportToCSV(result.assignments, `solvereign_v5_${shortId}`, runId || undefined);
+    if (exportQuality.has_data_loss) {
+      addLog("WARN", `Export includes ${exportQuality.missing_block_count} assignments with missing data`);
+    }
 
     setTimeout(() => {
       const stats = result.stats;
@@ -185,9 +239,9 @@ export default function RosterWorkbench() {
         ["Zuweisungsrate (%)", (stats.assignment_rate * 100).toFixed(1)].join(SEPARATOR) + LINE_END +
         ["Durchschn. Auslastung (%)", (stats.average_driver_utilization * 100).toFixed(1)].join(SEPARATOR) + LINE_END +
         ["Durchschn. Arbeitsstunden", stats.average_work_hours?.toFixed(1) || "-"].join(SEPARATOR) + LINE_END +
-        ["Blöcke 1er", stats.block_counts["1er"] || 0].join(SEPARATOR) + LINE_END +
-        ["Blöcke 2er", stats.block_counts["2er"] || 0].join(SEPARATOR) + LINE_END +
-        ["Blöcke 3er", stats.block_counts["3er"] || 0].join(SEPARATOR) + LINE_END +
+        ["Blöcke 1er", stats.block_counts?.["1er"] || 0].join(SEPARATOR) + LINE_END +
+        ["Blöcke 2er", stats.block_counts?.["2er"] || 0].join(SEPARATOR) + LINE_END +
+        ["Blöcke 3er", stats.block_counts?.["3er"] || 0].join(SEPARATOR) + LINE_END +
         ["Fahrzeuge Peak", stats.fleet_peak_count || 0].join(SEPARATOR) + LINE_END +
         ["Peak Tag", stats.fleet_peak_day || "N/A"].join(SEPARATOR) + LINE_END +
         ["Peak Zeit", stats.fleet_peak_time || "N/A"].join(SEPARATOR) + LINE_END;
@@ -196,20 +250,20 @@ export default function RosterWorkbench() {
       const url = URL.createObjectURL(blob);
       const link = document.createElement("a");
       link.href = url;
-      link.setAttribute("download", `solvereign_v5_${result.id}_kpis.csv`);
+      link.setAttribute("download", `solvereign_v5_${shortId}_kpis.csv`);
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
       URL.revokeObjectURL(url);
     }, 500);
 
-    addLog("OK", "Export Pack: Roster CSV + KPI Insights CSV generated.");
+    addLog("OK", `Export Pack: Roster CSV + KPI Insights CSV generated (Run: ${shortId}).`);
   };
 
-  // Derived Data
-  const driverRows: DriverRow[] = result
+  // Derived Data - use new return type that includes quality report
+  const { rows: driverRows } = result
     ? assignmentsToDriverRows(result.assignments)
-    : [];
+    : { rows: [] as DriverRow[] };
 
   // SSR Guard
   if (!mounted) {
@@ -375,11 +429,54 @@ export default function RosterWorkbench() {
         <div className="flex-1 flex overflow-hidden">
           {/* Dashboard */}
           <div className="flex-1 p-6 overflow-y-auto space-y-6">
-            {/* Error Alert */}
+            {/* Error Alert - Enhanced for failed runs */}
             {error && (
-              <div className="bg-red-500/10 border border-red-500/20 rounded-lg p-4 flex items-center gap-3 text-red-400">
-                <AlertCircle className="w-5 h-5 shrink-0" />
-                <p className="text-sm">{error}</p>
+              <div className="bg-red-500/10 border border-red-500/20 rounded-lg p-4 text-red-400">
+                <div className="flex items-center gap-3 mb-2">
+                  <AlertCircle className="w-5 h-5 shrink-0" />
+                  <p className="text-sm font-medium">{error}</p>
+                </div>
+                {failedRunDetails && (
+                  <div className="mt-3 pl-8 space-y-1 text-xs text-red-400/80 font-mono">
+                    {failedRunDetails.error_code && (
+                      <p>Error Code: <span className="text-red-300">{failedRunDetails.error_code}</span></p>
+                    )}
+                    {failedRunDetails.trace_id && (
+                      <p>Trace ID: <span className="text-red-300">{failedRunDetails.trace_id}</span></p>
+                    )}
+                    {runId && (
+                      <p>Run ID: <span className="text-red-300">{runId}</span></p>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Data Quality Warning Banner - NEVER silently drop data */}
+            {dataQuality?.has_data_loss && (
+              <div className="bg-amber-500/10 border border-amber-500/20 rounded-lg p-4 text-amber-400">
+                <div className="flex items-center gap-3 mb-2">
+                  <AlertCircle className="w-5 h-5 shrink-0" />
+                  <p className="text-sm font-medium">
+                    Datenqualität: {dataQuality.missing_block_count} von {dataQuality.total_assignments} Zuweisungen unvollständig
+                  </p>
+                </div>
+                <div className="mt-3 pl-8 space-y-1 text-xs text-amber-400/80">
+                  <p className="font-medium mb-2">Betroffene Zuweisungen (erste 10):</p>
+                  <div className="font-mono space-y-0.5">
+                    {dataQuality.missing_block_ids.map((m, i) => (
+                      <p key={i}>
+                        {m.driver_id} ({m.driver_name}) - {m.day}
+                      </p>
+                    ))}
+                    {dataQuality.missing_block_count > 10 && (
+                      <p className="text-amber-500">...und {dataQuality.missing_block_count - 10} weitere</p>
+                    )}
+                  </div>
+                  {runId && (
+                    <p className="mt-2 text-amber-500">Run ID: {runId}</p>
+                  )}
+                </div>
               </div>
             )}
 

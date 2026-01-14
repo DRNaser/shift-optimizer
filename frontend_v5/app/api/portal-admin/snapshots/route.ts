@@ -1,59 +1,37 @@
 /**
- * SOLVEREIGN V4.4 - Portal Admin Snapshots BFF Route
+ * SOLVEREIGN - Portal Admin Snapshots BFF Route
  *
- * Returns list of available snapshots for the current tenant/site.
+ * Uses centralized proxy.ts for consistent error handling.
  * RBAC: portal.summary.read permission required.
  */
 
-import { NextRequest, NextResponse } from "next/server";
+import { NextRequest } from 'next/server';
+import {
+  getSessionCookie,
+  proxyToBackend,
+  proxyResultToResponse,
+  unauthorizedResponse,
+} from '@/lib/bff/proxy';
 
-export const dynamic = "force-dynamic";
+export const dynamic = 'force-dynamic';
 export const revalidate = 0;
 
-const BACKEND_URL = process.env.BACKEND_URL || "http://localhost:8000";
-
+/**
+ * GET /api/portal-admin/snapshots
+ * List available snapshots
+ */
 export async function GET(request: NextRequest) {
-  // Get session cookie from request
-  const sessionCookie = request.cookies.get("__Host-sv_platform_session");
+  const traceId = `portal-snapshots-${Date.now()}`;
 
-  if (!sessionCookie) {
-    return NextResponse.json(
-      { error: "Not authenticated", error_code: "NO_SESSION" },
-      { status: 401 }
-    );
+  const session = await getSessionCookie();
+  if (!session) {
+    return unauthorizedResponse(traceId);
   }
 
-  try {
-    const response = await fetch(
-      `${BACKEND_URL}/api/v1/portal/dashboard/snapshots`,
-      {
-        headers: {
-          "Content-Type": "application/json",
-          Cookie: `__Host-sv_platform_session=${sessionCookie.value}`,
-        },
-        cache: "no-store",
-      }
-    );
+  const result = await proxyToBackend('/api/v1/portal/dashboard/snapshots', session, {
+    method: 'GET',
+    traceId,
+  });
 
-    if (!response.ok) {
-      const data = await response.json().catch(() => ({}));
-      return NextResponse.json(
-        { error: data.detail || `Backend error: ${response.status}` },
-        { status: response.status }
-      );
-    }
-
-    const data = await response.json();
-
-    const res = NextResponse.json(data);
-    res.headers.set("Cache-Control", "no-store, no-cache, must-revalidate");
-    res.headers.set("Pragma", "no-cache");
-    return res;
-  } catch (error) {
-    console.error("Portal admin snapshots error:", error);
-    return NextResponse.json(
-      { error: "Internal server error" },
-      { status: 500 }
-    );
-  }
+  return proxyResultToResponse(result);
 }

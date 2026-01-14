@@ -1,112 +1,102 @@
 /**
- * SOLVEREIGN V4.6 - Platform Context BFF Route
+ * SOLVEREIGN - Platform Admin Context BFF Route
  *
- * Proxy for platform admin context switching (GET/POST/DELETE /api/platform/context)
+ * Uses centralized proxy.ts for consistent error handling.
+ * Handles GET/POST/DELETE for platform admin context switching.
  */
 
-import { NextRequest, NextResponse } from "next/server";
+import { NextRequest, NextResponse } from 'next/server';
+import {
+  getSessionCookie,
+  proxyToBackend,
+  proxyResultToResponse,
+  unauthorizedResponse,
+} from '@/lib/bff/proxy';
 
-export const dynamic = "force-dynamic";
+export const dynamic = 'force-dynamic';
 export const revalidate = 0;
 
-const BACKEND_URL = process.env.BACKEND_URL || "http://localhost:8000";
+/**
+ * GET /api/platform-admin/context
+ * Get current active context
+ */
+export async function GET() {
+  const traceId = `context-get-${Date.now()}`;
 
-// GET - Get current active context
-export async function GET(request: NextRequest) {
-  try {
-    const sessionCookie = request.cookies.get("__Host-sv_platform_session");
-
-    if (!sessionCookie) {
-      return NextResponse.json(
-        { success: false, error_code: "NO_SESSION", message: "Not authenticated" },
-        { status: 401 }
-      );
-    }
-
-    const backendResponse = await fetch(`${BACKEND_URL}/api/platform/context`, {
-      method: "GET",
-      headers: {
-        "Content-Type": "application/json",
-        Cookie: `__Host-sv_platform_session=${sessionCookie.value}`,
-      },
-    });
-
-    const data = await backendResponse.json();
-    return NextResponse.json(data, { status: backendResponse.status });
-  } catch (error) {
-    console.error("Context GET BFF error:", error);
-    return NextResponse.json(
-      { success: false, error_code: "BFF_ERROR", message: "Internal server error" },
-      { status: 500 }
-    );
+  const session = await getSessionCookie();
+  if (!session) {
+    return unauthorizedResponse(traceId);
   }
+
+  const result = await proxyToBackend('/api/platform/context', session, {
+    method: 'GET',
+    traceId,
+  });
+
+  return proxyResultToResponse(result);
 }
 
-// POST - Set active context
+/**
+ * POST /api/platform-admin/context
+ * Set active context (tenant_id, site_id)
+ */
 export async function POST(request: NextRequest) {
-  try {
-    const sessionCookie = request.cookies.get("__Host-sv_platform_session");
+  const traceId = `context-set-${Date.now()}`;
 
-    if (!sessionCookie) {
-      return NextResponse.json(
-        { success: false, error_code: "NO_SESSION", message: "Not authenticated" },
-        { status: 401 }
-      );
-    }
-
-    const body = await request.json();
-
-    const backendResponse = await fetch(`${BACKEND_URL}/api/platform/context`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Cookie: `__Host-sv_platform_session=${sessionCookie.value}`,
-      },
-      body: JSON.stringify(body),
-    });
-
-    const data = await backendResponse.json();
-    return NextResponse.json(data, { status: backendResponse.status });
-  } catch (error) {
-    console.error("Context POST BFF error:", error);
-    return NextResponse.json(
-      { success: false, error_code: "BFF_ERROR", message: "Internal server error" },
-      { status: 500 }
-    );
+  const session = await getSessionCookie();
+  if (!session) {
+    return unauthorizedResponse(traceId);
   }
+
+  let body: unknown;
+  try {
+    body = await request.json();
+  } catch {
+    return proxyResultToResponse({
+      ok: false,
+      status: 400,
+      data: { error_code: 'INVALID_JSON', message: 'Request body must be valid JSON' },
+      traceId,
+      contentType: 'application/json',
+    });
+  }
+
+  const result = await proxyToBackend('/api/platform/context', session, {
+    method: 'POST',
+    body,
+    traceId,
+  });
+
+  return proxyResultToResponse(result);
 }
 
-// DELETE - Clear active context
-export async function DELETE(request: NextRequest) {
-  try {
-    const sessionCookie = request.cookies.get("__Host-sv_platform_session");
+/**
+ * DELETE /api/platform-admin/context
+ * Clear active context
+ */
+export async function DELETE() {
+  const traceId = `context-clear-${Date.now()}`;
 
-    if (!sessionCookie) {
-      return NextResponse.json(
-        { success: false, error_code: "NO_SESSION", message: "Not authenticated" },
-        { status: 401 }
-      );
-    }
+  const session = await getSessionCookie();
+  if (!session) {
+    return unauthorizedResponse(traceId);
+  }
 
-    const backendResponse = await fetch(`${BACKEND_URL}/api/platform/context`, {
-      method: "DELETE",
+  const result = await proxyToBackend('/api/platform/context', session, {
+    method: 'DELETE',
+    traceId,
+  });
+
+  // Handle 204 No Content
+  if (result.status === 204) {
+    return new NextResponse(null, {
+      status: 204,
       headers: {
-        "Content-Type": "application/json",
-        Cookie: `__Host-sv_platform_session=${sessionCookie.value}`,
+        'Cache-Control': 'no-store',
+        'Vary': 'Cookie',
       },
     });
-
-    if (backendResponse.status === 204) {
-      return new NextResponse(null, { status: 204 });
-    }
-
-    const data = await backendResponse.json();
-    return NextResponse.json(data, { status: backendResponse.status });
-  } catch (error) {
-    console.error("Context DELETE BFF error:", error);
-    return NextResponse.json(
-      { success: false, error_code: "BFF_ERROR", message: "Internal server error" },
-      { status: 500 }
-    );
   }
+
+  return proxyResultToResponse(result);
 }

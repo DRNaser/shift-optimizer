@@ -39,9 +39,8 @@ async def test_short_api_key_returns_401(client: AsyncClient):
 
 
 @pytest.mark.asyncio
-@pytest.mark.xfail(reason="Requires DB fixture for health/ready endpoint")
 async def test_health_endpoints_no_auth_required(client: AsyncClient):
-    """Test that health endpoints don't require auth."""
+    """Test that health endpoints don't require auth (GA-verified: works without DB)."""
     # Health check should work without auth
     response = await client.get("/health")
     assert response.status_code == 200

@@ -276,6 +276,9 @@ def configure_middleware(app: FastAPI) -> None:
                 )
 
         # Pack endpoints: reject session auth
+        # NOTE: /api/v1/ops is NOT included because only /api/v1/ops/whatsapp/ingest
+        # uses HMAC auth. Other ops endpoints (pairing, tickets, drafts, broadcast)
+        # use standard session auth for admin operations.
         pack_prefixes = ["/api/v1/routing", "/api/v1/roster"]
         if any(is_prefix_match(path, prefix) for prefix in pack_prefixes):
             session_cookie = request.cookies.get("sv_session")
@@ -561,19 +564,31 @@ def register_routers(app: FastAPI) -> None:
         logger.warning("consent_router_not_available", extra={"error": str(e)})
 
     # =========================================================================
-    # BILLING (P1 Stripe Integration)
+    # BILLING (P1 Stripe Integration) - P2 FIX: Explicitly disabled until configured
     # =========================================================================
     # Billing router for subscription management, webhooks, invoices
-    # Accessible at /api/billing/*
-    try:
-        from .billing.router import router as billing_router
-        app.include_router(
-            billing_router,
-            tags=["Billing"],
-        )
-        logger.info("billing_router_registered", extra={"paths": ["/api/billing/webhook", "/api/billing/status"]})
-    except ImportError as e:
-        logger.warning("billing_router_not_available", extra={"error": str(e)})
+    # Accessible at /api/billing/* ONLY when Stripe is configured
+    #
+    # SECURITY: Router is NOT mounted unless STRIPE_API_KEY and STRIPE_WEBHOOK_SECRET
+    # are set. This prevents accidental exposure of billing endpoints in development.
+    if settings.is_stripe_configured:
+        try:
+            from .billing.router import router as billing_router
+            app.include_router(
+                billing_router,
+                tags=["Billing"],
+            )
+            logger.info("billing_router_registered", extra={
+                "paths": ["/api/billing/webhook", "/api/billing/status"],
+                "stripe_configured": True,
+            })
+        except ImportError as e:
+            logger.warning("billing_router_not_available", extra={"error": str(e)})
+    else:
+        logger.info("billing_router_disabled", extra={
+            "reason": "Stripe not configured (STRIPE_API_KEY and/or STRIPE_WEBHOOK_SECRET missing)",
+            "stripe_configured": False,
+        })
 
     # =========================================================================
     # TENANT DASHBOARD + EVIDENCE + AUDIT (V4.7)
@@ -676,6 +691,23 @@ def register_routers(app: FastAPI) -> None:
         logger.info("routing_pack_router_registered", extra={"prefix": f"{api_prefix}/routing"})
     except ImportError as e:
         logger.warning("routing_pack_not_available", extra={"error": str(e)})
+
+    # Ops-Copilot Pack (V4.6 - WhatsApp AI Operations Assistant)
+    # Provides WhatsApp-based ops assistant with:
+    # - OTP pairing for identity binding
+    # - 2-phase commit for writes (CONFIRM flow)
+    # - LangGraph orchestrator with bounded execution
+    # - Driver broadcast (template-only + opt-in)
+    try:
+        from packs.ops_copilot.api import router as ops_copilot_router
+        app.include_router(
+            ops_copilot_router,
+            prefix=f"{api_prefix}/ops",
+            tags=["Ops-Copilot"],
+        )
+        logger.info("ops_copilot_router_registered", extra={"prefix": f"{api_prefix}/ops"})
+    except ImportError as e:
+        logger.warning("ops_copilot_not_available", extra={"error": str(e)})
 
     # Prometheus metrics endpoint (always registered)
     from .metrics import get_metrics_response

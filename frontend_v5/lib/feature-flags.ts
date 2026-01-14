@@ -21,7 +21,9 @@ export type FeatureFlag =
   | 'dispatcherCockpit'
   | 'multiSiteOnboarding'
   | 'advancedAudits'
-  | 'evidenceDownload';
+  | 'evidenceDownload'
+  | 'enableRepairs'
+  | 'enableFreeze';
 
 export type PlatformRole =
   | 'platform_admin'
@@ -65,6 +67,16 @@ const FEATURE_FLAGS: Record<FeatureFlag, FeatureFlagConfig> = {
     enabled: process.env.NEXT_PUBLIC_FF_EVIDENCE_DOWNLOAD !== 'false', // Default ON
     allowedRoles: ['platform_admin', 'platform_ops', 'dispatcher', 'ops_lead', 'auditor'],
     description: 'Evidence pack download functionality',
+  },
+  enableRepairs: {
+    enabled: process.env.NEXT_PUBLIC_FF_ENABLE_REPAIRS !== 'false', // Default ON
+    allowedRoles: ['platform_admin', 'platform_ops', 'dispatcher', 'ops_lead'],
+    description: 'Repair session functionality for handling absences',
+  },
+  enableFreeze: {
+    enabled: process.env.NEXT_PUBLIC_FF_ENABLE_FREEZE !== 'false', // Default ON
+    allowedRoles: ['platform_admin', 'platform_ops', 'dispatcher', 'ops_lead'],
+    description: 'Freeze/Lock plan functionality (one-way, arbeitsrechtlich)',
   },
 };
 

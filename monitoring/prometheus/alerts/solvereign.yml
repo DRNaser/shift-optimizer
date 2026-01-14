@@ -214,6 +214,47 @@ groups:
           runbook_url: "https://docs.solvereign.com/runbooks/invoice-failures"
 
   # ===========================================================================
+  # CELERY / QUEUE (P2 FIX)
+  # ===========================================================================
+  - name: solvereign.queue
+    rules:
+      # Queue Backlog - Warning
+      - alert: SolvereignQueueBacklogWarning
+        expr: celery_queue_length{queue="routing"} > 10
+        for: 10m
+        labels:
+          severity: warning
+          service: celery
+        annotations:
+          summary: "Celery queue backlog building up"
+          description: "Routing queue has {{ $value }} pending tasks. Workers may be overloaded."
+          runbook_url: "https://docs.solvereign.com/runbooks/queue-backlog"
+
+      # Queue Backlog - Critical
+      - alert: SolvereignQueueBacklogCritical
+        expr: celery_queue_length{queue="routing"} > 50
+        for: 5m
+        labels:
+          severity: critical
+          service: celery
+        annotations:
+          summary: "Critical Celery queue backlog"
+          description: "Routing queue has {{ $value }} pending tasks. Solver jobs are backing up severely."
+          runbook_url: "https://docs.solvereign.com/runbooks/queue-backlog"
+
+      # Queue Unavailable (metrics showing -1)
+      - alert: SolvereignQueueMetricsUnavailable
+        expr: celery_queue_length{queue="routing"} == -1
+        for: 5m
+        labels:
+          severity: warning
+          service: celery
+        annotations:
+          summary: "Celery queue metrics unavailable"
+          description: "Cannot read queue depth from Redis. Redis may be unreachable."
+          runbook_url: "https://docs.solvereign.com/runbooks/redis-down"
+
+  # ===========================================================================
   # RESOURCES
   # ===========================================================================
   - name: solvereign.resources

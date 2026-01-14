@@ -1,148 +1,112 @@
 /**
- * SOLVEREIGN V4.4 - Portal Admin Resend BFF Route
+ * SOLVEREIGN - Portal Admin Resend BFF Route
  *
- * Proxies resend requests to backend with session cookie auth + audit logging.
+ * Uses centralized proxy.ts for consistent error handling.
  * RBAC: portal.resend.write permission required.
  * Additional: portal.approve.write for DECLINED/SKIPPED filters.
  */
 
-import { NextRequest, NextResponse } from "next/server";
+import { NextRequest, NextResponse } from 'next/server';
+import {
+  getSessionCookie,
+  proxyToBackend,
+  proxyResultToResponse,
+  unauthorizedResponse,
+} from '@/lib/bff/proxy';
 
-export const dynamic = "force-dynamic";
+export const dynamic = 'force-dynamic';
 export const revalidate = 0;
 
-const BACKEND_URL = process.env.BACKEND_URL || "http://localhost:8000";
-
+/**
+ * POST /api/portal-admin/resend
+ * Resend notifications to drivers
+ */
 export async function POST(request: NextRequest) {
-  // Get session cookie from request
-  const sessionCookie = request.cookies.get("__Host-sv_platform_session");
+  const traceId = `portal-resend-${Date.now()}`;
 
-  if (!sessionCookie) {
+  const session = await getSessionCookie();
+  if (!session) {
+    return unauthorizedResponse(traceId);
+  }
+
+  let body: Record<string, unknown>;
+  try {
+    body = await request.json();
+  } catch {
+    return proxyResultToResponse({
+      ok: false,
+      status: 400,
+      data: { error_code: 'INVALID_JSON', message: 'Request body must be valid JSON' },
+      traceId,
+      contentType: 'application/json',
+    });
+  }
+
+  // Validate required fields
+  if (!body.snapshot_id) {
     return NextResponse.json(
       {
-        success: false,
-        queued_count: 0,
-        skipped_count: 0,
-        error: "Not authenticated",
-        error_code: "NO_SESSION",
+        error_code: 'VALIDATION_ERROR',
+        message: 'snapshot_id is required',
+        trace_id: traceId,
       },
-      { status: 401 }
+      { status: 400 }
     );
   }
 
-  try {
-    const body = await request.json();
-
-    // Validate required fields
-    if (!body.snapshot_id) {
+  // Validate guardrails for DECLINED filter
+  if (body.filter === 'DECLINED') {
+    if (!body.include_declined) {
       return NextResponse.json(
         {
-          success: false,
-          queued_count: 0,
-          skipped_count: 0,
-          error: "snapshot_id is required",
+          error_code: 'VALIDATION_ERROR',
+          message: 'include_declined=true required for DECLINED filter',
+          trace_id: traceId,
         },
         { status: 400 }
       );
     }
-
-    // Validate guardrails for DECLINED/SKIPPED
-    if (body.filter === "DECLINED") {
-      if (!body.include_declined) {
-        return NextResponse.json(
-          {
-            success: false,
-            queued_count: 0,
-            skipped_count: 0,
-            error: "include_declined=true required for DECLINED filter",
-          },
-          { status: 400 }
-        );
-      }
-      if (!body.declined_reason || body.declined_reason.length < 10) {
-        return NextResponse.json(
-          {
-            success: false,
-            queued_count: 0,
-            skipped_count: 0,
-            error: "declined_reason (min 10 chars) required for DECLINED filter",
-          },
-          { status: 400 }
-        );
-      }
-    }
-
-    if (body.filter === "SKIPPED") {
-      if (!body.include_skipped) {
-        return NextResponse.json(
-          {
-            success: false,
-            queued_count: 0,
-            skipped_count: 0,
-            error: "include_skipped=true required for SKIPPED filter",
-          },
-          { status: 400 }
-        );
-      }
-      if (!body.skipped_reason || body.skipped_reason.length < 10) {
-        return NextResponse.json(
-          {
-            success: false,
-            queued_count: 0,
-            skipped_count: 0,
-            error: "skipped_reason (min 10 chars) required for SKIPPED filter",
-          },
-          { status: 400 }
-        );
-      }
-    }
-
-    const response = await fetch(
-      `${BACKEND_URL}/api/v1/portal/dashboard/resend`,
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Cookie: `__Host-sv_platform_session=${sessionCookie.value}`,
-        },
-        body: JSON.stringify(body),
-        cache: "no-store",
-      }
-    );
-
-    if (!response.ok) {
-      const data = await response.json().catch(() => ({}));
+    if (!body.declined_reason || String(body.declined_reason).length < 10) {
       return NextResponse.json(
         {
-          success: false,
-          queued_count: 0,
-          skipped_count: 0,
-          error: data.detail || `Backend error: ${response.status}`,
+          error_code: 'VALIDATION_ERROR',
+          message: 'declined_reason (min 10 chars) required for DECLINED filter',
+          trace_id: traceId,
         },
-        { status: response.status }
+        { status: 400 }
       );
     }
-
-    const data = await response.json();
-
-    const res = NextResponse.json({
-      success: true,
-      queued_count: data.queued_count || 0,
-      skipped_count: data.skipped_count || 0,
-    });
-    res.headers.set("Cache-Control", "no-store, no-cache, must-revalidate");
-    res.headers.set("Pragma", "no-cache");
-    return res;
-  } catch (error) {
-    console.error("Portal admin resend error:", error);
-    return NextResponse.json(
-      {
-        success: false,
-        queued_count: 0,
-        skipped_count: 0,
-        error: "Internal server error",
-      },
-      { status: 500 }
-    );
   }
+
+  // Validate guardrails for SKIPPED filter
+  if (body.filter === 'SKIPPED') {
+    if (!body.include_skipped) {
+      return NextResponse.json(
+        {
+          error_code: 'VALIDATION_ERROR',
+          message: 'include_skipped=true required for SKIPPED filter',
+          trace_id: traceId,
+        },
+        { status: 400 }
+      );
+    }
+    if (!body.skipped_reason || String(body.skipped_reason).length < 10) {
+      return NextResponse.json(
+        {
+          error_code: 'VALIDATION_ERROR',
+          message: 'skipped_reason (min 10 chars) required for SKIPPED filter',
+          trace_id: traceId,
+        },
+        { status: 400 }
+      );
+    }
+  }
+
+  const result = await proxyToBackend('/api/v1/portal/dashboard/resend', session, {
+    method: 'POST',
+    body,
+    traceId,
+  });
+
+  return proxyResultToResponse(result);
 }

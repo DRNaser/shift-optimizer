@@ -6,7 +6,15 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "typecheck": "tsc --noEmit",
+    "test:unit": "npx tsx lib/__tests__/data-quality.regression.ts",
+    "e2e": "playwright test",
+    "e2e:critical": "playwright test e2e/auth-smoke.spec.ts e2e/platform-tenants-sites.spec.ts e2e/roster-repair-workflow.spec.ts e2e/roster-failed-run.spec.ts --reporter=list",
+    "e2e:critical:headed": "playwright test e2e/auth-smoke.spec.ts e2e/platform-tenants-sites.spec.ts e2e/roster-repair-workflow.spec.ts e2e/roster-failed-run.spec.ts --headed --reporter=list",
+    "stability:check": "npm run typecheck && npm run test:unit && npm run build",
+    "gate:frontend": "npm run typecheck && npm run build",
+    "gate:unit": "npm run test:unit"
   },
   "dependencies": {
     "@azure/msal-browser": "^3.27.0",
@@ -39,6 +47,7 @@
     "eslint": "^9",
     "eslint-config-next": "16.1.1",
     "tailwindcss": "^4",
+    "tsx": "^4.19.0",
     "typescript": "^5"
   }
 }

@@ -1,6 +1,23 @@
 
-// Use relative path - Next.js rewrites proxy it to localhost:8000
-const API_BASE = "/api/v1";
+// Use BFF route path - handles auth and day conversion
+const API_BASE = "/api/roster";
+
+// --- Zod Schemas for Runtime Validation ---
+import {
+    parseRunCreateResponse,
+    parseRunStatusResponse,
+    parseScheduleResponse,
+    isRunFailed,
+    isRunCompleted,
+    isRunInProgress,
+    type RunCreateResponse,
+    type RunStatusResponse,
+    type ScheduleResponse,
+} from "./schemas/run-schemas";
+
+// Re-export types and helpers from schemas
+export type { RunCreateResponse, RunStatusResponse, ScheduleResponse };
+export { isRunFailed, isRunCompleted, isRunInProgress };
 
 // --- Types ---
 
@@ -32,31 +49,15 @@ export interface RunCreateRequest {
     };
 }
 
-export interface RunCreateResponse {
-    run_id: string;
-    status: string;
-    run_url: string;
-}
-
-export interface RunStatusResponse {
-    run_id: string;
-    status: "QUEUED" | "RUNNING" | "COMPLETED" | "FAILED" | "CANCELLED";
-    phase?: string;
-    budget?: {
-        total: number;
-        status: string;
-    };
-}
-
 export interface StatsOutput {
     total_drivers: number;
     total_tours_input: number;
     total_tours_assigned: number;
     total_tours_unassigned: number;
-    block_counts: Record<string, number>;
+    block_counts?: Record<string, number>;
     assignment_rate: number;
     average_driver_utilization: number;
-    average_work_hours: number;
+    average_work_hours?: number;
     drivers_fte: number;
     drivers_pt: number;
     total_hours?: number;
@@ -89,7 +90,7 @@ export interface AssignmentOutput {
     driver_id: string;
     driver_name: string;
     day: string;
-    block: BlockOutput;
+    block?: BlockOutput | null; // Optional property, allow null for defensive handling
 }
 
 export interface UnassignedTourOutput {
@@ -101,18 +102,6 @@ export interface UnassignedTourOutput {
     };
     reason_codes: string[];
     details: string;
-}
-
-export interface ScheduleResponse {
-    id: string;
-    week_start: string;
-    assignments: AssignmentOutput[];
-    unassigned_tours: UnassignedTourOutput[];
-    stats: StatsOutput;
-    validation: {
-        is_valid: boolean;
-        hard_violations: string[];
-    };
 }
 
 // --- API Client ---
@@ -189,19 +178,27 @@ export async function createRun(
         throw new Error(errorMsg);
     }
 
-    return res.json();
+    // Parse and validate response with zod
+    const data = await res.json();
+    return parseRunCreateResponse(data);
 }
 
 export async function getRunStatus(runId: string): Promise<RunStatusResponse> {
     const res = await fetch(`${API_BASE}/runs/${runId}`);
     if (!res.ok) throw new Error(`Get Status failed: ${res.status}`);
-    return res.json();
+
+    // Parse and validate response with zod (handles discriminated union)
+    const data = await res.json();
+    return parseRunStatusResponse(data);
 }
 
 export async function getRunResult(runId: string): Promise<ScheduleResponse> {
     const res = await fetch(`${API_BASE}/runs/${runId}/plan`);
     if (!res.ok) throw new Error(`Get Result failed: ${res.status}`);
-    return res.json();
+
+    // Parse and validate response with zod
+    const data = await res.json();
+    return parseScheduleResponse(data);
 }
 
 // --- Helpers ---

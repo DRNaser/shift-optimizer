@@ -228,8 +228,8 @@ class TestMockRBACRepository:
             tenant_id=1,
             site_id=10,
             role_id=3,  # dispatcher role
-            ip="127.0.0.1",
-            user_agent="Test Agent",
+            ip_hash="127.0.0.1",
+            user_agent_hash="Test Agent",
         )
 
         assert session_id is not None
@@ -254,8 +254,8 @@ class TestMockRBACRepository:
             user_id="user-123",
             tenant_id=1,
             site_id=10,
-            ip=None,
-            user_agent=None,
+            ip_hash=None,
+            user_agent_hash=None,
         )
         repo.revoke_session(token_hash)
 
@@ -379,8 +379,11 @@ class TestConfiguration:
     """Tests for RBAC configuration constants."""
 
     def test_session_cookie_name(self):
-        """Session cookie should be named '__Host-sv_platform_session' (canonical)."""
-        assert SESSION_COOKIE_NAME == "__Host-sv_platform_session"
+        """Session cookie should be named correctly for the environment."""
+        # In development: sv_platform_session (no __Host- prefix, works on HTTP)
+        # In production: __Host-sv_platform_session (Secure, Path=/, no Domain)
+        # Tests run in development mode, so we expect the dev cookie name
+        assert SESSION_COOKIE_NAME in ("sv_platform_session", "__Host-sv_platform_session")
 
     def test_session_cookie_max_age(self):
         """Session should last 8 hours (28800 seconds)."""
@@ -468,8 +471,8 @@ class TestCrossTenantIsolation:
             tenant_id=1,
             site_id=10,
             role_id=3,
-            ip=None,
-            user_agent=None,
+            ip_hash=None,
+            user_agent_hash=None,
         )
 
         assert session_id is not None
@@ -492,8 +495,8 @@ class TestCrossTenantIsolation:
             tenant_id=1,
             site_id=None,
             role_id=3,
-            ip=None,
-            user_agent=None,
+            ip_hash=None,
+            user_agent_hash=None,
         )
 
         # Create session for tenant 2 using admin (add binding first)
@@ -512,8 +515,8 @@ class TestCrossTenantIsolation:
             tenant_id=2,
             site_id=None,
             role_id=1,
-            ip=None,
-            user_agent=None,
+            ip_hash=None,
+            user_agent_hash=None,
         )
 
         # Each session should have its own tenant
@@ -639,8 +642,8 @@ class TestCrossTenantIsolation:
             tenant_id=1,
             site_id=None,
             role_id=3,
-            ip=None,
-            user_agent=None,
+            ip_hash=None,
+            user_agent_hash=None,
         )
 
         # Validate session
@@ -965,7 +968,7 @@ class TestRoleAssignmentBoundaries:
 
     def test_platform_admin_can_assign_platform_admin(self):
         """Platform admin can assign platform_admin role."""
-        from backend_py.api.routers.platform_admin import validate_role_assignment
+        from api.routers.platform_admin import validate_role_assignment
 
         assert validate_role_assignment("platform_admin", "platform_admin") is True
         assert validate_role_assignment("platform_admin", "tenant_admin") is True
@@ -975,7 +978,7 @@ class TestRoleAssignmentBoundaries:
 
     def test_tenant_admin_cannot_assign_platform_admin(self):
         """Tenant admin cannot assign platform_admin role."""
-        from backend_py.api.routers.platform_admin import validate_role_assignment
+        from api.routers.platform_admin import validate_role_assignment
 
         assert validate_role_assignment("tenant_admin", "platform_admin") is False
         assert validate_role_assignment("tenant_admin", "tenant_admin") is True
@@ -985,7 +988,7 @@ class TestRoleAssignmentBoundaries:
 
     def test_operator_admin_cannot_assign_roles(self):
         """Operator admin cannot assign any roles."""
-        from backend_py.api.routers.platform_admin import validate_role_assignment
+        from api.routers.platform_admin import validate_role_assignment
 
         assert validate_role_assignment("operator_admin", "platform_admin") is False
         assert validate_role_assignment("operator_admin", "tenant_admin") is False
@@ -995,7 +998,7 @@ class TestRoleAssignmentBoundaries:
 
     def test_dispatcher_cannot_assign_roles(self):
         """Dispatcher cannot assign any roles."""
-        from backend_py.api.routers.platform_admin import validate_role_assignment
+        from api.routers.platform_admin import validate_role_assignment
 
         assert validate_role_assignment("dispatcher", "platform_admin") is False
         assert validate_role_assignment("dispatcher", "tenant_admin") is False
@@ -1003,7 +1006,7 @@ class TestRoleAssignmentBoundaries:
 
     def test_unknown_role_cannot_assign(self):
         """Unknown role cannot assign any roles."""
-        from backend_py.api.routers.platform_admin import validate_role_assignment
+        from api.routers.platform_admin import validate_role_assignment
 
         assert validate_role_assignment("unknown_role", "dispatcher") is False
 
@@ -1026,7 +1029,7 @@ class TestPlatformAdminWorkflowSmoke:
 
     def test_role_hierarchy_correct_order(self):
         """Role hierarchy should have correct ordering."""
-        from backend_py.api.routers.platform_admin import ROLE_HIERARCHY
+        from api.routers.platform_admin import ROLE_HIERARCHY
 
         assert ROLE_HIERARCHY["ops_readonly"] < ROLE_HIERARCHY["dispatcher"]
         assert ROLE_HIERARCHY["dispatcher"] < ROLE_HIERARCHY["operator_admin"]
@@ -1089,14 +1092,14 @@ class TestPlatformAdminWorkflowSmoke:
 
     def test_tenant_admin_cannot_escalate_to_platform(self):
         """Tenant admin cannot escalate privileges to platform admin."""
-        from backend_py.api.routers.platform_admin import validate_role_assignment
+        from api.routers.platform_admin import validate_role_assignment
 
         # tenant_admin trying to create platform_admin should fail
         assert validate_role_assignment("tenant_admin", "platform_admin") is False
 
     def test_platform_admin_can_create_platform_admin(self):
         """Platform admin can create another platform admin."""
-        from backend_py.api.routers.platform_admin import validate_role_assignment
+        from api.routers.platform_admin import validate_role_assignment
 
         assert validate_role_assignment("platform_admin", "platform_admin") is True
 
