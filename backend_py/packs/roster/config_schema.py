@@ -254,8 +254,8 @@ class RosterPolicyConfig(BaseModel):
             # ArbZG §3: Maximum weekly working time (exceptional)
             "absolute_max_weekly_hours": 60,
 
-            # ArbZG §5: Minimum rest period
-            "absolute_min_rest_hours": 9,
+            # ArbZG §5: Minimum rest period (gesetzl. 11h, keine Branchenausnahme für Logistik)
+            "absolute_min_rest_hours": 11,
 
             # Not configurable: Coverage must always be 100% attempted
             "coverage_target": 100,
