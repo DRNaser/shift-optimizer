@@ -60,37 +60,37 @@ jobs:
       
       - name: Verify Export Created
         run: |
-          if [ ! -f "backend_py/roster_matrix.csv" ]; then
+          if [ ! -f "roster_matrix.csv" ]; then
             echo "❌ Error: roster_matrix.csv not created"
             exit 1
           fi
-          
-          rows=$(wc -l < backend_py/roster_matrix.csv)
+
+          rows=$(wc -l < roster_matrix.csv)
           if [ "$rows" -lt 2 ]; then
             echo "❌ Error: roster_matrix.csv is empty (only $rows rows)"
             exit 1
           fi
-          
+
           echo "✅ roster_matrix.csv created with $rows rows"
-      
+
       - name: Parse Results (Smoke Test)
         run: |
           # Simple sanity check: contains FTE/PT drivers
-          if grep -q "FTE" backend_py/roster_matrix.csv && \
-             grep -q ";" backend_py/roster_matrix.csv; then
+          if grep -q "FTE" roster_matrix.csv && \
+             grep -q ";" roster_matrix.csv; then
             echo "✅ Export format looks valid"
           else
             echo "❌ Export format invalid"
             exit 1
           fi
-      
+
       - name: Upload Artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: pr-gate-results-${{ github.sha }}
           path: |
-            backend_py/roster_matrix.csv
+            roster_matrix.csv
             artifacts/
           retention-days: 7
       
