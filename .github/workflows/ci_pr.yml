@@ -114,20 +114,13 @@ jobs:
           pip install --upgrade pip
           pip install -r backend_py/requirements.txt
       
-      - name: Run pytest (excluding known failures)
+      - name: Run pytest
         run: |
           cd backend_py
           pytest \
             --tb=short \
             -v \
-            --ignore=test_business_kpis.py \
             || echo "⚠️ Some tests failed (non-blocking for now)"
         continue-on-error: true
         env:
           PYTHONHASHSEED: 0
-      
-      - name: Note on test_business_kpis.py
-        run: |
-          echo "ℹ️ test_business_kpis.py is excluded (known issue: reports 0 drivers)"
-          echo "See ROADMAP.md Known Issues section for details"
-          echo "Status: NON-BLOCKING, tracked for post-v7.0.0 fix"
