@@ -138,6 +138,7 @@ CREATE INDEX IF NOT EXISTS idx_plan_versions_baseline ON plan_versions(baseline_
 
 CREATE TABLE IF NOT EXISTS forecast_compositions (
     id                  SERIAL PRIMARY KEY,
+        tenant_id           INTEGER NOT NULL DEFAULT 1,  -- FK added in 006_multi_tenant.sql
     composed_version_id INTEGER NOT NULL REFERENCES forecast_versions(id) ON DELETE CASCADE,
     patch_version_id    INTEGER NOT NULL REFERENCES forecast_versions(id),
     patch_order         INTEGER NOT NULL,  -- Order in which patches were applied
@@ -155,6 +156,7 @@ CREATE INDEX IF NOT EXISTS idx_forecast_compositions_patch ON forecast_compositi
 
 CREATE TABLE IF NOT EXISTS tour_removals (
     id                  SERIAL PRIMARY KEY,
+        tenant_id           INTEGER NOT NULL DEFAULT 1,  -- FK added in 006_multi_tenant.sql
     forecast_version_id INTEGER NOT NULL REFERENCES forecast_versions(id) ON DELETE CASCADE,
     tour_fingerprint    VARCHAR(64) NOT NULL,  -- Which tour was removed
     removed_at          TIMESTAMP NOT NULL DEFAULT NOW(),
