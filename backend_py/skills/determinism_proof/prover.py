@@ -76,23 +76,111 @@ class DeterminismProver:
     def _find_forecast_file(self) -> Optional[Path]:
         """Locate the forecast input CSV file."""
         candidates = [
+            # CI fixture location (primary for CI/CD)
+            Path(__file__).parent.parent.parent / "tests" / "fixtures" / "forecast_ci_test.csv",
+            # Project root locations
             Path(__file__).parent.parent.parent.parent / "forecast input.csv",
             Path(__file__).parent.parent.parent / "forecast input.csv",
             Path.cwd() / "forecast input.csv",
+            # Alternative CI paths
+            Path.cwd() / "backend_py" / "tests" / "fixtures" / "forecast_ci_test.csv",
         ]
         for path in candidates:
             if path.exists():
+                if self.verbose:
+                    print(f"[DETERMINISM] Found forecast file: {path}")
                 return path
         return None
 
     def _parse_forecast(self) -> list:
-        """Parse the multi-column German-formatted forecast CSV."""
+        """Parse German-formatted forecast CSV (supports both formats)."""
         if not self.forecast_path or not self.forecast_path.exists():
             raise FileNotFoundError(f"Forecast file not found. Tried: {self.forecast_path}")
 
         if Tour is None or Weekday is None:
             raise ImportError("Solver modules not available")
 
+        with open(self.forecast_path, "r", encoding="utf-8") as f:
+            content = f.read()
+
+        lines = content.strip().split("\n")
+
+        # Detect format: single-column (day headers) or multi-column
+        is_single_column = any(
+            line.strip().lower().startswith(day)
+            for line in lines[:10]
+            for day in ["montag", "dienstag", "mittwoch", "donnerstag", "freitag", "samstag", "sonntag"]
+        )
+
+        if is_single_column:
+            return self._parse_single_column(lines)
+        else:
+            return self._parse_multi_column(lines)
+
+    def _parse_single_column(self, lines: list) -> list:
+        """Parse single-column format with day headers (e.g., 'Montag;Anzahl')."""
+        tours = []
+        tour_counter = 0
+        current_day = None
+
+        day_mapping = {
+            "montag": Weekday.MONDAY,
+            "dienstag": Weekday.TUESDAY,
+            "mittwoch": Weekday.WEDNESDAY,
+            "donnerstag": Weekday.THURSDAY,
+            "freitag": Weekday.FRIDAY,
+            "samstag": Weekday.SATURDAY,
+            "sonntag": Weekday.SUNDAY,
+        }
+
+        for line in lines:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+
+            # Check for day header
+            lower_line = line.lower()
+            found_day = False
+            for day_name, weekday in day_mapping.items():
+                if lower_line.startswith(day_name):
+                    current_day = weekday
+                    found_day = True
+                    break
+
+            if found_day:
+                continue
+
+            # Parse time;count row
+            if current_day and ";" in line:
+                parts = line.split(";")
+                if len(parts) >= 2:
+                    time_range = parts[0].strip()
+                    count_str = parts[1].strip()
+
+                    if "-" in time_range and count_str.isdigit():
+                        try:
+                            count = int(count_str)
+                            if count > 0:
+                                start_str, end_str = time_range.split("-")
+                                start_h, start_m = map(int, start_str.split(":"))
+                                end_h, end_m = map(int, end_str.split(":"))
+
+                                for i in range(count):
+                                    tour_counter += 1
+                                    tour = Tour(
+                                        id=f"T{tour_counter:04d}",
+                                        day=current_day,
+                                        start_time=dt_time(start_h, start_m),
+                                        end_time=dt_time(end_h, end_m),
+                                    )
+                                    tours.append(tour)
+                        except (ValueError, IndexError):
+                            pass
+
+        return tours
+
+    def _parse_multi_column(self, lines: list) -> list:
+        """Parse multi-column format (6 days in columns)."""
         tours = []
         tour_counter = 0
 
@@ -105,10 +193,7 @@ class DeterminismProver:
             (10, 11, Weekday.SATURDAY),
         ]
 
-        with open(self.forecast_path, "r", encoding="utf-8") as f:
-            lines = f.readlines()
-
-        for line in lines[1:]:
+        for line in lines[1:]:  # Skip header
             line = line.strip()
             if not line:
                 continue
@@ -143,7 +228,7 @@ class DeterminismProver:
                             end_time=dt_time(end_h, end_m),
                         )
                         tours.append(tour)
-                except Exception:
+                except (ValueError, IndexError):
                     continue
 
         return tours
