@@ -227,6 +227,26 @@ def _convert_drivers_to_assignments(
     return assignments
 
 
+def _tour_fingerprint(t: Tour) -> str:
+    """
+    Generate canonical fingerprint for a tour based on INTRINSIC properties only.
+
+    Does NOT use tour_id (which may be non-canonical across systems).
+    Uses only inherent tour attributes:
+        - day (weekday value)
+        - start_time (HH:MM)
+        - end_time (HH:MM)
+        - location (depot)
+        - qualifications (sorted, joined)
+
+    Returns:
+        SHA256[:8] fingerprint string
+    """
+    quals = "|".join(sorted(t.required_qualifications)) if t.required_qualifications else ""
+    canonical = f"{t.day.value}|{t.start_time.strftime('%H:%M')}|{t.end_time.strftime('%H:%M')}|{t.location}|{quals}"
+    return hashlib.sha256(canonical.encode()).hexdigest()[:8]
+
+
 def _tour_sort_key(t: Tour) -> tuple:
     """
     Stable sort key for deterministic tour ordering.
@@ -234,21 +254,31 @@ def _tour_sort_key(t: Tour) -> tuple:
     Key components (in priority order):
         1. start_time (minutes from midnight)
         2. end_time (minutes from midnight)
-        3. tour_id (lexicographic, for absolute tie-breaking)
+        3. canonical fingerprint (SHA256 of intrinsic properties, NOT tour_id)
+
+    IMPORTANT: We do NOT use tour_id for tie-breaking because it may be
+    non-canonical across different systems/database states. The fingerprint
+    is based purely on intrinsic tour properties.
     """
     start_min = t.start_time.hour * 60 + t.start_time.minute
     end_min = t.end_time.hour * 60 + t.end_time.minute
-    return (start_min, end_min, t.id)
+    fingerprint = _tour_fingerprint(t)
+    return (start_min, end_min, fingerprint)
 
 
 def _block_key(tours: list[Tour]) -> str:
     """
     Generate SHA256 block_key from canonical block description.
 
-    Canonical format: "tour1_id|tour2_id|..." (sorted by tour_id)
-    This provides deterministic tie-breaking when multiple valid blocks exist.
+    Canonical format uses tour fingerprints (NOT tour_ids):
+        "fingerprint1|fingerprint2|..." (sorted)
+
+    This provides deterministic tie-breaking when multiple valid blocks exist,
+    and is stable across different database states.
     """
-    canonical = "|".join(sorted(t.id for t in tours))
+    # Sort by fingerprint, then concatenate
+    fingerprints = sorted(_tour_fingerprint(t) for t in tours)
+    canonical = "|".join(fingerprints)
     return hashlib.sha256(canonical.encode()).hexdigest()[:16]
 
 
