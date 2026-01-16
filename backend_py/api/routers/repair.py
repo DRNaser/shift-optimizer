@@ -123,8 +123,8 @@ async def repair_plan(
 
     try:
         # Import repair engine
-        from v3.repair_engine import RepairEngine
-        from v3.db import get_connection
+        from packs.roster.engine.repair_engine import RepairEngine
+        from packs.roster.engine.db import get_connection
 
         # Validate plan exists and belongs to tenant
         async with db.get_connection() as conn:

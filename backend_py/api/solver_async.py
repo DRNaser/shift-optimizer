@@ -94,8 +94,8 @@ def _run_solver_sync(
 
     This bridges the async API layer to the sync V3 solver code.
     """
-    from v3.solver_wrapper import solve_forecast, compute_plan_kpis
-    from v3.audit_fixed import audit_plan_fixed
+    from packs.roster.engine.solver_wrapper import solve_forecast, compute_plan_kpis
+    from packs.roster.engine.audit_fixed import audit_plan_fixed
 
     try:
         # Run V2 solver
@@ -151,7 +151,7 @@ async def compute_plan_kpis_async(
 
 def _compute_kpis_sync(plan_version_id: int) -> dict:
     """Synchronous KPI computation."""
-    from v3.solver_wrapper import compute_plan_kpis as sync_compute_kpis
+    from packs.roster.engine.solver_wrapper import compute_plan_kpis as sync_compute_kpis
 
     kpis = sync_compute_kpis(plan_version_id)
 
@@ -203,7 +203,7 @@ async def audit_plan_async(
 
 def _audit_plan_sync(plan_version_id: int, save_to_db: bool, tenant_id: int = 1) -> dict:
     """Synchronous audit execution."""
-    from v3.audit_fixed import audit_plan_fixed
+    from packs.roster.engine.audit_fixed import audit_plan_fixed
 
     return audit_plan_fixed(plan_version_id, save_to_db=save_to_db, tenant_id=tenant_id)
 

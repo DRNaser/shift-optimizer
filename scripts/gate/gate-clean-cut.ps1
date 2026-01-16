@@ -98,20 +98,20 @@ if (Test-Path "backend_py/src") {
 }
 
 # =============================================================================
-# CHECK 5: backend_py/v3 status (for PR-3+)
+# CHECK 5: backend_py/v3 removed (as of PR-3)
 # =============================================================================
 Write-Host "`n--- Check 5: Global v3 Package ---" -ForegroundColor White
 
 if (Test-Path "backend_py/v3") {
-    # Check if v3 imports exist (should be eliminated after PR-3)
-    $v3Imports = rg -c "^from v3\.|^import v3\b" backend_py/ --type py 2>$null | Measure-Object -Sum
-    if ($v3Imports.Sum -gt 0) {
-        Write-Skip "V3_PACKAGE" "backend_py/v3/ exists with $($v3Imports.Sum) imports (OK for PR-2, must be 0 after PR-3)"
-    } else {
-        Write-Pass "V3_PACKAGE" "backend_py/v3/ exists but no imports (ready for deletion)"
-    }
+    Write-Fail "V3_PACKAGE" "backend_py/v3/ still exists (should be moved to packs/roster/engine/)"
 } else {
-    Write-Pass "V3_PACKAGE" "backend_py/v3/ removed"
+    # Verify v3 imports are also eliminated
+    $v3Imports = rg -c "\bfrom v3\.\b|\bimport v3\b" backend_py/ --type py 2>$null | Measure-Object -Sum
+    if ($v3Imports.Sum -gt 0) {
+        Write-Fail "V3_IMPORTS" "backend_py/v3/ removed but $($v3Imports.Sum) v3.* imports remain"
+    } else {
+        Write-Pass "V3_PACKAGE" "backend_py/v3/ removed and no v3.* imports"
+    }
 }
 
 # =============================================================================

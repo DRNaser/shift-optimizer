@@ -397,7 +397,7 @@ async def get_plan_kpis(
     db: DatabaseManager = Depends(get_db),
 ):
     """Get plan KPIs."""
-    from v3.solver_wrapper import compute_plan_kpis
+    from packs.roster.engine.solver_wrapper import compute_plan_kpis
 
     async with db.connection() as conn:
         # Verify plan exists

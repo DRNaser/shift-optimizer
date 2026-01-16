@@ -1,8 +1,8 @@
 # =============================================================================
-# SOLVEREIGN V4.5 - Python Backend Dockerfile
+# SOLVEREIGN V4.6 - Python Backend Dockerfile
 # =============================================================================
 # Runtime: FastAPI kernel (api.main:app) + Domain Packs
-# NOTE: Legacy src/ removed in V4.5. v3/ retained for solver compatibility.
+# NOTE: src/ and global v3/ removed. Solver now in packs/roster/engine/.
 # =============================================================================
 
 FROM python:3.12-slim
@@ -22,15 +22,12 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application code
-# NOTE: src/ REMOVED in V4.5 (legacy package deleted)
+# NOTE: src/ removed in V4.5, v3/ removed in V4.6 (moved to packs/roster/engine/)
 
 # FastAPI kernel
 COPY api/ ./api/
 
-# Core solver logic (will move to packs/roster/engine in V4.6)
-COPY v3/ ./v3/
-
-# Business packs (portal, notify, routing, roster)
+# Business packs (portal, notify, routing, roster + solver engine)
 COPY packs/ ./packs/
 
 # Database schemas

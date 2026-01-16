@@ -13,9 +13,18 @@ import unittest
 import time
 import hmac
 import hashlib
+import os
 from datetime import datetime
 
-sys.path.insert(0, ".")
+# Add paths for both running from backend_py/ and from repo root
+_this_dir = os.path.dirname(os.path.abspath(__file__))
+_backend_py_dir = os.path.normpath(os.path.join(_this_dir, "..", "..", ".."))
+_repo_root = os.path.normpath(os.path.join(_backend_py_dir, ".."))
+
+if _backend_py_dir not in sys.path:
+    sys.path.insert(0, _backend_py_dir)
+if _repo_root not in sys.path:
+    sys.path.insert(0, _repo_root)
 
 
 class TestOrganizationSeedData(unittest.TestCase):

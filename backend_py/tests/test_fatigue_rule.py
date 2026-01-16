@@ -23,8 +23,8 @@ import sys
 import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from v3.schemas import Segment, Duty, BlockType, NormalizedTime
-from v3.time_normalizer import TimeNormalizer, TimeRange
+from packs.roster.engine.schemas import Segment, Duty, BlockType, NormalizedTime
+from packs.roster.engine.time_normalizer import TimeNormalizer, TimeRange
 
 
 # ============================================================================

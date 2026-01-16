@@ -18,9 +18,9 @@ from datetime import time as dt_time
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 try:
-    from v3.src_compat.models import Tour, Weekday
-    from v3.solver_v2_integration import partition_tours_into_blocks
-    from v3.src_compat.block_heuristic_solver import BlockHeuristicSolver
+    from packs.roster.engine.src_compat.models import Tour, Weekday
+    from packs.roster.engine.solver_v2_integration import partition_tours_into_blocks
+    from packs.roster.engine.src_compat.block_heuristic_solver import BlockHeuristicSolver
 except ImportError as e:
     print(f"Warning: Could not import solver modules: {e}")
     Tour = None

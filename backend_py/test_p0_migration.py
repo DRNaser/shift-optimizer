@@ -19,13 +19,13 @@ from datetime import time
 
 try:
     from v3 import db, models
-    from v3.db_instances import (
+    from packs.roster.engine.db_instances import (
         expand_tour_template,
         get_tour_instances,
         create_assignment_fixed,
         check_coverage_fixed,
     )
-    from v3.audit_fixed import audit_plan_fixed
+    from packs.roster.engine.audit_fixed import audit_plan_fixed
 except ImportError as e:
     print(f"ERROR: Import failed: {e}")
     print("   Ensure you're in the project root: cd shift-optimizer")

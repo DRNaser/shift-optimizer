@@ -21,8 +21,8 @@ from datetime import time
 
 try:
     from v3 import db, models
-    from v3.diff_engine import compute_diff
-    from v3.audit_fixed import audit_plan_fixed as audit_plan
+    from packs.roster.engine.diff_engine import compute_diff
+    from packs.roster.engine.audit_fixed import audit_plan_fixed as audit_plan
 except ImportError as e:
     print(f"[FAIL] Import error: {e}")
     print("   Ensure you're in the project root: cd shift-optimizer")

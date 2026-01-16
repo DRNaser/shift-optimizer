@@ -13,9 +13,9 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
-from v3.parser import parse_forecast_text
-from v3.models import compute_input_hash
-from v3.db import get_forecast_version
+from packs.roster.engine.parser import parse_forecast_text
+from packs.roster.engine.models import compute_input_hash
+from packs.roster.engine.db import get_forecast_version
 
 def test_parse_fail_blocks_pipeline():
     """Test 1: Parse error creates FAIL forecast that blocks pipeline."""
@@ -75,7 +75,7 @@ def test_fail_forecast_blocks_solver(forecast_id):
         print()
         return
 
-    from v3.solver_wrapper import solve_forecast
+    from packs.roster.engine.solver_wrapper import solve_forecast
 
     try:
         print(f"Attempting to solve FAIL forecast {forecast_id}...")

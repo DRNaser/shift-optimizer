@@ -21,7 +21,7 @@ def test_config_module():
     print("="*70)
 
     try:
-        from v3.config import config
+        from packs.roster.engine.config import config
 
         print(f"[OK] Config module imported successfully")
         print(f"\nConfiguration Settings:")

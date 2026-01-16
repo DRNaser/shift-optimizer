@@ -123,8 +123,8 @@ async def ingest_forecast(
     Returns forecast ID and parse status.
     """
     # Import parser here to avoid circular imports
-    from v3.parser import parse_forecast_text
-    from v3.db_instances import expand_tour_template
+    from packs.roster.engine.parser import parse_forecast_text
+    from packs.roster.engine.db_instances import expand_tour_template
 
     # ==========================================================================
     # IDEMPOTENCY CHECK (before any processing)
