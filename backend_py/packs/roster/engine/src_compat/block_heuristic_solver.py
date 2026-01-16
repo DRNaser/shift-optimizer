@@ -74,7 +74,7 @@ class DriverState:
 
     def _get_adj_day(self, day: Weekday, offset: int) -> Optional[Weekday]:
         # Simple German days mapping
-        days = [Weekday.MONDAY, Weekday.TUESDAY, Weekday.WEDNESDAY, Weekday.THURSDAY, Weekday.FRIDAY, Weekday.SATURDAY]
+        days = [Weekday.MONDAY, Weekday.TUESDAY, Weekday.WEDNESDAY, Weekday.THURSDAY, Weekday.FRIDAY, Weekday.SATURDAY, Weekday.SUNDAY]
         try:
             idx = days.index(day)
             new_idx = idx + offset
@@ -226,7 +226,7 @@ class BlockHeuristicSolver:
         for b in sorted_blocks:
             blocks_by_day[b.day].append(b)
             
-        days = [Weekday.MONDAY, Weekday.TUESDAY, Weekday.WEDNESDAY, Weekday.THURSDAY, Weekday.FRIDAY, Weekday.SATURDAY]
+        days = [Weekday.MONDAY, Weekday.TUESDAY, Weekday.WEDNESDAY, Weekday.THURSDAY, Weekday.FRIDAY, Weekday.SATURDAY, Weekday.SUNDAY]
         
         transition_count = 0
         

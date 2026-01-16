@@ -1,6 +1,6 @@
 """
-SOLVEREIGN V3 - V2 Solver Integration Bridge
-=============================================
+SOLVEREIGN V3 - V2 Solver Integration Bridge (DETERMINISTIC)
+=============================================================
 
 Integrates the V2 Block Heuristic Solver with V3 tour_instances format.
 
@@ -10,9 +10,15 @@ This module provides a bridge between:
 
 Flow:
     1. Convert V3 tour_instances -> V2 Tour objects
-    2. Call partition_tours_into_blocks() with seed
+    2. Call partition_tours_into_blocks() with DETERMINISTIC selection
     3. Call BlockHeuristicSolver.solve()
     4. Convert DriverState results -> V3 assignment format
+
+DETERMINISM GUARANTEE (PR-4):
+    - NO random.seed(), random.shuffle(), random.choice()
+    - Stable sort keys: (day, start_time, end_time, tour_id)
+    - Tie-breaking via SHA256(canonical block description) = block_key
+    - Running solve N times produces IDENTICAL output
 
 Key Mappings:
     V3 day (1-7) -> V2 Weekday (Mon, Tue, Wed, Thu, Fri, Sat, Sun)
@@ -25,7 +31,7 @@ import sys
 from pathlib import Path
 from datetime import time
 from typing import Optional
-import random
+import hashlib
 from collections import defaultdict
 
 # Add parent to path for V2 imports
@@ -52,10 +58,10 @@ V2_WEEKDAY_TO_V3_DAY = {v: k for k, v in V3_DAY_TO_V2_WEEKDAY.items()}
 
 def solve_with_v2_solver(
     tour_instances: list[dict],
-    seed: int = 94
+    seed: int = 94  # DEPRECATED: kept for API compatibility, ignored
 ) -> list[dict]:
     """
-    Solve tour assignments using V2 Block Heuristic Solver.
+    Solve tour assignments using V2 Block Heuristic Solver (DETERMINISTIC).
 
     Args:
         tour_instances: List of V3 tour instance dicts with:
@@ -67,7 +73,7 @@ def solve_with_v2_solver(
             - skill: str (optional)
             - work_hours: float
             - duration_min: int
-        seed: Random seed for deterministic solver (default: 94)
+        seed: DEPRECATED, ignored (kept for API compatibility)
 
     Returns:
         List of assignment dicts with:
@@ -77,16 +83,20 @@ def solve_with_v2_solver(
             - block_id: str
             - role: str ("PRIMARY")
             - metadata: dict with solver details
+
+    Determinism Guarantee:
+        Running this function N times with identical input produces
+        IDENTICAL output. No random state involved.
     """
-    print(f"[V2 Integration] Converting {len(tour_instances)} tour_instances to V2 format...")
+    print(f"[V2 Integration] Converting {len(tour_instances)} tour_instances to V2 format (DETERMINISTIC)...")
 
     # Step 1: Convert V3 tour_instances -> V2 Tour objects
     tours, instance_map = _convert_instances_to_tours(tour_instances)
     print(f"[V2 Integration] Created {len(tours)} V2 Tour objects")
 
-    # Step 2: Partition tours into blocks using V2 greedy algorithm
-    print(f"[V2 Integration] Running partition_tours_into_blocks with seed {seed}...")
-    blocks = partition_tours_into_blocks(tours, seed=seed)
+    # Step 2: Partition tours into blocks using DETERMINISTIC algorithm
+    print(f"[V2 Integration] Running DETERMINISTIC partition_tours_into_blocks...")
+    blocks = partition_tours_into_blocks(tours)
     print(f"[V2 Integration] Created {len(blocks)} blocks")
 
     # Step 3: Run BlockHeuristicSolver
@@ -217,30 +227,75 @@ def _convert_drivers_to_assignments(
     return assignments
 
 
+def _tour_sort_key(t: Tour) -> tuple:
+    """
+    Stable sort key for deterministic tour ordering.
+
+    Key components (in priority order):
+        1. start_time (minutes from midnight)
+        2. end_time (minutes from midnight)
+        3. tour_id (lexicographic, for absolute tie-breaking)
+    """
+    start_min = t.start_time.hour * 60 + t.start_time.minute
+    end_min = t.end_time.hour * 60 + t.end_time.minute
+    return (start_min, end_min, t.id)
+
+
+def _block_key(tours: list[Tour]) -> str:
+    """
+    Generate SHA256 block_key from canonical block description.
+
+    Canonical format: "tour1_id|tour2_id|..." (sorted by tour_id)
+    This provides deterministic tie-breaking when multiple valid blocks exist.
+    """
+    canonical = "|".join(sorted(t.id for t in tours))
+    return hashlib.sha256(canonical.encode()).hexdigest()[:16]
+
+
+def _select_deterministic(candidates: list, key_fn) -> any:
+    """
+    Deterministically select from candidates using stable sort.
+
+    Instead of random.choice(), we sort by key_fn and take first.
+    This ensures identical selection across all runs.
+    """
+    if not candidates:
+        return None
+    sorted_cands = sorted(candidates, key=key_fn)
+    return sorted_cands[0]
+
+
 def partition_tours_into_blocks(
     tours: list[Tour],
-    seed: int = 94
+    seed: int = 94  # DEPRECATED: kept for API compatibility, ignored
 ) -> list[Block]:
     """
-    Greedily partition tours into blocks using optimized randomized greedy algorithm.
+    DETERMINISTIC partition of tours into blocks using stable sort keys.
 
-    This is the core V2 partitioning logic extracted from run_block_heuristic.py.
+    This is the core V2 partitioning logic, refactored for determinism (PR-4).
+    NO random.seed(), random.shuffle(), or random.choice() - guaranteed reproducible.
 
     Priority:
         1. 3er blocks (triples)
         2. 2er-regular blocks (30-60min gaps)
-        3. 2er-split blocks (exactly 360min gaps)
+        3. 2er-split blocks (exactly 240-360min gaps)
         4. 1er blocks (singletons)
+
+    Determinism Strategy:
+        - Tours sorted by stable key: (start_time, end_time, tour_id)
+        - Candidate selection uses first-by-stable-key (not random)
+        - Block IDs include SHA256 hash for unique identification
 
     Args:
         tours: List of Tour objects
-        seed: Random seed (default: 94, produces 145 drivers)
+        seed: DEPRECATED, ignored (kept for API compatibility)
 
     Returns:
         List of Block objects (disjoint partition)
     """
-    random.seed(seed)
-    print(f"[Partitioning] Seed {seed}, {len(tours)} tours...")
+    if seed != 94:
+        print(f"[Partitioning] WARNING: seed parameter is DEPRECATED and ignored (deterministic mode)")
+    print(f"[Partitioning] DETERMINISTIC mode, {len(tours)} tours...")
 
     tours_by_day = defaultdict(list)
     for t in tours:
@@ -248,9 +303,12 @@ def partition_tours_into_blocks(
 
     final_blocks = []
 
-    for day, day_tours in tours_by_day.items():
-        # Sort by start_time
-        day_tours.sort(key=lambda t: t.start_time)
+    # Process days in deterministic order (sorted by day enum value)
+    for day in sorted(tours_by_day.keys(), key=lambda d: d.value):
+        day_tours = tours_by_day[day]
+
+        # Sort by stable key for deterministic processing order
+        day_tours.sort(key=_tour_sort_key)
         active_tours = set(t.id for t in day_tours)
 
         def calc_gap(t1, t2):
@@ -272,7 +330,7 @@ def partition_tours_into_blocks(
             for t in ts:
                 active_tours.discard(t.id)
 
-        # Phase 1: 3er blocks
+        # Phase 1: 3er blocks (DETERMINISTIC)
         while True:
             found = False
             curr = [t for t in day_tours if t.id in active_tours]
@@ -283,24 +341,23 @@ def partition_tours_into_blocks(
                 for j in range(i + 1, len(curr)):
                     t2 = curr[j]
                     g = calc_gap(t1, t2)
-                    if is_reg(g):  # 3er-chain: NUR 30-60min Gaps (keine Split-Gaps)
+                    if is_reg(g):  # 3er-chain: NUR 30-60min Gaps
                         candidates_t2.append(t2)
 
                 if not candidates_t2:
                     continue
 
-                random.shuffle(candidates_t2)
+                # DETERMINISTIC: sort by stable key instead of random.shuffle
+                candidates_t2.sort(key=_tour_sort_key)
 
                 for t2 in candidates_t2:
-                    g1 = calc_gap(t1, t2)
-
-                    # Find t3
+                    # Find t3 candidates
                     candidates_t3 = []
                     for t3 in curr:
                         if t3.start_time <= t2.end_time:
                             continue
                         g2 = calc_gap(t2, t3)
-                        if is_reg(g2):  # 3er-chain: NUR 30-60min Gaps (keine Split-Gaps)
+                        if is_reg(g2):  # 3er-chain: NUR 30-60min Gaps
                             # Check span - 3er blocks use 16h span limit
                             span = (t3.end_time.hour * 60 + t3.end_time.minute) - \
                                    (t1.start_time.hour * 60 + t1.start_time.minute)
@@ -308,9 +365,11 @@ def partition_tours_into_blocks(
                                 candidates_t3.append(t3)
 
                     if candidates_t3:
-                        t3 = random.choice(candidates_t3)
+                        # DETERMINISTIC: select first by stable key instead of random.choice
+                        t3 = _select_deterministic(candidates_t3, _tour_sort_key)
+                        block_hash = _block_key([t1, t2, t3])
                         blk = Block(
-                            id=f"B3-{t1.id}",
+                            id=f"B3-{t1.id}-{block_hash}",
                             day=day,
                             tours=[t1, t2, t3]
                         )
@@ -323,7 +382,7 @@ def partition_tours_into_blocks(
             if not found:
                 break
 
-        # Phase 2: 2er-regular blocks
+        # Phase 2: 2er-regular blocks (DETERMINISTIC)
         while True:
             found = False
             curr = [t for t in day_tours if t.id in active_tours]
@@ -340,9 +399,11 @@ def partition_tours_into_blocks(
                             cands.append(t2)
 
                 if cands:
-                    t2 = random.choice(cands)
+                    # DETERMINISTIC: select first by stable key instead of random.choice
+                    t2 = _select_deterministic(cands, _tour_sort_key)
+                    block_hash = _block_key([t1, t2])
                     blk = Block(
-                        id=f"B2R-{t1.id}",
+                        id=f"B2R-{t1.id}-{block_hash}",
                         day=day,
                         tours=[t1, t2]
                     )
@@ -353,7 +414,7 @@ def partition_tours_into_blocks(
             if not found:
                 break
 
-        # Phase 3: 2er-split blocks
+        # Phase 3: 2er-split blocks (DETERMINISTIC)
         while True:
             found = False
             curr = [t for t in day_tours if t.id in active_tours]
@@ -369,9 +430,11 @@ def partition_tours_into_blocks(
                         if span <= 16 * 60:  # 16h max span for split
                             cands.append(t2)
                 if cands:
-                    t2 = random.choice(cands)
+                    # DETERMINISTIC: select first by stable key instead of random.choice
+                    t2 = _select_deterministic(cands, _tour_sort_key)
+                    block_hash = _block_key([t1, t2])
                     blk = Block(
-                        id=f"B2S-{t1.id}",
+                        id=f"B2S-{t1.id}-{block_hash}",
                         day=day,
                         tours=[t1, t2]
                     )
@@ -382,11 +445,12 @@ def partition_tours_into_blocks(
             if not found:
                 break
 
-        # Phase 4: 1er (singletons)
+        # Phase 4: 1er (singletons) - already deterministic by sorted order
         curr_day_tours = [t for t in day_tours if t.id in active_tours]
         for t in curr_day_tours:
+            block_hash = _block_key([t])
             blk = Block(
-                id=f"B1-{t.id}",
+                id=f"B1-{t.id}-{block_hash}",
                 day=day,
                 tours=[t]
             )

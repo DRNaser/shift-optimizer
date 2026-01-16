@@ -25,20 +25,20 @@ Set-Location $repoRoot
 
 function Write-Pass {
     param([string]$check, [string]$message)
-    Write-Host "[PASS] $check: $message" -ForegroundColor Green
+    Write-Host "[PASS] ${check}: ${message}" -ForegroundColor Green
     $script:checks[$check] = "PASS"
 }
 
 function Write-Fail {
     param([string]$check, [string]$message)
-    Write-Host "[FAIL] $check: $message" -ForegroundColor Red
+    Write-Host "[FAIL] ${check}: ${message}" -ForegroundColor Red
     $script:exitCode = 1
     $script:checks[$check] = "FAIL"
 }
 
 function Write-Skip {
     param([string]$check, [string]$message)
-    Write-Host "[SKIP] $check: $message" -ForegroundColor Yellow
+    Write-Host "[SKIP] ${check}: ${message}" -ForegroundColor Yellow
     $script:checks[$check] = "SKIP"
 }
 
@@ -105,10 +105,11 @@ Write-Host "`n--- Check 5: Global v3 Package ---" -ForegroundColor White
 if (Test-Path "backend_py/v3") {
     Write-Fail "V3_PACKAGE" "backend_py/v3/ still exists (should be moved to packs/roster/engine/)"
 } else {
-    # Verify v3 imports are also eliminated
-    $v3Imports = rg -c "\bfrom v3\.\b|\bimport v3\b" backend_py/ --type py 2>$null | Measure-Object -Sum
-    if ($v3Imports.Sum -gt 0) {
-        Write-Fail "V3_IMPORTS" "backend_py/v3/ removed but $($v3Imports.Sum) v3.* imports remain"
+    # Verify v3 imports are also eliminated using PowerShell native search
+    $v3ImportFiles = Get-ChildItem -Path "backend_py" -Recurse -Filter "*.py" |
+        Select-String -Pattern "from v3\.|import v3\b" -List 2>$null
+    if ($v3ImportFiles.Count -gt 0) {
+        Write-Fail "V3_IMPORTS" "backend_py/v3/ removed but v3.* imports remain in: $($v3ImportFiles.Path -join ', ')"
     } else {
         Write-Pass "V3_PACKAGE" "backend_py/v3/ removed and no v3.* imports"
     }
@@ -119,13 +120,15 @@ if (Test-Path "backend_py/v3") {
 # =============================================================================
 Write-Host "`n--- Check 6: src.* Imports ---" -ForegroundColor White
 
-$srcImports = rg -c "\bfrom src\b|\bimport src\b" backend_py/ --type py 2>$null | Measure-Object -Sum
-# Exclude v3/src_compat/forecast_solver_v4.py (V4 experimental with graceful fallback)
-$srcImportsFiltered = rg -l "\bfrom src\b|\bimport src\b" backend_py/ --type py 2>$null | Where-Object { $_ -notmatch "forecast_solver_v4.py" }
+# Search for src.* imports using PowerShell native search
+$srcImportFiles = Get-ChildItem -Path "backend_py" -Recurse -Filter "*.py" |
+    Select-String -Pattern "from src\b|import src\b" -List 2>$null
+# Exclude forecast_solver_v4.py (V4 experimental with graceful fallback)
+$srcImportsFiltered = $srcImportFiles | Where-Object { $_.Path -notmatch "forecast_solver_v4\.py" }
 
 if ($srcImportsFiltered.Count -gt 0) {
-    Write-Fail "SRC_IMPORTS" "Found src.* imports in: $($srcImportsFiltered -join ', ')"
-} elseif ($srcImports.Sum -gt 0) {
+    Write-Fail "SRC_IMPORTS" "Found src.* imports in: $($srcImportsFiltered.Path -join ', ')"
+} elseif ($srcImportFiles.Count -gt 0) {
     Write-Pass "SRC_IMPORTS" "Only V4 experimental src imports remain (graceful fallback)"
 } else {
     Write-Pass "SRC_IMPORTS" "No src.* imports found"
