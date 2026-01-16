@@ -24,16 +24,52 @@ CHECK (source IN ('slack', 'csv', 'manual', 'patch', 'composed'));
 
 -- Add completeness status for partial forecast gating
 ALTER TABLE forecast_versions
-ADD COLUMN IF NOT EXISTS completeness_status VARCHAR(20) DEFAULT 'UNKNOWN'
-CHECK (completeness_status IN ('UNKNOWN', 'PARTIAL', 'COMPLETE'));
+ADD COLUMN IF NOT EXISTS completeness_status VARCHAR(20) DEFAULT 'UNKNOWN';
+
+-- Add check constraint separately (idempotent)
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'forecast_versions_completeness_check'
+    ) THEN
+        ALTER TABLE forecast_versions
+        ADD CONSTRAINT forecast_versions_completeness_check
+        CHECK (completeness_status IN ('UNKNOWN', 'PARTIAL', 'COMPLETE'));
+    END IF;
+END $$;
 
 -- Add expected days for the week (default 6 = Mo-Sa)
 ALTER TABLE forecast_versions
-ADD COLUMN IF NOT EXISTS expected_days INTEGER DEFAULT 6 CHECK (expected_days BETWEEN 1 AND 7);
+ADD COLUMN IF NOT EXISTS expected_days INTEGER DEFAULT 6;
+
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'forecast_versions_expected_days_check'
+    ) THEN
+        ALTER TABLE forecast_versions
+        ADD CONSTRAINT forecast_versions_expected_days_check
+        CHECK (expected_days BETWEEN 1 AND 7);
+    END IF;
+END $$;
 
 -- Add days present (actual count of days with tours)
 ALTER TABLE forecast_versions
-ADD COLUMN IF NOT EXISTS days_present INTEGER DEFAULT 0 CHECK (days_present >= 0);
+ADD COLUMN IF NOT EXISTS days_present INTEGER DEFAULT 0;
+
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'forecast_versions_days_present_check'
+    ) THEN
+        ALTER TABLE forecast_versions
+        ADD CONSTRAINT forecast_versions_days_present_check
+        CHECK (days_present >= 0);
+    END IF;
+END $$;
 
 -- Add provenance for COMPOSED forecasts (which patches contributed)
 ALTER TABLE forecast_versions

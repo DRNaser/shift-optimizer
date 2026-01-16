@@ -113,7 +113,7 @@ class TestPolicySnapshotModule:
 
     def test_snapshot_with_defaults(self):
         """Policy snapshot returns defaults when no custom policy."""
-        from backend_py.v3.policy_snapshot import get_policy_snapshot
+        from packs.roster.engine.policy_snapshot import get_policy_snapshot
 
         snapshot = get_policy_snapshot("", "roster")
 
@@ -125,7 +125,7 @@ class TestPolicySnapshotModule:
 
     def test_snapshot_hash_consistency(self):
         """Multiple snapshot calls produce consistent hashes."""
-        from backend_py.v3.policy_snapshot import get_policy_snapshot
+        from packs.roster.engine.policy_snapshot import get_policy_snapshot
 
         snapshot1 = get_policy_snapshot("tenant-a", "roster")
         snapshot2 = get_policy_snapshot("tenant-a", "roster")
@@ -135,7 +135,7 @@ class TestPolicySnapshotModule:
 
     def test_apply_policy_overrides(self):
         """Policy overrides are correctly applied to solver config."""
-        from backend_py.v3.policy_snapshot import (
+        from packs.roster.engine.policy_snapshot import (
             PolicySnapshot, apply_policy_to_solver_config, compute_config_hash
         )
 
@@ -227,7 +227,7 @@ class TestSolverPolicyIntegration:
 
     def test_solver_wrapper_accepts_tenant_uuid(self):
         """Solver wrapper accepts tenant_uuid parameter."""
-        from backend_py.v3.solver_wrapper import solve_forecast
+        from packs.roster.engine.solver_wrapper import solve_forecast
         import inspect
 
         sig = inspect.signature(solve_forecast)
@@ -239,7 +239,7 @@ class TestSolverPolicyIntegration:
 
     def test_plan_version_has_policy_fields(self):
         """create_plan_version accepts policy snapshot fields."""
-        from backend_py.v3.db import create_plan_version
+        from packs.roster.engine.db import create_plan_version
         import inspect
 
         sig = inspect.signature(create_plan_version)
@@ -265,7 +265,7 @@ class TestDatabasePolicyIntegration:
     @pytest.fixture
     def db_connection(self):
         """Get database connection."""
-        from backend_py.v3.db import get_connection
+        from packs.roster.engine.db import get_connection
         try:
             with get_connection() as conn:
                 yield conn

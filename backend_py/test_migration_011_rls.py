@@ -17,7 +17,7 @@ import os
 # Add parent to path for imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from backend_py.v3.db import get_connection, test_connection
+from packs.roster.engine.db import get_connection, test_connection
 
 
 def print_header(text: str):

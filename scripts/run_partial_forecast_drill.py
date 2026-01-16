@@ -221,9 +221,9 @@ def _run_dry_run(result: dict, seed: int) -> dict:
 
 def _run_with_database(result: dict, tenant_id: str, seed: int) -> dict:
     """Run with actual database."""
-    from backend_py.v3.parser import parse_forecast_text
-    from backend_py.v3.solver_wrapper import solve_and_audit
-    from backend_py.v3.db_instances import expand_tour_templates
+    from packs.roster.engine.parser import parse_forecast_text
+    from packs.roster.engine.solver_wrapper import solve_and_audit
+    from packs.roster.engine.db_instances import expand_tour_templates
 
     # V1: Partial forecast
     print("\n[1/6] Creating V1 (partial forecast)...")

@@ -17,7 +17,7 @@ class TestSolverMemoryLimit:
         """
         Test that apply_memory_limit returns expected tuple structure.
         """
-        from backend_py.v3.solver_wrapper import apply_memory_limit
+        from packs.roster.engine.solver_wrapper import apply_memory_limit
 
         result = apply_memory_limit()
 
@@ -32,7 +32,7 @@ class TestSolverMemoryLimit:
         """
         Test that memory limit is disabled when SOLVER_MAX_MEM_MB=0.
         """
-        from backend_py.v3 import solver_wrapper
+        from packs.roster.engine import solver_wrapper
 
         # Reset applied flag
         solver_wrapper._memory_limit_applied = False
@@ -48,7 +48,7 @@ class TestSolverMemoryLimit:
         """
         Test that apply_memory_limit is idempotent (doesn't re-apply).
         """
-        from backend_py.v3 import solver_wrapper
+        from packs.roster.engine import solver_wrapper
 
         # Simulate already applied
         solver_wrapper._memory_limit_applied = True
@@ -67,7 +67,7 @@ class TestSolverMemoryLimit:
         """
         Test that RLIMIT_AS is set on Linux.
         """
-        from backend_py.v3 import solver_wrapper
+        from packs.roster.engine import solver_wrapper
         import resource
 
         # Reset
@@ -87,7 +87,7 @@ class TestSolverMemoryLimit:
         """
         Test that non-Linux platforms get a warning but don't fail.
         """
-        from backend_py.v3 import solver_wrapper
+        from packs.roster.engine import solver_wrapper
 
         # Reset
         solver_wrapper._memory_limit_applied = False
@@ -104,7 +104,7 @@ class TestSolverMemoryLimit:
         """
         Test that get_memory_limit_status returns expected structure.
         """
-        from backend_py.v3.solver_wrapper import get_memory_limit_status
+        from packs.roster.engine.solver_wrapper import get_memory_limit_status
 
         status = get_memory_limit_status()
 
@@ -117,7 +117,7 @@ class TestSolverMemoryLimit:
         """
         Test that config includes SOLVER_MAX_MEM_MB setting.
         """
-        from backend_py.v3.config import config
+        from packs.roster.engine.config import config
 
         assert hasattr(config, "SOLVER_MAX_MEM_MB")
         assert isinstance(config.SOLVER_MAX_MEM_MB, int)
@@ -136,8 +136,9 @@ class TestDockerComposeMemoryLimits:
         from pathlib import Path
 
         # Find docker-compose.yml
-        # Path: backend_py/v3/tests/test_*.py -> 4 parents to repo root
-        repo_root = Path(__file__).parent.parent.parent.parent
+        # Path: backend_py/packs/roster/engine/tests/test_*.py -> 6 parents to repo root
+        # tests -> engine -> roster -> packs -> backend_py -> repo_root
+        repo_root = Path(__file__).parent.parent.parent.parent.parent.parent
         compose_file = repo_root / "docker-compose.yml"
 
         assert compose_file.exists(), f"docker-compose.yml not found at {compose_file}"
@@ -155,8 +156,9 @@ class TestDockerComposeMemoryLimits:
         import os
         from pathlib import Path
 
-        # Path: backend_py/v3/tests/test_*.py -> 4 parents to repo root
-        repo_root = Path(__file__).parent.parent.parent.parent
+        # Path: backend_py/packs/roster/engine/tests/test_*.py -> 6 parents to repo root
+        # tests -> engine -> roster -> packs -> backend_py -> repo_root
+        repo_root = Path(__file__).parent.parent.parent.parent.parent.parent
         compose_file = repo_root / "docker-compose.pilot.yml"
 
         if not compose_file.exists():
@@ -173,5 +175,5 @@ class TestDockerComposeMemoryLimits:
 
 # ============================================================================
 # Run commands:
-#   pytest backend_py/v3/tests/test_solver_memory_limit.py -v
+#   pytest backend_py/packs/roster/engine/tests/test_solver_memory_limit.py -v
 # ============================================================================

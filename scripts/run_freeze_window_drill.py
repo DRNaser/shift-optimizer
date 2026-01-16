@@ -202,7 +202,7 @@ def _run_with_database(
     freeze_horizon_minutes: int
 ) -> dict:
     """Run freeze drill with database."""
-    from backend_py.v3.repair_service import RepairService
+    from packs.roster.engine.repair_service import RepairService
 
     print("\n[1/4] Loading plan and identifying frozen tours...")
 
@@ -214,7 +214,7 @@ def _run_with_database(
 
     if plan_version_id is None:
         print("       No plan specified - using latest")
-        from backend_py.v3 import db
+        from packs.roster.engine import db
         with db.get_connection() as conn:
             with conn.cursor() as cur:
                 cur.execute("""

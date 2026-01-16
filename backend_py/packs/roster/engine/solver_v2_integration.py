@@ -254,16 +254,19 @@ def _tour_sort_key(t: Tour) -> tuple:
     Key components (in priority order):
         1. start_time (minutes from midnight)
         2. end_time (minutes from midnight)
-        3. canonical fingerprint (SHA256 of intrinsic properties, NOT tour_id)
+        3. canonical fingerprint (SHA256 of intrinsic properties)
+        4. tour.id (for tie-breaking duplicate instances)
 
-    IMPORTANT: We do NOT use tour_id for tie-breaking because it may be
-    non-canonical across different systems/database states. The fingerprint
-    is based purely on intrinsic tour properties.
+    NOTE: tour.id is included LAST to break ties for duplicate instances
+    (where intrinsic properties are identical). The tour.id format is
+    "T{instance_id}" where instance_id comes from the database, ensuring
+    canonical ordering even for duplicates from count > 1 expansion.
     """
     start_min = t.start_time.hour * 60 + t.start_time.minute
     end_min = t.end_time.hour * 60 + t.end_time.minute
     fingerprint = _tour_fingerprint(t)
-    return (start_min, end_min, fingerprint)
+    # Add tour.id as final tie-breaker for duplicate instances
+    return (start_min, end_min, fingerprint, t.id)
 
 
 def _block_key(tours: list[Tour]) -> str:

@@ -196,15 +196,15 @@ def _run_with_database(
     seed: int
 ) -> dict:
     """Run drill with actual database operations."""
-    from backend_py.v3.repair_service import RepairService, run_sick_call_drill
+    from packs.roster.engine.repair_service import RepairService, run_sick_call_drill
 
     print("\n[1/5] Loading baseline plan...")
 
     if plan_version_id is None:
         # Create baseline from golden run
         print("       Creating baseline from golden dataset...")
-        from backend_py.v3.solver_wrapper import solve_and_audit
-        from backend_py.v3.parser import parse_forecast_text
+        from packs.roster.engine.solver_wrapper import solve_and_audit
+        from packs.roster.engine.parser import parse_forecast_text
 
         # Use test data
         test_forecast = """
@@ -228,7 +228,7 @@ def _run_with_database(
     print("\n[2/5] Selecting absent drivers...")
     if absent_driver_ids is None:
         # Get first 5 drivers from plan
-        from backend_py.v3 import db
+        from packs.roster.engine import db
         with db.get_connection() as conn:
             with conn.cursor() as cur:
                 cur.execute("""

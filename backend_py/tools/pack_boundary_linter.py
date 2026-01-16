@@ -5,7 +5,7 @@ Pack Boundary Linter - Enforces import isolation between kernel and domain packs
 Architecture:
 - KERNEL: backend_py/api/ (shared platform governance)
 - ROUTING PACK: backend_py/packs/routing/ (VRPTW solver)
-- ROSTER PACK: backend_py/v3/, backend_py/src/ (shift scheduling)
+- ROSTER PACK: backend_py/packs/roster/engine/ (shift scheduling)
 
 Rules:
 1. Kernel MUST NOT import from packs (routing, roster)
@@ -41,7 +41,7 @@ class Violation(NamedTuple):
 PACK_PATHS = {
     "kernel": ["backend_py/api"],
     "routing": ["backend_py/packs/routing"],
-    "roster": ["backend_py/v3", "backend_py/src"],
+    "roster": ["backend_py/packs/roster/engine"],
     "tools": ["backend_py/tools"],  # Exempt from rules
 }
 
@@ -49,7 +49,7 @@ PACK_PATHS = {
 PACK_MODULES = {
     "kernel": ["api.", "backend_py.api"],
     "routing": ["packs.routing", "backend_py.packs.routing"],
-    "roster": ["v3.", "src.", "backend_py.v3", "backend_py.src"],
+    "roster": ["packs.roster.engine.", "backend_py.packs.roster.engine"],
 }
 
 # Forbidden import patterns: (source_pack, forbidden_target_pack)
@@ -66,13 +66,13 @@ ALLOWED_IMPORTS = [
     # main.py wires routing pack routes
     ("api/main.py", "packs.routing"),
     # Routers call domain solvers - these are intentional API integrations
-    ("api/routers/forecasts.py", "v3."),
-    ("api/routers/plans.py", "v3."),
-    ("api/routers/repair.py", "v3."),
-    ("api/routers/runs.py", "v3."),
-    ("api/routers/simulations.py", "v3."),
+    ("api/routers/forecasts.py", "packs.roster.engine."),
+    ("api/routers/plans.py", "packs.roster.engine."),
+    ("api/routers/repair.py", "packs.roster.engine."),
+    ("api/routers/runs.py", "packs.roster.engine."),
+    ("api/routers/simulations.py", "packs.roster.engine."),
     # Async solver wrapper
-    ("api/solver_async.py", "v3."),
+    ("api/solver_async.py", "packs.roster.engine."),
     # Policy service uses routing config schema
     ("api/services/policy_service.py", "packs.routing"),
 ]

@@ -116,6 +116,20 @@ if (Test-Path "backend_py/v3") {
 }
 
 # =============================================================================
+# CHECK 5b: No backend_py.v3 imports remain
+# =============================================================================
+Write-Host "`n--- Check 5b: backend_py.v3 Imports ---" -ForegroundColor White
+
+$v3FullImportFiles = Get-ChildItem -Path "backend_py" -Recurse -Filter "*.py" |
+    Select-String -Pattern "from backend_py\.v3|import backend_py\.v3" -List 2>$null
+
+if ($v3FullImportFiles.Count -gt 0) {
+    Write-Fail "BACKEND_PY_V3_IMPORTS" "Found backend_py.v3 imports in: $($v3FullImportFiles.Path -join ', ')"
+} else {
+    Write-Pass "BACKEND_PY_V3_IMPORTS" "No backend_py.v3 imports found"
+}
+
+# =============================================================================
 # CHECK 6: No src.* imports remain
 # =============================================================================
 Write-Host "`n--- Check 6: src.* Imports ---" -ForegroundColor White
