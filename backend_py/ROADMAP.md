@@ -308,8 +308,8 @@ V3.2 adds a comprehensive **What-If Simulation Framework** with 13 business scen
 | `v3/near_violations.py` | ~302 | Yellow Zone warnings |
 | `v3/peak_fleet.py` | ~229 | Concurrent tour analysis |
 | `v3/audit_fixed.py` (updated) | +150 | 8th audit check: Sensitivity |
-| `cli.py` (updated) | +350 | 9 simulation CLI commands |
-| `streamlit_app.py` (updated) | +500 | Simulation Tab with all 13 scenarios |
+| ~~`cli.py`~~ | ~~+350~~ | ~~9 simulation CLI commands~~ **DEPRECATED: Removed in V4.5** |
+| ~~`streamlit_app.py`~~ | ~~+500~~ | ~~Simulation Tab with all 13 scenarios~~ **DEPRECATED: Removed in V4.5** |
 | `tests/test_simulation.py` | ~680 | Comprehensive test suite |
 
 ### 8 Audit Checks (Updated from 6)
@@ -595,11 +595,11 @@ SIMULATION FRAMEWORK:
 CODE STATISTICS:
   V3 Core Modules:     ~7,500 lines
   Simulation Engine:   ~2,500 lines
-  Streamlit UI:        ~2,850 lines
-  CLI:                 ~770 lines
+  ~~Streamlit UI:        ~2,850 lines~~ (DEPRECATED: Removed in V4.5)
+  ~~CLI:                 ~770 lines~~ (DEPRECATED: Removed in V4.5)
   Tests:               ~1,500 lines
   ─────────────────────────────────
-  Total Codebase:      ~11,000+ lines
+  Total Codebase:      ~11,000+ lines (excl. deprecated UI/CLI)
 ```
 
 ### Block Type Rules (Final)
@@ -1070,7 +1070,10 @@ def can_release(plan_version_id: int) -> bool:
     )
 ```
 
-### 9. Streamlit Cockpit: Dispatch-Focused UI (MVP)
+### 9. ~~Streamlit Cockpit: Dispatch-Focused UI (MVP)~~ **DEPRECATED: Removed in V4.5**
+
+> **Note**: The Streamlit UI was replaced by the Next.js SaaS Admin frontend (`frontend_v5/`).
+> Runtime is now FastAPI kernel (`backend_py/api/main.py`) + domain packs only.
 
 **Design Principle:** Show only what dispatchers need to make decisions.
 
@@ -1203,7 +1206,7 @@ def can_release(plan_version_id: int) -> bool:
 ✅ **DONE when:**
 - [ ] LOCKED plans immutable (no in-place edits)
 - [ ] Export files include `plan_version_id` in metadata
-- [ ] Manual release button functional (Streamlit or CLI)
+- [ ] Manual release button functional (via REST API)
 - [ ] Superseded plans marked correctly
 
 **Deliverable:** Release workflow + export module
@@ -1323,10 +1326,13 @@ lock_plan_version(plan_version_id=1, locked_by='admin@lts.de')
 
 ### Phase 2: Operational UI ✅ COMPLETE
 
-#### 5. **Streamlit Dispatcher Cockpit** ✅ DONE
+#### 5. ~~**Streamlit Dispatcher Cockpit**~~ ✅ DONE → **DEPRECATED in V4.5**
+
+> **DEPRECATED**: Streamlit UI removed in V4.5. UI now lives in `frontend_v5/` (Next.js SaaS Admin).
+
 **Goal**: 4-tab UI for dispatchers
 
-**Files**: [streamlit_app.py](streamlit_app.py) (~400 lines)
+~~**Files**: [streamlit_app.py](streamlit_app.py) (~400 lines)~~
 
 **Tab Design**:
 1. **Tab 1: Parser Status** ✅
@@ -1350,13 +1356,13 @@ lock_plan_version(plan_version_id=1, locked_by='admin@lts.de')
    - **[🔒 LOCK & RELEASE]** button (only active if gates PASS)
    - Export release package (CSV/JSON)
 
-**Deliverables**:
-- [x] Working Streamlit app
-- [x] Connected to PostgreSQL
-- [x] Manual release workflow functional
-- [x] Export integration
+**Deliverables** (historical - now via REST API):
+- ~~[x] Working Streamlit app~~ **DEPRECATED**
+- [x] Connected to PostgreSQL (via FastAPI)
+- [x] Manual release workflow functional (via REST API)
+- [x] Export integration (via REST API)
 
-**Run Command**: `streamlit run backend_py/streamlit_app.py`
+~~**Run Command**: `streamlit run backend_py/streamlit_app.py`~~ **DEPRECATED**
 
 ---
 
@@ -1477,8 +1483,9 @@ python -m v3.export <plan_version_id> [output_dir]
 - ✅ E2E Workflow Testing (golden run, audits, P0 migration)
 
 #### User Interface
-- ✅ **Streamlit UI** (5-tab dispatcher cockpit: Forecast, Vergleich, Planung, Release, Simulation)
-- ✅ **CLI** (6 commands: ingest, solve, lock, export, status, simulate)
+- ~~✅ **Streamlit UI** (5-tab dispatcher cockpit: Forecast, Vergleich, Planung, Release, Simulation)~~ **DEPRECATED V4.5**
+- ~~✅ **CLI** (6 commands: ingest, solve, lock, export, status, simulate)~~ **DEPRECATED V4.5**
+- ✅ **Next.js SaaS Admin** (`frontend_v5/`) - Platform Admin, Roster Management, Driver Portal
 
 #### Audit Framework
 - ✅ **8 Audit Checks** (Coverage, Overlap, Rest, Span-Regular, Span-Split, Fatigue, Reproducibility, Sensitivity)

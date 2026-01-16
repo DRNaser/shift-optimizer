@@ -327,9 +327,9 @@ def main():
         print(f"   Release gates checked: 1")
         print("\n[HINT] Next Steps:")
         print("   1. Review data: docker exec -it solvereign-db psql -U solvereign")
-        print("   2. Implement M4 (Solver Wrapper): backend_py/v3/solver_wrapper.py")
-        print("   3. Implement M1 (Parser): backend_py/v3/parser.py")
-        print("   4. Build Streamlit UI: streamlit_app.py")
+        print("   2. See solver wrapper: backend_py/packs/roster/engine/")
+        print("   3. See parser: backend_py/packs/roster/engine/parser.py")
+        print("   4. Use REST API: backend_py/api/main.py")
         print()
 
     except Exception as e:

@@ -1,7 +1,16 @@
+# ⚠️ DEPRECATED - LEGACY DOCUMENT
+
+> **This document is DEPRECATED as of V4.5 (January 2026).**
+> The Streamlit UI and CLI referenced here have been removed.
+> Current runtime: FastAPI kernel (`backend_py/api/main.py`) + Next.js SaaS Admin (`frontend_v5/`).
+> See `CLAUDE.md` for current architecture.
+
+---
+
 # SOLVEREIGN — Stakeholder Präsentation
 
 > **Deterministische Schichtplanung für LTS Transport u. Logistik GmbH**
-> Version 8.2.0 | Status: Production-Ready | Stand: Januar 2026
+> Version 8.2.0 | Status: ~~Production-Ready~~ **DEPRECATED** | Stand: Januar 2026
 
 ---
 

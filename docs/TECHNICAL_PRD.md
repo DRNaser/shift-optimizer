@@ -44,15 +44,17 @@ SOLVEREIGN is an automated shift scheduling platform that optimizes driver assig
 
 ### 1.3 System Boundaries
 
+> **Note (V4.5)**: Architecture updated. Streamlit UI removed. Frontend is now Next.js (`frontend_v5/`).
+
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
-│                           SOLVEREIGN SYSTEM                             │
+│                           SOLVEREIGN SYSTEM (V4.5)                      │
 ├─────────────────────────────────────────────────────────────────────────┤
 │                                                                         │
 │  ┌─────────────┐    ┌─────────────┐    ┌─────────────┐                 │
-│  │  Streamlit  │    │   FastAPI   │    │  PostgreSQL │                 │
+│  │   Next.js   │    │   FastAPI   │    │  PostgreSQL │                 │
 │  │     UI      │───▶│     API     │───▶│     DB      │                 │
-│  │  (Port 8501)│    │ (Port 8000) │    │ (Port 5432) │                 │
+│  │  (Port 3000)│    │ (Port 8000) │    │ (Port 5432) │                 │
 │  └─────────────┘    └─────────────┘    └─────────────┘                 │
 │         │                  │                  │                         │
 │         │                  │                  │                         │
@@ -74,7 +76,7 @@ External Interfaces:
 
 | Layer | Technology | Version |
 |-------|------------|---------|
-| Frontend | Streamlit | 1.29+ |
+| Frontend | Next.js (SaaS Admin) | 14+ |
 | API | FastAPI | 0.104+ |
 | Database | PostgreSQL | 16 |
 | Solver | Google OR-Tools | 9.7+ |
@@ -882,11 +884,11 @@ services:
       - postgres_data:/var/lib/postgresql/data
       - ./backend_py/db/init.sql:/docker-entrypoint-initdb.d/01-init.sql
 
-  streamlit:
-    build: ./backend_py
-    command: streamlit run streamlit_app.py
-    ports:
-      - "8501:8501"
+  # NOTE (V4.5): Streamlit removed. Use frontend_v5 (Next.js) instead:
+  # frontend:
+  #   build: ./frontend_v5
+  #   ports:
+  #     - "3000:3000"
 ```
 
 ### 11.3 Migration Sequence

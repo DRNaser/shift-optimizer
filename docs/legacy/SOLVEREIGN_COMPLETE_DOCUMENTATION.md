@@ -1,7 +1,16 @@
+# ⚠️ DEPRECATED - LEGACY DOCUMENT
+
+> **This document is DEPRECATED as of V4.5 (January 2026).**
+> The Streamlit UI, CLI, and `src/` package referenced here have been removed.
+> Current runtime: FastAPI kernel (`backend_py/api/main.py`) + Next.js SaaS Admin (`frontend_v5/`).
+> See `CLAUDE.md` for current architecture.
+
+---
+
 # SOLVEREIGN V3.2 - Complete Documentation
 
 > **Enterprise Dispatch Optimization Platform**
-> Version 3.2 | Stand: Januar 2026
+> Version 3.2 | Status: **DEPRECATED** | Stand: Januar 2026
 > LTS Transport & Logistik GmbH
 
 ---
