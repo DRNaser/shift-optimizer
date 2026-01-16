@@ -31,9 +31,9 @@ from collections import defaultdict
 # Add parent to path for V2 imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from src.domain.models import Tour, Block, Weekday
-from src.services.smart_block_builder import BlockGenOverrides
-from src.services.block_heuristic_solver import BlockHeuristicSolver
+from v3.src_compat.models import Tour, Block, Weekday
+from v3.src_compat.smart_block_builder import BlockGenOverrides
+from v3.src_compat.block_heuristic_solver import BlockHeuristicSolver
 
 
 # Day mapping: V3 (1-7) -> V2 Weekday enum

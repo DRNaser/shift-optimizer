@@ -24,8 +24,8 @@ from datetime import time
 from typing import Iterator, Optional
 import logging
 
-from src.domain.models import Block, Tour, Weekday
-from src.domain.constraints import HARD_CONSTRAINTS
+from v3.src_compat.models import Block, Tour, Weekday
+from v3.src_compat.constraints import HARD_CONSTRAINTS
 
 # Setup logger
 logger = logging.getLogger("SmartBlockBuilder")

@@ -2,8 +2,8 @@
 from dataclasses import dataclass, field
 from typing import List, Dict, Optional, Set
 import random
-from src.domain.models import Block, Tour, Weekday
-from src.domain.constraints import HARD_CONSTRAINTS
+from v3.src_compat.models import Block, Tour, Weekday
+from v3.src_compat.constraints import HARD_CONSTRAINTS
 
 @dataclass
 class DriverState:

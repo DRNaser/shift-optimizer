@@ -648,8 +648,8 @@ def _solve_with_v4_engine(
     """
     try:
         # Attempt to import V4 solver
-        from src.services.forecast_solver_v4 import solve_forecast_fte_only, ConfigV4
-        from src.domain.models import Tour, Weekday
+        from v3.src_compat.forecast_solver_v4 import solve_forecast_fte_only, ConfigV4
+        from v3.src_compat.models import Tour, Weekday
 
         # Convert instances to Tour objects
         V3_DAY_TO_WEEKDAY = {

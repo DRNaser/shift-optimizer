@@ -9,7 +9,7 @@ from datetime import time
 from dataclasses import dataclass
 from typing import List, Optional
 
-from src.domain.models import Block, Weekday
+from v3.src_compat.models import Block, Weekday
 
 # -----------------------------------------------------------------------------
 # CONSTANTS

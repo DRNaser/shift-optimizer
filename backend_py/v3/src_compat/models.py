@@ -13,7 +13,7 @@ from typing import Annotated
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 # Import constraints for default values (avoids drift between constraint and model)
-from src.domain.constraints import HARD_CONSTRAINTS
+from v3.src_compat.constraints import HARD_CONSTRAINTS
 
 
 # =============================================================================

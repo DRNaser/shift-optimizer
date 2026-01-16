@@ -54,9 +54,9 @@ def safe_print(*args, **kwargs):
             # Swallow all errors - logging must never crash the solver
             pass
 
-from src.domain.models import Block, Tour, Weekday
-from src.services.constraints import can_assign_block
-from src.services.smart_block_builder import (
+from v3.src_compat.models import Block, Tour, Weekday
+from v3.src_compat.assignment_constraints import can_assign_block
+from v3.src_compat.smart_block_builder import (
     build_weekly_blocks_smart,
     build_block_index,
     verify_coverage,
@@ -613,7 +613,7 @@ def repair_pt_to_fte_swaps(
     Returns:
         (updated_assignments, stats)
     """
-    from src.services.constraints import can_assign_block
+    from v3.src_compat.assignment_constraints import can_assign_block
     
     if can_assign_fn is None:
         can_assign_fn = can_assign_block
@@ -3494,7 +3494,7 @@ def assign_drivers_greedy(
     
     def can_take_block(driver_id: str, block: Block) -> bool:
         """Check if driver can take this block."""
-        from src.domain.constraints import HARD_CONSTRAINTS
+        from v3.src_compat.constraints import HARD_CONSTRAINTS
         
         d = drivers[driver_id]
         day = block.day.value
@@ -4344,7 +4344,7 @@ def _can_accept_block(target: DriverAssignment, block, max_weekly_hours: float =
     1. MAX_BLOCKS_PER_DAY (2)
     2. MAX_WEEKLY_HOURS (55.0)
     """
-    from src.domain.constraints import HARD_CONSTRAINTS
+    from v3.src_compat.constraints import HARD_CONSTRAINTS
     
     # Check MAX_BLOCKS_PER_DAY
     day = block.day.value
@@ -4543,7 +4543,7 @@ def fill_in_days_after_heavy(
     with 14h rest. This function finds such empty days and tries to
     fill them with blocks from PT drivers.
     """
-    from src.services.constraints import can_assign_block
+    from v3.src_compat.assignment_constraints import can_assign_block
     
     stats = {"filled_days": 0, "moved_blocks": 0}
     WEEKDAY_ORDER = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
@@ -4620,7 +4620,7 @@ def eliminate_pt_drivers(
     Driver elimination loop - delete smallest PT drivers by reinserting blocks.
     Standard "route elimination" move from VRP/LNS.
     """
-    from src.services.constraints import can_assign_block
+    from v3.src_compat.assignment_constraints import can_assign_block
     from time import perf_counter
     
     start_time = perf_counter()
@@ -4987,7 +4987,7 @@ def repair_pt_consolidation(
     }
     
     from collections import defaultdict
-    from src.services.constraints import can_assign_block
+    from v3.src_compat.assignment_constraints import can_assign_block
     
     # helper
     def get_source_candidates(assignments, ignore_id):
