@@ -91,12 +91,12 @@ def solve_with_v2_solver(
     print(f"[V2 Integration] Converting {len(tour_instances)} tour_instances to V2 format (DETERMINISTIC)...")
 
     # Step 1: Convert V3 tour_instances -> V2 Tour objects
-    tours, instance_map = _convert_instances_to_tours(tour_instances)
+    tours, instance_map, canonical_instance_nos = _convert_instances_to_tours(tour_instances)
     print(f"[V2 Integration] Created {len(tours)} V2 Tour objects")
 
     # Step 2: Partition tours into blocks using DETERMINISTIC algorithm
     print(f"[V2 Integration] Running DETERMINISTIC partition_tours_into_blocks...")
-    blocks = partition_tours_into_blocks(tours)
+    blocks = partition_tours_into_blocks(tours, canonical_instance_nos=canonical_instance_nos)
     print(f"[V2 Integration] Created {len(blocks)} blocks")
 
     # Step 3: Run BlockHeuristicSolver
@@ -114,16 +114,18 @@ def solve_with_v2_solver(
 
 def _convert_instances_to_tours(
     tour_instances: list[dict]
-) -> tuple[list[Tour], dict[str, int]]:
+) -> tuple[list[Tour], dict[str, int], dict[str, int]]:
     """
     Convert V3 tour_instances to V2 Tour objects.
 
     Returns:
         - List of Tour objects
         - instance_map: {tour_id -> tour_instance_id} for reverse mapping
+        - canonical_instance_nos: {tour_id -> instance_number} for deterministic tie-breaking
     """
     tours = []
     instance_map = {}  # tour.id -> tour_instance_id
+    canonical_instance_nos = {}  # tour.id -> instance_number (from count expansion)
 
     for instance in tour_instances:
         # FIX: Pass actual times and crosses_midnight flag to V2 Tour model
@@ -163,11 +165,14 @@ def _convert_instances_to_tours(
             )
             tours.append(tour)
             instance_map[tour_id] = instance['id']
+            # Capture instance_number for canonical tie-breaking (from count expansion)
+            # Default to 1 if not present (single tour, not from count expansion)
+            canonical_instance_nos[tour_id] = instance.get('instance_number', 1)
         except ValueError as e:
             print(f"  [WARN] Skipping invalid tour for instance {instance['id']}: {e}")
             continue
 
-    return tours, instance_map
+    return tours, instance_map, canonical_instance_nos
 
 
 def _convert_drivers_to_assignments(
@@ -247,7 +252,7 @@ def _tour_fingerprint(t: Tour) -> str:
     return hashlib.sha256(canonical.encode()).hexdigest()[:8]
 
 
-def _tour_sort_key(t: Tour) -> tuple:
+def _tour_sort_key(t: Tour, instance_no: int = 0) -> tuple:
     """
     Stable sort key for deterministic tour ordering.
 
@@ -255,18 +260,46 @@ def _tour_sort_key(t: Tour) -> tuple:
         1. start_time (minutes from midnight)
         2. end_time (minutes from midnight)
         3. canonical fingerprint (SHA256 of intrinsic properties)
-        4. tour.id (for tie-breaking duplicate instances)
+        4. canonical_instance_no (for tie-breaking duplicate instances)
 
-    NOTE: tour.id is included LAST to break ties for duplicate instances
-    (where intrinsic properties are identical). The tour.id format is
-    "T{instance_id}" where instance_id comes from the database, ensuring
-    canonical ordering even for duplicates from count > 1 expansion.
+    IMPORTANT: Does NOT use tour.id or database IDs - those are non-intrinsic.
+    Instead, duplicate instances (count > 1 expansion) are assigned a
+    canonical_instance_no based on their position in the input array,
+    grouped by fingerprint.
+
+    Args:
+        t: Tour object
+        instance_no: Canonical instance number (0-indexed) for duplicates
+
+    Returns:
+        Tuple for stable sorting
     """
     start_min = t.start_time.hour * 60 + t.start_time.minute
     end_min = t.end_time.hour * 60 + t.end_time.minute
     fingerprint = _tour_fingerprint(t)
-    # Add tour.id as final tie-breaker for duplicate instances
-    return (start_min, end_min, fingerprint, t.id)
+    # Use canonical_instance_no (NOT tour.id) for tie-breaking
+    return (start_min, end_min, fingerprint, instance_no)
+
+
+def _build_canonical_sort_keys(tours: list[Tour], canonical_instance_nos: dict[str, int]) -> dict[str, tuple]:
+    """
+    Build canonical sort keys for all tours.
+
+    Uses the canonical_instance_no (from database expansion) as the tie-breaker
+    for duplicate tours with identical intrinsic properties.
+
+    Args:
+        tours: List of Tour objects
+        canonical_instance_nos: Dict mapping tour.id -> instance_number from expansion
+
+    Returns:
+        Dict mapping tour.id -> sort key tuple
+    """
+    sort_keys = {}
+    for t in tours:
+        instance_no = canonical_instance_nos.get(t.id, 0)
+        sort_keys[t.id] = _tour_sort_key(t, instance_no)
+    return sort_keys
 
 
 def _block_key(tours: list[Tour]) -> str:
@@ -300,7 +333,8 @@ def _select_deterministic(candidates: list, key_fn) -> any:
 
 def partition_tours_into_blocks(
     tours: list[Tour],
-    seed: int = 94  # DEPRECATED: kept for API compatibility, ignored
+    seed: int = 94,  # DEPRECATED: kept for API compatibility, ignored
+    canonical_instance_nos: dict[str, int] | None = None  # Required for determinism
 ) -> list[Block]:
     """
     DETERMINISTIC partition of tours into blocks using stable sort keys.
@@ -315,13 +349,18 @@ def partition_tours_into_blocks(
         4. 1er blocks (singletons)
 
     Determinism Strategy:
-        - Tours sorted by stable key: (start_time, end_time, tour_id)
+        - Tours sorted by stable key: (start_time, end_time, fingerprint, instance_no)
+        - instance_no comes from canonical_instance_nos (database expansion order)
         - Candidate selection uses first-by-stable-key (not random)
         - Block IDs include SHA256 hash for unique identification
+
+    IMPORTANT: Does NOT use tour.id or database IDs for ordering.
+    Uses instance_number from count expansion as the intrinsic tie-breaker.
 
     Args:
         tours: List of Tour objects
         seed: DEPRECATED, ignored (kept for API compatibility)
+        canonical_instance_nos: Dict mapping tour.id -> instance_number for tie-breaking
 
     Returns:
         List of Block objects (disjoint partition)
@@ -329,6 +368,11 @@ def partition_tours_into_blocks(
     if seed != 94:
         print(f"[Partitioning] WARNING: seed parameter is DEPRECATED and ignored (deterministic mode)")
     print(f"[Partitioning] DETERMINISTIC mode, {len(tours)} tours...")
+
+    # Build canonical sort keys using instance_number (not database IDs)
+    if canonical_instance_nos is None:
+        canonical_instance_nos = {t.id: 1 for t in tours}  # Default: all instance 1
+    sort_keys = _build_canonical_sort_keys(tours, canonical_instance_nos)
 
     tours_by_day = defaultdict(list)
     for t in tours:
@@ -341,7 +385,8 @@ def partition_tours_into_blocks(
         day_tours = tours_by_day[day]
 
         # Sort by stable key for deterministic processing order
-        day_tours.sort(key=_tour_sort_key)
+        # Uses sort_keys (built from canonical_instance_nos) NOT tour.id
+        day_tours.sort(key=lambda t: sort_keys[t.id])
         active_tours = set(t.id for t in day_tours)
 
         def calc_gap(t1, t2):
@@ -381,7 +426,7 @@ def partition_tours_into_blocks(
                     continue
 
                 # DETERMINISTIC: sort by stable key instead of random.shuffle
-                candidates_t2.sort(key=_tour_sort_key)
+                candidates_t2.sort(key=lambda t: sort_keys[t.id])
 
                 for t2 in candidates_t2:
                     # Find t3 candidates
@@ -399,7 +444,7 @@ def partition_tours_into_blocks(
 
                     if candidates_t3:
                         # DETERMINISTIC: select first by stable key instead of random.choice
-                        t3 = _select_deterministic(candidates_t3, _tour_sort_key)
+                        t3 = _select_deterministic(candidates_t3, lambda t: sort_keys[t.id])
                         block_hash = _block_key([t1, t2, t3])
                         blk = Block(
                             id=f"B3-{t1.id}-{block_hash}",
@@ -433,7 +478,7 @@ def partition_tours_into_blocks(
 
                 if cands:
                     # DETERMINISTIC: select first by stable key instead of random.choice
-                    t2 = _select_deterministic(cands, _tour_sort_key)
+                    t2 = _select_deterministic(cands, lambda t: sort_keys[t.id])
                     block_hash = _block_key([t1, t2])
                     blk = Block(
                         id=f"B2R-{t1.id}-{block_hash}",
@@ -464,7 +509,7 @@ def partition_tours_into_blocks(
                             cands.append(t2)
                 if cands:
                     # DETERMINISTIC: select first by stable key instead of random.choice
-                    t2 = _select_deterministic(cands, _tour_sort_key)
+                    t2 = _select_deterministic(cands, lambda t: sort_keys[t.id])
                     block_hash = _block_key([t1, t2])
                     blk = Block(
                         id=f"B2S-{t1.id}-{block_hash}",
