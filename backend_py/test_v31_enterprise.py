@@ -25,7 +25,7 @@ import os
 # Add parent to path for imports
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from v3.models import (
+from packs.roster.engine.models import (
     TourState,
     PatchEvent,
     ComposeResult,

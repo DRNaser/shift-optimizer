@@ -1,11 +1,8 @@
 # =============================================================================
-# SOLVEREIGN V3.3b - Python Backend Dockerfile
+# SOLVEREIGN V4.6 - Python Backend Dockerfile
 # =============================================================================
-# Supports both Legacy API (src.main:app) and Enterprise API (api.main:app)
-# Default: Enterprise API (api.main:app)
-#
-# To run Legacy API instead:
-#   docker run -e API_MODULE=src.main:app solvereign-api
+# Runtime: FastAPI kernel (api.main:app) + Domain Packs
+# NOTE: src/ and global v3/ removed. Solver now in packs/roster/engine/.
 # =============================================================================
 
 FROM python:3.12-slim
@@ -25,16 +22,12 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application code
-# Legacy API (backwards compatibility)
-COPY src/ ./src/
+# NOTE: src/ removed in V4.5, v3/ removed in V4.6 (moved to packs/roster/engine/)
 
-# Enterprise API (V3.3b)
+# FastAPI kernel
 COPY api/ ./api/
 
-# Core business logic (used by both APIs)
-COPY v3/ ./v3/
-
-# Business packs (portal, notify, routing, roster)
+# Business packs (portal, notify, routing, roster + solver engine)
 COPY packs/ ./packs/
 
 # Database schemas
@@ -46,7 +39,7 @@ COPY pyproject.toml .
 # Set Python path
 ENV PYTHONPATH=/app
 
-# API module selection (default: Enterprise API)
+# API module (FastAPI kernel)
 ENV API_MODULE=api.main:app
 
 # Create non-root user
@@ -56,9 +49,9 @@ USER appuser
 # Expose port
 EXPOSE 8000
 
-# Health check (Enterprise API uses /health, Legacy uses /api/v1/healthz)
+# Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
     CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')" || exit 1
 
-# Run with uvicorn (uses API_MODULE env var)
+# Run with uvicorn
 CMD python -m uvicorn ${API_MODULE} --host 0.0.0.0 --port 8000

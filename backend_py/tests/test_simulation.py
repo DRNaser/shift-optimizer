@@ -127,7 +127,7 @@ class TestSeedSweep:
 
     def test_run_seed_sweep_single(self, minimal_tour_instances):
         """Test running a single seed sweep."""
-        from v3.seed_sweep import run_seed_sweep
+        from packs.roster.engine.seed_sweep import run_seed_sweep
 
         results = run_seed_sweep(minimal_tour_instances, seeds=[94])
 
@@ -139,7 +139,7 @@ class TestSeedSweep:
 
     def test_run_seed_sweep_multiple(self, minimal_tour_instances):
         """Test running multiple seed sweeps."""
-        from v3.seed_sweep import run_seed_sweep
+        from packs.roster.engine.seed_sweep import run_seed_sweep
 
         results = run_seed_sweep(minimal_tour_instances, seeds=[42, 94, 17])
 
@@ -151,7 +151,7 @@ class TestSeedSweep:
 
     def test_auto_seed_sweep(self, minimal_tour_instances):
         """Test auto seed sweep functionality."""
-        from v3.seed_sweep import auto_seed_sweep
+        from packs.roster.engine.seed_sweep import auto_seed_sweep
 
         result = auto_seed_sweep(
             minimal_tour_instances,
@@ -168,7 +168,7 @@ class TestSeedSweep:
 
     def test_auto_seed_sweep_parallel(self, minimal_tour_instances):
         """Test parallel auto seed sweep."""
-        from v3.seed_sweep import auto_seed_sweep
+        from packs.roster.engine.seed_sweep import auto_seed_sweep
 
         result = auto_seed_sweep(
             minimal_tour_instances,
@@ -182,7 +182,7 @@ class TestSeedSweep:
 
     def test_compute_assignment_metrics(self, minimal_tour_instances):
         """Test assignment metrics computation."""
-        from v3.seed_sweep import compute_assignment_metrics
+        from packs.roster.engine.seed_sweep import compute_assignment_metrics
 
         # Create mock assignments
         assignments = [
@@ -208,7 +208,7 @@ class TestSimulationScenarios:
 
     def test_cost_curve_scenario(self, sample_tour_instances):
         """Test cost curve simulation."""
-        from v3.simulation_engine import run_cost_curve, RiskLevel
+        from packs.roster.engine.simulation_engine import run_cost_curve, RiskLevel
 
         result = run_cost_curve(sample_tour_instances, baseline_seed=94)
 
@@ -219,7 +219,7 @@ class TestSimulationScenarios:
 
     def test_max_hours_policy_scenario(self, sample_tour_instances):
         """Test max hours policy simulation."""
-        from v3.simulation_engine import run_max_hours_policy, RiskLevel
+        from packs.roster.engine.simulation_engine import run_max_hours_policy, RiskLevel
 
         result = run_max_hours_policy(
             sample_tour_instances,
@@ -235,7 +235,7 @@ class TestSimulationScenarios:
 
     def test_freeze_tradeoff_scenario(self, sample_tour_instances):
         """Test freeze window tradeoff simulation."""
-        from v3.simulation_engine import run_freeze_tradeoff, RiskLevel
+        from packs.roster.engine.simulation_engine import run_freeze_tradeoff, RiskLevel
 
         result = run_freeze_tradeoff(
             sample_tour_instances,
@@ -251,7 +251,7 @@ class TestSimulationScenarios:
 
     def test_driver_friendly_policy_scenario(self, sample_tour_instances):
         """Test driver friendly policy simulation."""
-        from v3.simulation_engine import run_driver_friendly_policy, RiskLevel
+        from packs.roster.engine.simulation_engine import run_driver_friendly_policy, RiskLevel
 
         result = run_driver_friendly_policy(sample_tour_instances, baseline_seed=94)
 
@@ -261,7 +261,7 @@ class TestSimulationScenarios:
 
     def test_patch_chaos_scenario(self, sample_tour_instances):
         """Test patch chaos simulation."""
-        from v3.simulation_engine import run_patch_chaos, RiskLevel
+        from packs.roster.engine.simulation_engine import run_patch_chaos, RiskLevel
 
         result = run_patch_chaos(
             sample_tour_instances,
@@ -276,7 +276,7 @@ class TestSimulationScenarios:
 
     def test_sick_call_scenario(self, sample_tour_instances):
         """Test sick call drill simulation."""
-        from v3.simulation_engine import run_sick_call, RiskLevel
+        from packs.roster.engine.simulation_engine import run_sick_call, RiskLevel
 
         result = run_sick_call(
             sample_tour_instances,
@@ -291,7 +291,7 @@ class TestSimulationScenarios:
 
     def test_headcount_budget_scenario(self, sample_tour_instances):
         """Test headcount budget advisor simulation."""
-        from v3.simulation_engine import run_headcount_budget, RiskLevel
+        from packs.roster.engine.simulation_engine import run_headcount_budget, RiskLevel
 
         result = run_headcount_budget(
             sample_tour_instances,
@@ -306,7 +306,7 @@ class TestSimulationScenarios:
 
     def test_tour_cancel_scenario(self, sample_tour_instances):
         """Test tour cancellation simulation."""
-        from v3.simulation_engine import run_tour_cancel, RiskLevel
+        from packs.roster.engine.simulation_engine import run_tour_cancel, RiskLevel
 
         result = run_tour_cancel(
             sample_tour_instances,
@@ -329,7 +329,7 @@ class TestRiskScore:
 
     def test_risk_levels_enum(self):
         """Test risk level enumeration."""
-        from v3.simulation_engine import RiskLevel
+        from packs.roster.engine.simulation_engine import RiskLevel
 
         assert RiskLevel.LOW.value == "LOW"
         assert RiskLevel.MEDIUM.value == "MEDIUM"
@@ -338,7 +338,7 @@ class TestRiskScore:
 
     def test_scenario_category_enum(self):
         """Test scenario category enumeration."""
-        from v3.simulation_engine import ScenarioCategory
+        from packs.roster.engine.simulation_engine import ScenarioCategory
 
         assert ScenarioCategory.OPERATIONAL.value == "operational"
         assert ScenarioCategory.ECONOMIC.value == "economic"
@@ -354,7 +354,7 @@ class TestSimulationIntegration:
 
     def test_all_scenarios_return_correct_types(self, sample_tour_instances):
         """Test that all scenarios return the correct result types."""
-        from v3.simulation_engine import (
+        from packs.roster.engine.simulation_engine import (
             run_cost_curve, run_max_hours_policy, run_freeze_tradeoff,
             run_driver_friendly_policy, run_patch_chaos, run_sick_call,
             run_headcount_budget, run_tour_cancel,
@@ -397,7 +397,7 @@ class TestSimulationIntegration:
 
     def test_simulation_determinism(self, sample_tour_instances):
         """Test that simulations are deterministic with same seed."""
-        from v3.simulation_engine import run_cost_curve
+        from packs.roster.engine.simulation_engine import run_cost_curve
 
         result1 = run_cost_curve(sample_tour_instances, baseline_seed=94)
         result2 = run_cost_curve(sample_tour_instances, baseline_seed=94)
@@ -415,7 +415,7 @@ class TestEdgeCases:
 
     def test_empty_tour_instances(self):
         """Test handling of empty tour instances."""
-        from v3.seed_sweep import run_seed_sweep
+        from packs.roster.engine.seed_sweep import run_seed_sweep
 
         results = run_seed_sweep([], seeds=[94])
         assert len(results) == 1
@@ -423,7 +423,7 @@ class TestEdgeCases:
 
     def test_single_tour_instance(self):
         """Test handling of single tour instance."""
-        from v3.seed_sweep import run_seed_sweep
+        from packs.roster.engine.seed_sweep import run_seed_sweep
 
         instances = [{
             "id": 1,
@@ -443,7 +443,7 @@ class TestEdgeCases:
 
     def test_tour_cancel_more_than_available(self, minimal_tour_instances):
         """Test cancelling more tours than available."""
-        from v3.simulation_engine import run_tour_cancel
+        from packs.roster.engine.simulation_engine import run_tour_cancel
 
         result = run_tour_cancel(
             minimal_tour_instances,
@@ -456,7 +456,7 @@ class TestEdgeCases:
 
     def test_headcount_impossible_target(self, minimal_tour_instances):
         """Test headcount budget with impossible target."""
-        from v3.simulation_engine import run_headcount_budget
+        from packs.roster.engine.simulation_engine import run_headcount_budget
 
         result = run_headcount_budget(
             minimal_tour_instances,
@@ -477,7 +477,7 @@ class TestAdvancedScenarios:
 
     def test_multi_failure_cascade_basic(self):
         """Test multi-failure cascade simulation."""
-        from v3.simulation_engine import run_multi_failure_cascade, RiskLevel
+        from packs.roster.engine.simulation_engine import run_multi_failure_cascade, RiskLevel
 
         result = run_multi_failure_cascade(
             num_drivers_out=5,
@@ -499,7 +499,7 @@ class TestAdvancedScenarios:
 
     def test_multi_failure_cascade_no_cascade(self):
         """Test multi-failure cascade with zero cascade probability."""
-        from v3.simulation_engine import run_multi_failure_cascade
+        from packs.roster.engine.simulation_engine import run_multi_failure_cascade
 
         result = run_multi_failure_cascade(
             num_drivers_out=3,
@@ -515,7 +515,7 @@ class TestAdvancedScenarios:
 
     def test_multi_failure_cascade_high_cascade(self):
         """Test multi-failure cascade with high cascade probability."""
-        from v3.simulation_engine import run_multi_failure_cascade
+        from packs.roster.engine.simulation_engine import run_multi_failure_cascade
 
         result = run_multi_failure_cascade(
             num_drivers_out=5,
@@ -531,7 +531,7 @@ class TestAdvancedScenarios:
 
     def test_probabilistic_churn_basic(self):
         """Test probabilistic churn Monte Carlo simulation."""
-        from v3.simulation_engine import run_probabilistic_churn, RiskLevel
+        from packs.roster.engine.simulation_engine import run_probabilistic_churn, RiskLevel
 
         result = run_probabilistic_churn(
             num_simulations=50,  # Lower for test speed
@@ -554,7 +554,7 @@ class TestAdvancedScenarios:
 
     def test_probabilistic_churn_low_failure(self):
         """Test probabilistic churn with very low failure probability."""
-        from v3.simulation_engine import run_probabilistic_churn, RiskLevel
+        from packs.roster.engine.simulation_engine import run_probabilistic_churn, RiskLevel
 
         result = run_probabilistic_churn(
             num_simulations=30,
@@ -569,7 +569,7 @@ class TestAdvancedScenarios:
 
     def test_probabilistic_churn_high_failure(self):
         """Test probabilistic churn with high failure probability."""
-        from v3.simulation_engine import run_probabilistic_churn
+        from packs.roster.engine.simulation_engine import run_probabilistic_churn
 
         result = run_probabilistic_churn(
             num_simulations=30,
@@ -584,7 +584,7 @@ class TestAdvancedScenarios:
 
     def test_policy_roi_optimizer_basic(self):
         """Test policy ROI optimizer."""
-        from v3.simulation_engine import run_policy_roi_optimizer, RiskLevel
+        from packs.roster.engine.simulation_engine import run_policy_roi_optimizer, RiskLevel
 
         result = run_policy_roi_optimizer(
             budget_drivers=5,
@@ -603,7 +603,7 @@ class TestAdvancedScenarios:
 
     def test_policy_roi_optimizer_cost_focus(self):
         """Test policy ROI optimizer with cost focus."""
-        from v3.simulation_engine import run_policy_roi_optimizer
+        from packs.roster.engine.simulation_engine import run_policy_roi_optimizer
 
         result = run_policy_roi_optimizer(
             budget_drivers=10,
@@ -618,7 +618,7 @@ class TestAdvancedScenarios:
 
     def test_policy_roi_optimizer_stability_focus(self):
         """Test policy ROI optimizer with stability focus."""
-        from v3.simulation_engine import run_policy_roi_optimizer
+        from packs.roster.engine.simulation_engine import run_policy_roi_optimizer
 
         result = run_policy_roi_optimizer(
             budget_drivers=5,
@@ -634,7 +634,7 @@ class TestAdvancedScenarios:
 
     def test_policy_roi_optimizer_no_arbzg(self):
         """Test policy ROI optimizer without ArbZG constraint."""
-        from v3.simulation_engine import run_policy_roi_optimizer
+        from packs.roster.engine.simulation_engine import run_policy_roi_optimizer
 
         result_with = run_policy_roi_optimizer(
             budget_drivers=10,
@@ -653,7 +653,7 @@ class TestAdvancedScenarios:
 
     def test_policy_roi_pareto_frontier(self):
         """Test that Pareto frontier contains non-dominated solutions."""
-        from v3.simulation_engine import run_policy_roi_optimizer
+        from packs.roster.engine.simulation_engine import run_policy_roi_optimizer
 
         result = run_policy_roi_optimizer(
             budget_drivers=10,

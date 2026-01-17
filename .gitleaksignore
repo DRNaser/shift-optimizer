@@ -1,0 +1,13 @@
+# =============================================================================
+# Gitleaks Ignore File
+# =============================================================================
+# This file excludes known false positives from secret scanning.
+# Format: Finding fingerprints (commit:file:rule:line)
+#
+# Note: Previous entries for 64-zero placeholders have been removed
+# because the source strings were replaced with non-triggering values.
+#
+# Documentation: https://github.com/gitleaks/gitleaks#gitleaksignore
+# =============================================================================
+
+# No active exclusions - all previous false positives have been fixed at source

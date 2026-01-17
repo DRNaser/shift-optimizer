@@ -358,7 +358,7 @@ async def _execute_run(run_id: str, tenant_id: int, request: RunCreateRequest):
         await asyncio.sleep(0.1)
 
         # Import solver (V3 Block Heuristic via V2 integration bridge)
-        from v3.solver_v2_integration import solve_with_v2_solver
+        from packs.roster.engine.solver_v2_integration import solve_with_v2_solver
 
         await run_store.update(run_id, progress=20, message="Preparing tours")
 

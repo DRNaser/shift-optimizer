@@ -17,6 +17,7 @@ email-validator>=2.1.0  # Required for Pydantic EmailStr
 # Database (PostgreSQL with async support)
 # -----------------------------------------------------------------------------
 psycopg[binary,pool]>=3.1.0
+asyncpg>=0.29.0              # Async PostgreSQL for schema invariant tests
 
 # -----------------------------------------------------------------------------
 # Authentication & Security
@@ -52,6 +53,7 @@ highspy==1.12.0
 # -----------------------------------------------------------------------------
 # Utilities
 # -----------------------------------------------------------------------------
+redis>=4.6.0                  # Queue metrics (mocked in tests)
 zstandard>=0.22.0             # Snapshot compression
 blake3>=0.4.0                 # Fast hashing
 

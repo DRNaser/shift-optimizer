@@ -18,6 +18,7 @@ logger = logging.getLogger(__name__)
 # Permission strings for Ops-Copilot actions
 PERMISSION_PAIRING_WRITE = "ops_copilot.pairing.write"
 PERMISSION_PAIRING_READ = "ops_copilot.pairing.read"
+PERMISSION_PAIRING_MANAGE = "ops_copilot.pairing.manage"  # Alias for backward compat
 PERMISSION_IDENTITY_REVOKE = "ops_copilot.identity.revoke"
 PERMISSION_TICKETS_WRITE = "ops_copilot.tickets.write"
 PERMISSION_TICKETS_READ = "ops_copilot.tickets.read"
@@ -52,7 +53,7 @@ BYPASS_ROLES = {"platform_admin"}
 
 
 def has_permission(
-    user_permissions: Set[str],
+    context_or_permissions,
     required_permission: str,
     role_name: Optional[str] = None,
 ) -> bool:
@@ -61,15 +62,28 @@ def has_permission(
 
     Platform admins bypass all permission checks.
 
+    Accepts either:
+    - ActionContext as first argument (new API)
+    - Set[str] of permissions as first argument (legacy API)
+
     Args:
-        user_permissions: Set of permission strings
+        context_or_permissions: ActionContext or Set of permission strings
         required_permission: Permission to check
-        role_name: User's role name (for bypass check)
+        role_name: User's role name (for bypass check, ignored if ActionContext)
 
     Returns:
         True if user has permission
     """
-    # Platform admin bypass
+    # Handle ActionContext (new API)
+    if hasattr(context_or_permissions, 'role_name') and hasattr(context_or_permissions, 'permissions'):
+        ctx = context_or_permissions
+        if ctx.role_name in BYPASS_ROLES:
+            return True
+        perms = ctx.permissions if isinstance(ctx.permissions, set) else set(ctx.permissions)
+        return required_permission in perms
+
+    # Legacy API: Set[str] of permissions
+    user_permissions = context_or_permissions
     if role_name in BYPASS_ROLES:
         return True
 
@@ -163,6 +177,35 @@ def can_approve_action(role_name: str) -> bool:
     return role_name in APPROVER_ROLES
 
 
+def check_action_permission(
+    user_id: str,
+    user_permissions,
+    role_name: str,
+    action_type: str,
+) -> tuple[bool, str]:
+    """
+    Check if user can perform a specific action (test-compatible API).
+
+    Args:
+        user_id: User's UUID (unused but kept for API compat)
+        user_permissions: Set or list of permission strings
+        role_name: User's role name
+        action_type: Action type to check
+
+    Returns:
+        Tuple of (allowed, reason_message)
+    """
+    perms = set(user_permissions) if not isinstance(user_permissions, set) else user_permissions
+
+    if role_name in BYPASS_ROLES:
+        return True, "platform_admin_bypass"
+
+    if can_perform_action(perms, action_type, role_name):
+        return True, "permission_granted"
+
+    return False, "Insufficient permission for action"
+
+
 def is_owner_of_draft(
     user_id: str,
     draft_created_by: str,
@@ -234,11 +277,11 @@ class ActionContext:
     """Context for evaluating action permissions."""
 
     user_id: str
-    tenant_id: int
-    site_id: Optional[int]
     role_name: str
     permissions: Set[str]
-    is_platform_admin: bool
+    tenant_id: Optional[int] = None
+    site_id: Optional[int] = None
+    is_platform_admin: bool = False
 
     @classmethod
     def from_user_context(cls, user_context) -> "ActionContext":

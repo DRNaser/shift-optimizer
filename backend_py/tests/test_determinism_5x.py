@@ -47,7 +47,7 @@ def test_determinism_dry_run():
     print("\n[TEST] Determinism (dry-run mode)")
     print("-" * 50)
 
-    from v3.parser import parse_forecast_text
+    from packs.roster.engine.parser import parse_forecast_text
 
     # Test data
     raw_text = """

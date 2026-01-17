@@ -247,7 +247,9 @@ Bei System-Problemen:
 
 ## Anhang: Screenshots
 
-### Hauptansicht (Streamlit UI)
+### Hauptansicht (~~Streamlit UI~~ → Next.js SaaS Admin V4.5)
+
+> **Note**: Streamlit UI deprecated in V4.5. Current UI: `frontend_v5/` (Next.js)
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐

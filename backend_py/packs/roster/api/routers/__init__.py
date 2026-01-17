@@ -159,6 +159,40 @@ except ImportError as e:
     _repair_orchestrator_available = False
     _repair_orchestrator_import_error = f"{type(e).__name__}: {e}"
 
+# Include Workbench router (V4.9 - Daily Tab DnD)
+_workbench_import_error = None
+try:
+    from packs.roster.api.routers.workbench import router as workbench_router
+    from packs.roster.api.routers.workbench import draft_router as draft_mutations_router
+    router.include_router(workbench_router)
+    router.include_router(draft_mutations_router)
+    _workbench_available = True
+except ImportError as e:
+    _workbench_available = False
+    _workbench_import_error = f"{type(e).__name__}: {e}"
+
+# Include Master Orchestrator router (V4.9 - Event-driven automation)
+_orchestrator_import_error = None
+try:
+    from packs.roster.api.routers.orchestrator import router as orchestrator_router
+    router.include_router(orchestrator_router)
+    _orchestrator_available = True
+except ImportError as e:
+    _orchestrator_available = False
+    _orchestrator_import_error = f"{type(e).__name__}: {e}"
+
+# Include Management router (V4.9 - Weekly/Daily Reports)
+_management_import_error = None
+try:
+    from packs.roster.api.routers.management import router as management_router
+    from packs.roster.api.routers.management import dispatcher_router
+    router.include_router(management_router)
+    router.include_router(dispatcher_router)
+    _management_available = True
+except ImportError as e:
+    _management_available = False
+    _management_import_error = f"{type(e).__name__}: {e}"
+
 
 # Health check for roster pack
 @router.get("/health", summary="Roster Pack Health")
@@ -170,7 +204,7 @@ async def roster_health():
     response = {
         "pack": "roster",
         "status": status,
-        "version": "1.6.0",  # V1.6 = Repair Orchestrator (Top-K)
+        "version": "1.11.0",  # V1.11 = Abort/Freeze/Weekly/Simulation
         "kernel_routers_available": _kernel_routers_available,
         "dispatch_assist_available": _dispatch_available,
         "lifecycle_available": _lifecycle_available,
@@ -181,6 +215,9 @@ async def roster_health():
         "repair_sessions_available": _repair_sessions_available,
         "runs_available": _runs_available,
         "repair_orchestrator_available": _repair_orchestrator_available,
+        "workbench_available": _workbench_available,
+        "master_orchestrator_available": _orchestrator_available,
+        "management_available": _management_available,
         "migration_phase": 1  # 1=wrapper, 2=moving, 3=complete
     }
 
@@ -205,6 +242,12 @@ async def roster_health():
         response["runs_error"] = _runs_import_error
     if not _repair_orchestrator_available and _repair_orchestrator_import_error:
         response["repair_orchestrator_error"] = _repair_orchestrator_import_error
+    if not _workbench_available and _workbench_import_error:
+        response["workbench_error"] = _workbench_import_error
+    if not _orchestrator_available and _orchestrator_import_error:
+        response["orchestrator_error"] = _orchestrator_import_error
+    if not _management_available and _management_import_error:
+        response["management_error"] = _management_import_error
 
     return response
 

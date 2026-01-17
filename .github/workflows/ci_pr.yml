@@ -60,37 +60,37 @@ jobs:
       
       - name: Verify Export Created
         run: |
-          if [ ! -f "backend_py/roster_matrix.csv" ]; then
+          if [ ! -f "roster_matrix.csv" ]; then
             echo "❌ Error: roster_matrix.csv not created"
             exit 1
           fi
-          
-          rows=$(wc -l < backend_py/roster_matrix.csv)
+
+          rows=$(wc -l < roster_matrix.csv)
           if [ "$rows" -lt 2 ]; then
             echo "❌ Error: roster_matrix.csv is empty (only $rows rows)"
             exit 1
           fi
-          
+
           echo "✅ roster_matrix.csv created with $rows rows"
-      
+
       - name: Parse Results (Smoke Test)
         run: |
           # Simple sanity check: contains FTE/PT drivers
-          if grep -q "FTE" backend_py/roster_matrix.csv && \
-             grep -q ";" backend_py/roster_matrix.csv; then
+          if grep -q "FTE" roster_matrix.csv && \
+             grep -q ";" roster_matrix.csv; then
             echo "✅ Export format looks valid"
           else
             echo "❌ Export format invalid"
             exit 1
           fi
-      
+
       - name: Upload Artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: pr-gate-results-${{ github.sha }}
           path: |
-            backend_py/roster_matrix.csv
+            roster_matrix.csv
             artifacts/
           retention-days: 7
       
@@ -114,20 +114,13 @@ jobs:
           pip install --upgrade pip
           pip install -r backend_py/requirements.txt
       
-      - name: Run pytest (excluding known failures)
+      - name: Run pytest
         run: |
           cd backend_py
           pytest \
             --tb=short \
             -v \
-            --ignore=test_business_kpis.py \
             || echo "⚠️ Some tests failed (non-blocking for now)"
         continue-on-error: true
         env:
           PYTHONHASHSEED: 0
-      
-      - name: Note on test_business_kpis.py
-        run: |
-          echo "ℹ️ test_business_kpis.py is excluded (known issue: reports 0 drivers)"
-          echo "See ROADMAP.md Known Issues section for details"
-          echo "Status: NON-BLOCKING, tracked for post-v7.0.0 fix"

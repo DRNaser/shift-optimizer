@@ -21,13 +21,13 @@ from datetime import date, timedelta
 # Add parent to path for imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from backend_py.v3.db import get_connection, test_connection
-from backend_py.v3.driver_model import (
+from packs.roster.engine.db import get_connection, test_connection
+from packs.roster.engine.driver_model import (
     RepairRequest, RepairStrategy, AvailabilityStatus,
     create_driver, set_driver_availability, get_drivers,
     validate_driver_ids_exist
 )
-from backend_py.v3.repair_engine import RepairEngine, repair_plan
+from packs.roster.engine.repair_engine import RepairEngine, repair_plan
 
 
 def print_header(text: str):
@@ -419,8 +419,8 @@ def test_idempotency():
     )
 
     # Check idempotency in database
-    from backend_py.src.api.repair_router import check_idempotency
-    cached = check_idempotency(TEST_TENANT_UUID, idempotency_key)
+    # NOTE: Idempotency check was in deleted backend_py.src - stub returns None
+    cached = None  # Idempotency feature needs reimplementation in packs.roster.api
 
     cached_found = cached is not None
     print_result("Cached result found for idempotency key", cached_found)

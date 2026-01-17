@@ -1108,6 +1108,169 @@ jobs:
           retention-days: 14
 
   # ============================================
+  # MIGRATION IDEMPOTENCY GATE
+  # Proves all migrations can be applied twice without errors
+  # ============================================
+  migration-idempotency:
+    name: Migration Idempotency Gate
+    runs-on: ubuntu-latest
+    needs: [guardian-bootstrap]
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: solvereign
+          POSTGRES_PASSWORD: dev_password_change_in_production
+          POSTGRES_DB: solvereign_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Apply init.sql first
+        run: |
+          export PGPASSWORD=dev_password_change_in_production
+          psql -h localhost -U solvereign -d solvereign_test -f backend_py/db/init.sql
+
+      - name: Run migration idempotency test
+        id: idempotency
+        run: |
+          export DATABASE_URL="postgresql://solvereign:dev_password_change_in_production@localhost:5432/solvereign_test"
+          python scripts/test_migration_idempotency.py --evidence 2>&1 | tee migration_idempotency.log
+          echo "exit_code=${PIPESTATUS[0]}" >> $GITHUB_OUTPUT
+
+      - name: Upload evidence artifact
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: migration-idempotency-evidence
+          path: |
+            migration_idempotency_report.json
+            migration_idempotency.log
+          retention-days: 30
+
+      - name: Verify idempotency assertions
+        run: |
+          EVIDENCE_FILE="migration_idempotency_report.json"
+          if [ ! -f "$EVIDENCE_FILE" ]; then
+            echo "::error::No evidence file generated!"
+            exit 1
+          fi
+
+          STATUS=$(jq -r '.status' "$EVIDENCE_FILE")
+          TESTED=$(jq -r '.migrations_tested' "$EVIDENCE_FILE")
+          PASSED=$(jq -r '.migrations_passed' "$EVIDENCE_FILE")
+          FAILED=$(jq -r '.migrations_failed' "$EVIDENCE_FILE")
+
+          echo "## Migration Idempotency Gate" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Metric | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|--------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Migrations tested | $TESTED |" >> $GITHUB_STEP_SUMMARY
+          echo "| Passed (idempotent) | $PASSED |" >> $GITHUB_STEP_SUMMARY
+          echo "| Failed | $FAILED |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Status** | **$STATUS** |" >> $GITHUB_STEP_SUMMARY
+
+          if [ "$STATUS" != "PASS" ]; then
+            echo "::error::Migration Idempotency FAILED: $FAILED migrations are not idempotent"
+            jq -r '.results[] | select(.pass2 == "FAIL") | "  - \(.migration): \(.error[0:80])"' "$EVIDENCE_FILE"
+            exit 1
+          fi
+
+          echo "Migration Idempotency PASSED: All $PASSED migrations are idempotent"
+
+  # ============================================
+  # CROSS-PROCESS DETERMINISM GATE (PR-4 Addendum)
+  # MANDATORY: Proves solver output is identical across
+  # 5 different PYTHONHASHSEED values (hash independence)
+  # ============================================
+  crossprocess-determinism:
+    name: Cross-Process Determinism Gate
+    runs-on: ubuntu-latest
+    needs: [guardian-bootstrap]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          pip install -r backend_py/requirements.txt
+
+      - name: Run cross-process determinism test
+        id: determinism
+        run: |
+          cd backend_py
+          python packs/roster/engine/tests/test_solver_determinism_crossprocess.py --evidence 2>&1 | tee ../crossprocess_determinism.log
+          echo "exit_code=${PIPESTATUS[0]}" >> $GITHUB_OUTPUT
+
+      - name: Upload evidence artifact
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: crossprocess-determinism-evidence
+          path: |
+            backend_py/gate_report_crossprocess.json
+            crossprocess_determinism.log
+          retention-days: 30
+
+      - name: Verify determinism assertions
+        run: |
+          # Parse evidence file
+          EVIDENCE_FILE="backend_py/gate_report_crossprocess.json"
+          if [ ! -f "$EVIDENCE_FILE" ]; then
+            echo "::error::No evidence file generated!"
+            exit 1
+          fi
+
+          STATUS=$(jq -r '.status' "$EVIDENCE_FILE")
+          UNIQUE_HASHES=$(jq -r '.unique_hashes' "$EVIDENCE_FILE")
+          OUTPUT_HASH=$(jq -r '.output_hash' "$EVIDENCE_FILE")
+          SEEDS_TESTED=$(jq -r '.hashseed_values_tested | length' "$EVIDENCE_FILE")
+
+          echo "## Cross-Process Determinism Gate" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Metric | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|--------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| PYTHONHASHSEED values tested | $SEEDS_TESTED |" >> $GITHUB_STEP_SUMMARY
+          echo "| Unique output hashes | $UNIQUE_HASHES |" >> $GITHUB_STEP_SUMMARY
+          echo "| Canonical output hash | ${OUTPUT_HASH:0:16}... |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Status** | **$STATUS** |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          # Show individual results
+          echo "### Per-Seed Results" >> $GITHUB_STEP_SUMMARY
+          echo "| PYTHONHASHSEED | Output Hash |" >> $GITHUB_STEP_SUMMARY
+          echo "|----------------|-------------|" >> $GITHUB_STEP_SUMMARY
+          jq -r '.results[] | "| \(.hashseed) | \(.hash[0:16])... |"' "$EVIDENCE_FILE" >> $GITHUB_STEP_SUMMARY
+
+          if [ "$STATUS" != "PASS" ]; then
+            echo "::error::Cross-Process Determinism FAILED: Different PYTHONHASHSEED values produced different outputs"
+            echo ""
+            echo "This means the solver depends on Python's internal hash state."
+            echo "Check for dict/set iteration order dependencies."
+            exit 1
+          fi
+
+          echo "Cross-Process Determinism PASSED: All $SEEDS_TESTED PYTHONHASHSEED values produced identical output"
+
+  # ============================================
   # V3 SOLVER REGRESSION GATE (ADR-003)
   # MANDATORY: Validates canonical solver produces 145 FTE / 0 PT
   # This test MUST pass before any release or pilot deployment
@@ -1185,7 +1348,7 @@ jobs:
   guardian-summary:
     name: Guardian Summary
     runs-on: ubuntu-latest
-    needs: [guardian-bootstrap, secret-scan, pack-boundary-linter, schema-validation, kpi-drift-tests, golden-dataset-tests, impact-preview-tests, audit-report-tests, acceptance-gate, allow-dirty-check, auth-separation-gate, wien-security-gate, wien-roster-gate, ops-drills-gate, integration-gate, v3-solver-regression]
+    needs: [guardian-bootstrap, secret-scan, pack-boundary-linter, schema-validation, kpi-drift-tests, golden-dataset-tests, impact-preview-tests, audit-report-tests, acceptance-gate, allow-dirty-check, auth-separation-gate, wien-security-gate, wien-roster-gate, ops-drills-gate, integration-gate, migration-idempotency, crossprocess-determinism, v3-solver-regression]
     if: always()
 
     steps:
@@ -1212,6 +1375,8 @@ jobs:
           echo "| **Wien W02 Roster** | ${{ needs.wien-roster-gate.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| **Ops Drills (H)** | ${{ needs.ops-drills-gate.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| **Integration Gate** | ${{ needs.integration-gate.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Migration Idempotency** | ${{ needs.migration-idempotency.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Cross-Process Determinism** | ${{ needs.crossprocess-determinism.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| **V3 Solver Regression** | ${{ needs.v3-solver-regression.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
 

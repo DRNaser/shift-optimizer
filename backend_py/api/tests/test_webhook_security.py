@@ -8,6 +8,10 @@ Tests for webhook endpoints to ensure:
 3. Invalid signatures return 400, not 402
 
 These tests patch the webhook module's stripe reference, not global stripe.
+
+NOTE: Some tests require Stripe to be configured. In CI without Stripe config,
+the billing router is not mounted and webhook routes will 404. Tests check
+for this condition and skip appropriately.
 """
 
 import pytest
@@ -15,8 +19,24 @@ from fastapi.testclient import TestClient
 
 from ..main import app
 from ..billing.gating import BillingGate
+from ..config import settings
 
 
+def is_stripe_configured() -> bool:
+    """Check if Stripe is configured (billing router is mounted)."""
+    return settings.is_stripe_configured
+
+
+def billing_router_mounted() -> bool:
+    """Check if billing webhook route exists in app routes."""
+    route_paths = [route.path for route in app.routes if hasattr(route, 'path')]
+    return any('/billing/webhook' in path for path in route_paths)
+
+
+@pytest.mark.skipif(
+    not billing_router_mounted(),
+    reason="Stripe not configured - billing router not mounted"
+)
 class TestStripeWebhookSecurity:
     """
     Tests for /api/billing/webhook endpoint (Stripe webhooks).
@@ -25,6 +45,10 @@ class TestStripeWebhookSecurity:
     - Signature verification MUST happen before any business logic
     - Invalid signature → 400 (not 402)
     - Webhooks MUST bypass billing gating (they're from Stripe, not tenants)
+
+    NOTE: These tests are SKIPPED if Stripe is not configured (CI without secrets).
+    The billing router is only mounted when STRIPE_API_KEY and STRIPE_WEBHOOK_SECRET
+    are set (see main.py register_routers).
     """
 
     @pytest.fixture
@@ -232,13 +256,24 @@ class TestWebhookRouteRegistration:
     This test prevents the scenario where routes exist in code but
     are not registered in the FastAPI app (e.g., due to import issues
     or feature flag gating).
+
+    NOTE: Billing webhook routes are only registered when Stripe is configured.
+    In CI without Stripe secrets, these routes will not exist and related
+    tests are skipped.
     """
 
+    @pytest.mark.skipif(
+        not is_stripe_configured(),
+        reason="Stripe not configured - billing router not mounted (expected in CI)"
+    )
     def test_billing_webhook_route_exists(self):
         """
-        /api/billing/webhook must be registered in the app.
+        /api/billing/webhook must be registered in the app when Stripe is configured.
 
         Failure indicates: Billing router not included in main app.
+
+        NOTE: Skipped when Stripe is not configured - this is expected behavior
+        in CI without secrets. The billing router is intentionally gated.
         """
         route_paths = [route.path for route in app.routes if hasattr(route, 'path')]
         assert any('/billing/webhook' in path for path in route_paths), \
@@ -259,11 +294,17 @@ class TestWebhookRouteRegistration:
         assert whatsapp_exists or sendgrid_exists, \
             "No notification webhook routes registered. Check notifications router."
 
+    @pytest.mark.skipif(
+        not is_stripe_configured(),
+        reason="Stripe not configured - billing webhook not in OpenAPI (expected in CI)"
+    )
     def test_webhook_paths_in_openapi(self):
         """
-        Webhook paths should appear in OpenAPI spec.
+        Webhook paths should appear in OpenAPI spec when Stripe is configured.
 
         This ensures routes are not just registered but discoverable.
+
+        NOTE: Skipped when Stripe is not configured.
         """
         from fastapi.testclient import TestClient
         client = TestClient(app)

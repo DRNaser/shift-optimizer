@@ -97,11 +97,11 @@ def step_3_run_solver(canonical: dict, seed: int = 94) -> dict:
     print(f"STEP 3: RUN ROSTER SOLVER (seed={seed})")
     print("="*60)
 
-    # Import the V3 solver wrapper
+    # Import the roster solver wrapper (migrated from v3 to packs.roster.engine)
     try:
-        from v3.solver_wrapper import solve_forecast
-        from v3.parser import parse_forecast_text
-        from v3.db_instances import expand_tour_templates
+        from packs.roster.engine.solver_wrapper import solve_forecast
+        from packs.roster.engine.parser import parse_forecast_text
+        from packs.roster.engine.db_instances import expand_tour_templates
 
         # Convert canonical to forecast text format
         lines = []

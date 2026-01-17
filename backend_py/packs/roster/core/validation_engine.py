@@ -74,6 +74,20 @@ class ValidationResult:
     parity_hash: Optional[str] = None  # Hash for full validation parity guarantee
 
 
+def classify_risk_tier(hard_blocks: int, soft_blocks: int) -> str:
+    """
+    Classify risk tier based on violation counts.
+
+    Returns:
+        Risk tier string: CRITICAL, HIGH, MEDIUM, LOW
+    """
+    if hard_blocks > 0:
+        return "CRITICAL" if hard_blocks >= 3 else "HIGH"
+    if soft_blocks > 0:
+        return "MEDIUM" if soft_blocks >= 5 else "LOW"
+    return "LOW"
+
+
 # =============================================================================
 # FAST VALIDATION (Instant checks)
 # =============================================================================

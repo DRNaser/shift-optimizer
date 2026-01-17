@@ -841,7 +841,7 @@ async def publish_snapshot(
 
         if solver_engine == "v4":
             # Import config to check feature flag
-            from v3.config import config as v3_config
+            from packs.roster.engine.config import config as v3_config
 
             # Emergency kill switch takes precedence
             if v3_config.V4_PUBLISH_KILL_SWITCH:

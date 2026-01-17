@@ -102,7 +102,7 @@ async def list_scenarios(
 
     Returns scenario types with descriptions and required parameters.
     """
-    from v3.simulation_engine import ScenarioType, ScenarioCategory
+    from packs.roster.engine.simulation_engine import ScenarioType, ScenarioCategory
 
     # Define scenario metadata
     scenarios = [
@@ -194,7 +194,7 @@ async def run_simulation_endpoint(
     - **driver_friendly**: Analyze 3er gap quality costs
     - **headcount_cap**: Find constraint relaxations for budget (requires target_drivers)
     """
-    from v3.simulation_engine import (
+    from packs.roster.engine.simulation_engine import (
         run_simulation,
         SimulationScenario,
         ScenarioType,
@@ -279,7 +279,7 @@ async def compare_simulations(
 
     Returns ranked comparison of all scenarios.
     """
-    from v3.simulation_engine import (
+    from packs.roster.engine.simulation_engine import (
         run_simulation,
         SimulationScenario,
         ScenarioType,

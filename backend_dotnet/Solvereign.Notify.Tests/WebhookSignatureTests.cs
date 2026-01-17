@@ -62,7 +62,7 @@ public class WebhookSignatureTests
     {
         // Arrange
         var body = @"{""entry"":[{""changes"":[{""value"":{""statuses"":[{""id"":""msg123""}]}}]}]}";
-        var invalidSignature = "sha256=0000000000000000000000000000000000000000000000000000000000000000";
+        var invalidSignature = "sha256=deadbeefcafebabedeadbeefcafebabedeadbeefcafebabedeadbeefcafebabe";
 
         // Act
         var isValid = VerifyWhatsAppSignature(body, invalidSignature, WhatsAppTestSecret);

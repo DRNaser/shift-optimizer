@@ -29,13 +29,58 @@ from ..security.internal_rbac import (
     InternalUserContext,
     require_session,
     require_permission,
-    get_db_connection,
-    set_rls_context_for_tenant,
+    get_rbac_repository,
 )
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/driver-contacts", tags=["driver-contacts"])
+
+
+# =============================================================================
+# DATABASE CONNECTION HELPER
+# =============================================================================
+
+def get_conn_with_rls_context(request: Request, user: InternalUserContext):
+    """
+    Get database connection with RLS context set for the user's tenant.
+
+    Uses the RBAC repository's connection and sets the RLS context variables.
+    Connection is managed per-request via request.state (autocommit=True).
+
+    Args:
+        request: FastAPI request object
+        user: Authenticated user context
+
+    Returns:
+        psycopg connection with RLS context configured
+    """
+    repo = get_rbac_repository(request)
+    conn = repo.conn
+
+    # Set RLS context
+    tenant_id = user.get_effective_tenant_id()
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT set_config('app.current_user_id', %s, TRUE)",
+            (str(user.user_id),)
+        )
+        if tenant_id is not None:
+            cur.execute(
+                "SELECT set_config('app.current_tenant_id', %s, TRUE)",
+                (str(tenant_id),)
+            )
+        if user.site_id:
+            cur.execute(
+                "SELECT set_config('app.current_site_id', %s, TRUE)",
+                (str(user.site_id),)
+            )
+        if user.is_platform_admin:
+            cur.execute(
+                "SELECT set_config('app.is_platform_admin', 'true', TRUE)"
+            )
+
+    return conn
 
 
 # =============================================================================
@@ -184,60 +229,55 @@ async def list_driver_contacts(
     user: InternalUserContext = Depends(require_permission("tenant.drivers.read")),
 ):
     """List driver contacts for the current tenant."""
-    conn = get_db_connection()
-    try:
-        with conn.cursor() as cur:
-            set_rls_context_for_tenant(cur, user)
+    conn = get_conn_with_rls_context(request, user)
+    with conn.cursor() as cur:
+        # Build query
+        conditions = ["tenant_id = %s"]
+        params = [user.get_effective_tenant_id()]
 
-            # Build query
-            conditions = ["tenant_id = %s"]
-            params = [user.get_effective_tenant_id()]
+        if site_id:
+            conditions.append("site_id = %s")
+            params.append(str(site_id))
 
-            if site_id:
-                conditions.append("site_id = %s")
-                params.append(str(site_id))
+        if status:
+            conditions.append("status = %s")
+            params.append(status)
 
-            if status:
-                conditions.append("status = %s")
-                params.append(status)
+        if consent_whatsapp is not None:
+            conditions.append("consent_whatsapp = %s")
+            params.append(consent_whatsapp)
 
-            if consent_whatsapp is not None:
-                conditions.append("consent_whatsapp = %s")
-                params.append(consent_whatsapp)
+        if search:
+            conditions.append("(display_name ILIKE %s OR phone_e164 LIKE %s)")
+            params.extend([f"%{search}%", f"%{search}%"])
 
-            if search:
-                conditions.append("(display_name ILIKE %s OR phone_e164 LIKE %s)")
-                params.extend([f"%{search}%", f"%{search}%"])
+        params.extend([limit, offset])
 
-            params.extend([limit, offset])
+        query = f"""
+            SELECT id, driver_id, display_name, phone_e164, site_id,
+                   driver_external_id, consent_whatsapp, consent_whatsapp_at,
+                   consent_source, opt_out_at, status, department,
+                   last_contacted_at, created_at, updated_at
+            FROM masterdata.driver_contacts
+            WHERE {' AND '.join(conditions)}
+            ORDER BY display_name
+            LIMIT %s OFFSET %s
+        """
 
-            query = f"""
-                SELECT id, driver_id, display_name, phone_e164, site_id,
-                       driver_external_id, consent_whatsapp, consent_whatsapp_at,
-                       consent_source, opt_out_at, status, department,
-                       last_contacted_at, created_at, updated_at
-                FROM masterdata.driver_contacts
-                WHERE {' AND '.join(conditions)}
-                ORDER BY display_name
-                LIMIT %s OFFSET %s
-            """
+        cur.execute(query, params)
+        rows = cur.fetchall()
 
-            cur.execute(query, params)
-            rows = cur.fetchall()
-
-            return [
-                DriverContactResponse(
-                    id=row[0], driver_id=row[1], display_name=row[2],
-                    phone_e164=row[3], site_id=row[4], driver_external_id=row[5],
-                    consent_whatsapp=row[6], consent_whatsapp_at=row[7],
-                    consent_source=row[8], opt_out_at=row[9], status=row[10],
-                    department=row[11], last_contacted_at=row[12],
-                    created_at=row[13], updated_at=row[14]
-                )
-                for row in rows
-            ]
-    finally:
-        conn.close()
+        return [
+            DriverContactResponse(
+                id=row[0], driver_id=row[1], display_name=row[2],
+                phone_e164=row[3], site_id=row[4], driver_external_id=row[5],
+                consent_whatsapp=row[6], consent_whatsapp_at=row[7],
+                consent_source=row[8], opt_out_at=row[9], status=row[10],
+                department=row[11], last_contacted_at=row[12],
+                created_at=row[13], updated_at=row[14]
+            )
+            for row in rows
+        ]
 
 
 @router.get("/{contact_id}", response_model=DriverContactResponse)
@@ -247,34 +287,29 @@ async def get_driver_contact(
     user: InternalUserContext = Depends(require_permission("tenant.drivers.read")),
 ):
     """Get a specific driver contact."""
-    conn = get_db_connection()
-    try:
-        with conn.cursor() as cur:
-            set_rls_context_for_tenant(cur, user)
+    conn = get_conn_with_rls_context(request, user)
+    with conn.cursor() as cur:
+        cur.execute("""
+            SELECT id, driver_id, display_name, phone_e164, site_id,
+                   driver_external_id, consent_whatsapp, consent_whatsapp_at,
+                   consent_source, opt_out_at, status, department,
+                   last_contacted_at, created_at, updated_at
+            FROM masterdata.driver_contacts
+            WHERE id = %s AND tenant_id = %s
+        """, (str(contact_id), user.get_effective_tenant_id()))
 
-            cur.execute("""
-                SELECT id, driver_id, display_name, phone_e164, site_id,
-                       driver_external_id, consent_whatsapp, consent_whatsapp_at,
-                       consent_source, opt_out_at, status, department,
-                       last_contacted_at, created_at, updated_at
-                FROM masterdata.driver_contacts
-                WHERE id = %s AND tenant_id = %s
-            """, (str(contact_id), user.get_effective_tenant_id()))
+        row = cur.fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Driver contact not found")
 
-            row = cur.fetchone()
-            if not row:
-                raise HTTPException(status_code=404, detail="Driver contact not found")
-
-            return DriverContactResponse(
-                id=row[0], driver_id=row[1], display_name=row[2],
-                phone_e164=row[3], site_id=row[4], driver_external_id=row[5],
-                consent_whatsapp=row[6], consent_whatsapp_at=row[7],
-                consent_source=row[8], opt_out_at=row[9], status=row[10],
-                department=row[11], last_contacted_at=row[12],
-                created_at=row[13], updated_at=row[14]
-            )
-    finally:
-        conn.close()
+        return DriverContactResponse(
+            id=row[0], driver_id=row[1], display_name=row[2],
+            phone_e164=row[3], site_id=row[4], driver_external_id=row[5],
+            consent_whatsapp=row[6], consent_whatsapp_at=row[7],
+            consent_source=row[8], opt_out_at=row[9], status=row[10],
+            department=row[11], last_contacted_at=row[12],
+            created_at=row[13], updated_at=row[14]
+        )
 
 
 @router.post("", response_model=DriverContactResponse, status_code=201)
@@ -284,10 +319,9 @@ async def create_driver_contact(
     user: InternalUserContext = Depends(require_permission("tenant.drivers.write")),
 ):
     """Create a new driver contact."""
-    conn = get_db_connection()
+    conn = get_conn_with_rls_context(request, user)
     try:
         with conn.cursor() as cur:
-            set_rls_context_for_tenant(cur, user)
             tenant_id = user.get_effective_tenant_id()
 
             # Use upsert function
@@ -318,8 +352,6 @@ async def create_driver_contact(
                     WHERE id = %s
                 """, (body.driver_external_id, body.department, body.notes, str(contact_id)))
 
-            conn.commit()
-
             # Fetch and return created contact
             cur.execute("""
                 SELECT id, driver_id, display_name, phone_e164, site_id,
@@ -343,15 +375,12 @@ async def create_driver_contact(
                 created_at=row[13], updated_at=row[14]
             )
     except Exception as e:
-        conn.rollback()
         if "duplicate key" in str(e).lower():
             raise HTTPException(
                 status_code=409,
                 detail="Driver contact already exists (duplicate phone or driver_id)"
             )
         raise HTTPException(status_code=500, detail=str(e))
-    finally:
-        conn.close()
 
 
 @router.patch("/{contact_id}", response_model=DriverContactResponse)
@@ -362,84 +391,72 @@ async def update_driver_contact(
     user: InternalUserContext = Depends(require_permission("tenant.drivers.write")),
 ):
     """Update a driver contact."""
-    conn = get_db_connection()
-    try:
-        with conn.cursor() as cur:
-            set_rls_context_for_tenant(cur, user)
+    conn = get_conn_with_rls_context(request, user)
+    with conn.cursor() as cur:
+        # Build update query dynamically
+        updates = []
+        params = []
 
-            # Build update query dynamically
-            updates = []
-            params = []
+        if body.display_name is not None:
+            updates.append("display_name = %s")
+            params.append(body.display_name)
 
-            if body.display_name is not None:
-                updates.append("display_name = %s")
-                params.append(body.display_name)
+        if body.phone is not None:
+            updates.append("phone_e164 = %s")
+            params.append(body.phone)  # Already normalized
 
-            if body.phone is not None:
-                updates.append("phone_e164 = %s")
-                params.append(body.phone)  # Already normalized
+        if body.site_id is not None:
+            updates.append("site_id = %s")
+            params.append(str(body.site_id))
 
-            if body.site_id is not None:
-                updates.append("site_id = %s")
-                params.append(str(body.site_id))
+        if body.department is not None:
+            updates.append("department = %s")
+            params.append(body.department)
 
-            if body.department is not None:
-                updates.append("department = %s")
-                params.append(body.department)
+        if body.notes is not None:
+            updates.append("notes = %s")
+            params.append(body.notes)
 
-            if body.notes is not None:
-                updates.append("notes = %s")
-                params.append(body.notes)
+        if body.status is not None:
+            updates.append("status = %s")
+            params.append(body.status)
 
-            if body.status is not None:
-                updates.append("status = %s")
-                params.append(body.status)
+        if not updates:
+            raise HTTPException(status_code=400, detail="No fields to update")
 
-            if not updates:
-                raise HTTPException(status_code=400, detail="No fields to update")
+        updates.append("updated_at = NOW()")
+        params.extend([str(contact_id), user.get_effective_tenant_id()])
 
-            updates.append("updated_at = NOW()")
-            params.extend([str(contact_id), user.get_effective_tenant_id()])
+        cur.execute(f"""
+            UPDATE masterdata.driver_contacts
+            SET {', '.join(updates)}
+            WHERE id = %s AND tenant_id = %s
+            RETURNING id
+        """, params)
 
-            cur.execute(f"""
-                UPDATE masterdata.driver_contacts
-                SET {', '.join(updates)}
-                WHERE id = %s AND tenant_id = %s
-                RETURNING id
-            """, params)
+        if cur.fetchone() is None:
+            raise HTTPException(status_code=404, detail="Driver contact not found")
 
-            if cur.fetchone() is None:
-                raise HTTPException(status_code=404, detail="Driver contact not found")
+        # Fetch updated contact
+        cur.execute("""
+            SELECT id, driver_id, display_name, phone_e164, site_id,
+                   driver_external_id, consent_whatsapp, consent_whatsapp_at,
+                   consent_source, opt_out_at, status, department,
+                   last_contacted_at, created_at, updated_at
+            FROM masterdata.driver_contacts
+            WHERE id = %s
+        """, (str(contact_id),))
 
-            conn.commit()
+        row = cur.fetchone()
 
-            # Fetch updated contact
-            cur.execute("""
-                SELECT id, driver_id, display_name, phone_e164, site_id,
-                       driver_external_id, consent_whatsapp, consent_whatsapp_at,
-                       consent_source, opt_out_at, status, department,
-                       last_contacted_at, created_at, updated_at
-                FROM masterdata.driver_contacts
-                WHERE id = %s
-            """, (str(contact_id),))
-
-            row = cur.fetchone()
-
-            return DriverContactResponse(
-                id=row[0], driver_id=row[1], display_name=row[2],
-                phone_e164=row[3], site_id=row[4], driver_external_id=row[5],
-                consent_whatsapp=row[6], consent_whatsapp_at=row[7],
-                consent_source=row[8], opt_out_at=row[9], status=row[10],
-                department=row[11], last_contacted_at=row[12],
-                created_at=row[13], updated_at=row[14]
-            )
-    except HTTPException:
-        raise
-    except Exception as e:
-        conn.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
-    finally:
-        conn.close()
+        return DriverContactResponse(
+            id=row[0], driver_id=row[1], display_name=row[2],
+            phone_e164=row[3], site_id=row[4], driver_external_id=row[5],
+            consent_whatsapp=row[6], consent_whatsapp_at=row[7],
+            consent_source=row[8], opt_out_at=row[9], status=row[10],
+            department=row[11], last_contacted_at=row[12],
+            created_at=row[13], updated_at=row[14]
+        )
 
 
 @router.post("/{contact_id}/consent", response_model=DriverContactResponse)
@@ -450,62 +467,50 @@ async def update_consent(
     user: InternalUserContext = Depends(require_permission("tenant.drivers.write")),
 ):
     """Update WhatsApp consent for a driver contact."""
-    conn = get_db_connection()
-    try:
-        with conn.cursor() as cur:
-            set_rls_context_for_tenant(cur, user)
+    conn = get_conn_with_rls_context(request, user)
+    with conn.cursor() as cur:
+        # Get driver_id for the contact
+        cur.execute("""
+            SELECT driver_id FROM masterdata.driver_contacts
+            WHERE id = %s AND tenant_id = %s
+        """, (str(contact_id), user.get_effective_tenant_id()))
 
-            # Get driver_id for the contact
-            cur.execute("""
-                SELECT driver_id FROM masterdata.driver_contacts
-                WHERE id = %s AND tenant_id = %s
-            """, (str(contact_id), user.get_effective_tenant_id()))
+        row = cur.fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Driver contact not found")
 
-            row = cur.fetchone()
-            if not row:
-                raise HTTPException(status_code=404, detail="Driver contact not found")
+        driver_id = row[0]
 
-            driver_id = row[0]
+        # Use the consent function (handles audit)
+        cur.execute("""
+            SELECT masterdata.set_whatsapp_consent(%s, %s, %s, %s)
+        """, (user.get_effective_tenant_id(), str(driver_id), body.consent, body.source))
 
-            # Use the consent function (handles audit)
-            cur.execute("""
-                SELECT masterdata.set_whatsapp_consent(%s, %s, %s, %s)
-            """, (user.get_effective_tenant_id(), str(driver_id), body.consent, body.source))
+        logger.info(
+            f"Updated WhatsApp consent for contact {contact_id}: "
+            f"consent={body.consent}, source={body.source}"
+        )
 
-            conn.commit()
+        # Fetch updated contact
+        cur.execute("""
+            SELECT id, driver_id, display_name, phone_e164, site_id,
+                   driver_external_id, consent_whatsapp, consent_whatsapp_at,
+                   consent_source, opt_out_at, status, department,
+                   last_contacted_at, created_at, updated_at
+            FROM masterdata.driver_contacts
+            WHERE id = %s
+        """, (str(contact_id),))
 
-            logger.info(
-                f"Updated WhatsApp consent for contact {contact_id}: "
-                f"consent={body.consent}, source={body.source}"
-            )
+        row = cur.fetchone()
 
-            # Fetch updated contact
-            cur.execute("""
-                SELECT id, driver_id, display_name, phone_e164, site_id,
-                       driver_external_id, consent_whatsapp, consent_whatsapp_at,
-                       consent_source, opt_out_at, status, department,
-                       last_contacted_at, created_at, updated_at
-                FROM masterdata.driver_contacts
-                WHERE id = %s
-            """, (str(contact_id),))
-
-            row = cur.fetchone()
-
-            return DriverContactResponse(
-                id=row[0], driver_id=row[1], display_name=row[2],
-                phone_e164=row[3], site_id=row[4], driver_external_id=row[5],
-                consent_whatsapp=row[6], consent_whatsapp_at=row[7],
-                consent_source=row[8], opt_out_at=row[9], status=row[10],
-                department=row[11], last_contacted_at=row[12],
-                created_at=row[13], updated_at=row[14]
-            )
-    except HTTPException:
-        raise
-    except Exception as e:
-        conn.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
-    finally:
-        conn.close()
+        return DriverContactResponse(
+            id=row[0], driver_id=row[1], display_name=row[2],
+            phone_e164=row[3], site_id=row[4], driver_external_id=row[5],
+            consent_whatsapp=row[6], consent_whatsapp_at=row[7],
+            consent_source=row[8], opt_out_at=row[9], status=row[10],
+            department=row[11], last_contacted_at=row[12],
+            created_at=row[13], updated_at=row[14]
+        )
 
 
 @router.post("/bulk-consent")
@@ -515,45 +520,36 @@ async def bulk_update_consent(
     user: InternalUserContext = Depends(require_permission("tenant.drivers.write")),
 ):
     """Update WhatsApp consent for multiple drivers at once."""
-    conn = get_db_connection()
-    try:
-        with conn.cursor() as cur:
-            set_rls_context_for_tenant(cur, user)
-            tenant_id = user.get_effective_tenant_id()
+    conn = get_conn_with_rls_context(request, user)
+    with conn.cursor() as cur:
+        tenant_id = user.get_effective_tenant_id()
 
-            updated = 0
-            not_found = []
+        updated = 0
+        not_found = []
 
-            for driver_id in body.driver_ids:
-                cur.execute("""
-                    SELECT masterdata.set_whatsapp_consent(%s, %s, %s, %s)
-                """, (tenant_id, str(driver_id), body.consent, body.source))
+        for driver_id in body.driver_ids:
+            cur.execute("""
+                SELECT masterdata.set_whatsapp_consent(%s, %s, %s, %s)
+            """, (tenant_id, str(driver_id), body.consent, body.source))
 
-                result = cur.fetchone()[0]
-                if result:
-                    updated += 1
-                else:
-                    not_found.append(str(driver_id))
+            result = cur.fetchone()[0]
+            if result:
+                updated += 1
+            else:
+                not_found.append(str(driver_id))
 
-            conn.commit()
+        logger.info(
+            f"Bulk consent update: {updated} updated, "
+            f"{len(not_found)} not found, consent={body.consent}"
+        )
 
-            logger.info(
-                f"Bulk consent update: {updated} updated, "
-                f"{len(not_found)} not found, consent={body.consent}"
-            )
-
-            return {
-                "updated_count": updated,
-                "not_found_count": len(not_found),
-                "not_found_driver_ids": not_found[:10],  # Limit response size
-                "consent": body.consent,
-                "source": body.source
-            }
-    except Exception as e:
-        conn.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
-    finally:
-        conn.close()
+        return {
+            "updated_count": updated,
+            "not_found_count": len(not_found),
+            "not_found_driver_ids": not_found[:10],  # Limit response size
+            "consent": body.consent,
+            "source": body.source
+        }
 
 
 @router.get("/driver/{driver_id}/dm-eligibility", response_model=DMEligibilityResponse)
@@ -563,26 +559,21 @@ async def check_dm_eligibility(
     user: InternalUserContext = Depends(require_permission("tenant.drivers.read")),
 ):
     """Check if a driver can receive WhatsApp DMs (fail-fast check)."""
-    conn = get_db_connection()
-    try:
-        with conn.cursor() as cur:
-            set_rls_context_for_tenant(cur, user)
+    conn = get_conn_with_rls_context(request, user)
+    with conn.cursor() as cur:
+        cur.execute("""
+            SELECT masterdata.verify_contact_for_dm(%s, %s)
+        """, (user.get_effective_tenant_id(), str(driver_id)))
 
-            cur.execute("""
-                SELECT masterdata.verify_contact_for_dm(%s, %s)
-            """, (user.get_effective_tenant_id(), str(driver_id)))
+        result = cur.fetchone()[0]
 
-            result = cur.fetchone()[0]
-
-            return DMEligibilityResponse(
-                driver_id=driver_id,
-                can_send=result.get('can_send', False),
-                display_name=result.get('display_name'),
-                phone_e164=result.get('phone_e164'),
-                errors=result.get('errors', [])
-            )
-    finally:
-        conn.close()
+        return DMEligibilityResponse(
+            driver_id=driver_id,
+            can_send=result.get('can_send', False),
+            display_name=result.get('display_name'),
+            phone_e164=result.get('phone_e164'),
+            errors=result.get('errors', [])
+        )
 
 
 @router.get("/contactable")
@@ -592,35 +583,30 @@ async def list_contactable_drivers(
     user: InternalUserContext = Depends(require_permission("tenant.drivers.read")),
 ):
     """List all drivers who can be contacted via WhatsApp."""
-    conn = get_db_connection()
-    try:
-        with conn.cursor() as cur:
-            set_rls_context_for_tenant(cur, user)
+    conn = get_conn_with_rls_context(request, user)
+    with conn.cursor() as cur:
+        site_param = str(site_id) if site_id else None
 
-            site_param = str(site_id) if site_id else None
+        cur.execute("""
+            SELECT driver_id, display_name, phone_e164, site_id, consent_whatsapp_at
+            FROM masterdata.get_contactable_drivers(%s, NULL, %s)
+        """, (user.get_effective_tenant_id(), site_param))
 
-            cur.execute("""
-                SELECT driver_id, display_name, phone_e164, site_id, consent_whatsapp_at
-                FROM masterdata.get_contactable_drivers(%s, NULL, %s)
-            """, (user.get_effective_tenant_id(), site_param))
+        rows = cur.fetchall()
 
-            rows = cur.fetchall()
-
-            return {
-                "contactable_count": len(rows),
-                "drivers": [
-                    {
-                        "driver_id": row[0],
-                        "display_name": row[1],
-                        "phone_e164": row[2],
-                        "site_id": row[3],
-                        "consent_at": row[4].isoformat() if row[4] else None
-                    }
-                    for row in rows
-                ]
-            }
-    finally:
-        conn.close()
+        return {
+            "contactable_count": len(rows),
+            "drivers": [
+                {
+                    "driver_id": row[0],
+                    "display_name": row[1],
+                    "phone_e164": row[2],
+                    "site_id": row[3],
+                    "consent_at": row[4].isoformat() if row[4] else None
+                }
+                for row in rows
+            ]
+        }
 
 
 @router.post("/validate-phone")

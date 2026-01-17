@@ -42,7 +42,7 @@ INSERT INTO tenants (id, name, api_key_hash, is_active, metadata)
 VALUES (
     1,
     '_migration_data_owner',
-    '0000000000000000000000000000000000000000000000000000000000000000',  -- Invalid placeholder (64 zeros)
+    '__INVALID_PLACEHOLDER_NOT_A_REAL_HASH_DO_NOT_USE_FOR_AUTH__',  -- Invalid placeholder (not for auth)
     FALSE,  -- CRITICAL: Inactive - cannot be used for auth
     '{"tier": "migration", "note": "Owns legacy data from pre-multi-tenant era. NOT for auth.", "security": "inactive_by_design"}'::jsonb
 )

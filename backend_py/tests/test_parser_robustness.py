@@ -24,7 +24,7 @@ from collections import defaultdict
 # Add parent dir to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from v3.parser import parse_tour_line, ParseStatus
+from packs.roster.engine.parser import parse_tour_line, ParseStatus
 
 
 def load_fixtures() -> list[dict]:
