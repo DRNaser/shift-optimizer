@@ -704,7 +704,7 @@ class TestTenantBoundaryStress:
     @pytest.mark.asyncio
     async def test_null_tenant_id_blocked(self, mock_conn):
         """NULL tenant_id should be blocked for regular operations."""
-        mock_conn._cursor.set_results([None])
+        mock_conn._cursor.set_results([])  # RLS blocks NULL tenant_id
 
         with mock_conn.cursor() as cur:
             cur.execute(

@@ -396,19 +396,21 @@ class NotificationResult:
 
 @dataclass
 class JobStatusResponse:
-    """Response for job status query."""
+    """Response for job status query.
+
+    Note: pending_count is computed from other fields, not stored.
+    """
     job_id: UUID
     status: JobStatus
     total_count: int
     sent_count: int
     delivered_count: int
     failed_count: int
-    pending_count: int
     completion_rate: float
-    started_at: Optional[datetime]
-    completed_at: Optional[datetime]
+    started_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
 
     @property
     def pending_count(self) -> int:
-        """Calculate pending count."""
+        """Calculate pending count from other fields."""
         return self.total_count - self.sent_count - self.delivered_count - self.failed_count
