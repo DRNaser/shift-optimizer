@@ -2,17 +2,12 @@
 # Gitleaks Ignore File
 # =============================================================================
 # This file excludes known false positives from secret scanning.
-# Format: file:line:secret_pattern OR file:secret_pattern OR just secret_pattern
+# Format: Finding fingerprints (commit:file:rule:line)
+#
+# Note: Previous entries for 64-zero placeholders have been removed
+# because the source strings were replaced with non-triggering values.
 #
 # Documentation: https://github.com/gitleaks/gitleaks#gitleaksignore
 # =============================================================================
 
-# False positive: Placeholder hash for inactive migration tenant
-# The 64-zero string is an INVALID placeholder that cannot authenticate.
-# File: backend_py/db/migrations/006_multi_tenant.sql line 45
-# Context: Default tenant for data migration (is_active=FALSE, cannot auth)
-backend_py/db/migrations/006_multi_tenant.sql:0000000000000000000000000000000000000000000000000000000000000000
-
-# Test fixture: Invalid signature used for negative testing
-# File: backend_dotnet/Solvereign.Notify.Tests/WebhookSignatureTests.cs
-backend_dotnet/Solvereign.Notify.Tests/WebhookSignatureTests.cs:sha256=0000000000000000000000000000000000000000000000000000000000000000
+# No active exclusions - all previous false positives have been fixed at source

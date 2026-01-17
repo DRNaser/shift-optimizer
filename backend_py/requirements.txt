@@ -53,6 +53,7 @@ highspy==1.12.0
 # -----------------------------------------------------------------------------
 # Utilities
 # -----------------------------------------------------------------------------
+redis>=4.6.0                  # Queue metrics (mocked in tests)
 zstandard>=0.22.0             # Snapshot compression
 blake3>=0.4.0                 # Fast hashing
 
