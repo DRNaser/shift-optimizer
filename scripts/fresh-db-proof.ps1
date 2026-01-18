@@ -7,7 +7,7 @@
 # What it does:
 #   1. Destroys all Docker volumes (truly fresh start)
 #   2. Starts postgres + api containers
-#   3. Runs all migrations in order
+#   3. Runs all migrations in order (with SHA256 checksum tracking)
 #   4. Optionally seeds test data
 #   5. Runs health check + smoke test
 #
@@ -16,10 +16,25 @@
 #   .\scripts\fresh-db-proof.ps1 -SkipSeed    # Skip seed step
 #   .\scripts\fresh-db-proof.ps1 -Repeat 2    # Run proof 2x (determinism check)
 #   .\scripts\fresh-db-proof.ps1 -KeepRunning # Don't tear down after
+#   .\scripts\fresh-db-proof.ps1 -RerunProof  # Idempotency proof (NO-OP if checksums match)
+#   .\scripts\fresh-db-proof.ps1 -RerunProof -BackfillChecksums  # Backfill NULL checksums
+#
+# Checksum-based Idempotency (-RerunProof):
+#   - Each migration's SHA256 checksum is stored when applied
+#   - On RerunProof: migrations with matching checksums are SKIPPED (true NO-OP)
+#   - If checksum MISMATCH: FAIL CLOSED (exit 1)
+#   - If checksum NULL (legacy): FAIL CLOSED unless -BackfillChecksums provided
+#   - Expected: Greenfield = applied=N skipped=0, RerunProof = applied=0 skipped=N
+#
+# Upgrade path (existing DB with legacy migrations):
+#   1. First run: .\scripts\fresh-db-proof.ps1 -RerunProof -BackfillChecksums
+#      - This backfills checksums for all legacy migrations
+#   2. Subsequent runs: .\scripts\fresh-db-proof.ps1 -RerunProof
+#      - Now works as expected (all checksums exist)
 #
 # Exit codes:
 #   0 = PASS (migrations work from scratch)
-#   1 = FAIL (broken migrations or seed)
+#   1 = FAIL (broken migrations, seed, or checksum mismatch)
 #
 # COMPOSE FILE: docker-compose.pilot.yml (Single Source of Truth for local dev)
 #
@@ -30,13 +45,18 @@ param(
     [switch]$SkipSeed,
     [switch]$KeepRunning,
     [int]$Repeat = 1,
-    [switch]$Verbose
+    [switch]$Verbose,
+    [switch]$RerunProof,       # Skip destroy phase, re-run migrations on existing DB (idempotency test)
+    [switch]$BackfillChecksums # Explicitly backfill NULL checksums on legacy migrations (required for upgrade)
 )
 
 $ErrorActionPreference = "Stop"
 $script:exitCode = 0
 $script:startTime = Get-Date
 $script:results = @{}
+$script:lastApplied = 0
+$script:lastSkipped = 0
+$script:legacyMigrationsFound = 0
 
 # Resolve repo root
 $repoRoot = Split-Path -Parent $PSScriptRoot
@@ -111,6 +131,56 @@ function Get-MigrationFiles {
     return $migrations
 }
 
+function Get-FileChecksum {
+    param([string]$FilePath)
+    $hash = Get-FileHash -Path $FilePath -Algorithm SHA256
+    return $hash.Hash.ToLower()
+}
+
+function Get-MigrationVersion {
+    param([string]$FileName)
+    # Extract version: "000_initial.sql" -> "000", "025a_rls.sql" -> "025a"
+    if ($FileName -match '^(\d+[a-z]?)_') {
+        return $matches[1]
+    }
+    return $null
+}
+
+function Get-MigrationChecksums {
+    param([string]$Container, [string]$User, [string]$Database)
+
+    # Query checksums by file_name (1:1 mapping with migration files)
+    $query = "COPY (SELECT file_name || '|' || checksum FROM schema_migrations WHERE file_name IS NOT NULL AND checksum IS NOT NULL) TO STDOUT;"
+    $result = docker exec $Container psql -U $User -d $Database -t -A -c "$query" 2>&1 | Out-String
+
+    $checksums = @{}
+    if ($result) {
+        $result.Trim() -split "`n" | Where-Object { $_.Trim() -and $_ -match '\|' } | ForEach-Object {
+            $line = $_.Trim()
+            $pipePos = $line.IndexOf('|')
+            if ($pipePos -gt 0) {
+                $fileName = $line.Substring(0, $pipePos)
+                $checksum = $line.Substring($pipePos + 1)
+                $checksums[$fileName] = $checksum
+            }
+        }
+    }
+    return $checksums
+}
+
+function Get-AppliedMigrations {
+    param([string]$Container, [string]$User, [string]$Database)
+
+    $query = "SELECT version FROM schema_migrations;"
+    $result = docker exec $Container psql -U $User -d $Database -t -A -c "$query" 2>&1
+
+    $versions = @()
+    if ($LASTEXITCODE -eq 0 -and $result) {
+        $versions = $result -split "`n" | Where-Object { $_.Trim() } | ForEach-Object { $_.Trim() }
+    }
+    return $versions
+}
+
 # =============================================================================
 # GATE HEADER
 # =============================================================================
@@ -145,22 +215,28 @@ for ($run = 1; $run -le $Repeat; $run++) {
     }
 
     # =========================================================================
-    # PHASE 1: Destroy Everything
+    # PHASE 1: Destroy Everything (skipped if -RerunProof)
     # =========================================================================
-    Write-Header "PHASE 1: Destroy All State"
-    Write-Info "Stopping containers and removing volumes..."
+    if ($RerunProof) {
+        Write-Header "PHASE 1: SKIPPED (RerunProof mode)"
+        Write-Info "Keeping existing database state for idempotency test..."
+        $script:results["destroy_$run"] = "SKIP"
+    } else {
+        Write-Header "PHASE 1: Destroy All State"
+        Write-Info "Stopping containers and removing volumes..."
 
-    try {
-        # Stop and remove containers + volumes
-        docker compose -f $composeFile down -v --remove-orphans 2>&1 | Out-Null
+        try {
+            # Stop and remove containers + volumes
+            docker compose -f $composeFile down -v --remove-orphans 2>&1 | Out-Null
 
-        # Extra cleanup: remove named volumes explicitly
-        docker volume rm solvereign-pilot-db-data 2>&1 | Out-Null
+            # Extra cleanup: remove named volumes explicitly
+            docker volume rm solvereign-pilot-db-data 2>&1 | Out-Null
 
-        Write-Pass "All containers and volumes destroyed" -phase "destroy_$run"
-    } catch {
-        Write-Info "Cleanup warning (may be expected): $_"
-        $script:results["destroy_$run"] = "PASS"
+            Write-Pass "All containers and volumes destroyed" -phase "destroy_$run"
+        } catch {
+            Write-Info "Cleanup warning (may be expected): $_"
+            $script:results["destroy_$run"] = "PASS"
+        }
     }
 
     # =========================================================================
@@ -204,27 +280,88 @@ for ($run = 1; $run -le $Repeat; $run++) {
     }
 
     # =========================================================================
-    # PHASE 3: Run Migrations
+    # PHASE 3: Run Migrations (with checksum-based skip for RerunProof)
     # =========================================================================
     Write-Header "PHASE 3: Run Migrations"
-    Write-Info "Applying $migrationCount migrations..."
+    Write-Info "Checking $migrationCount migrations..."
 
     $migrationsFailed = $false
     $migrationsApplied = 0
+    $migrationsSkipped = 0
+    $migrationsLegacyUpgraded = 0
+
+    # Get existing checksums from DB (only meaningful for RerunProof)
+    $existingChecksums = @{}
+    $appliedVersions = @()
+    if ($RerunProof) {
+        Write-Info "RerunProof mode: Loading existing migration state from database..."
+        $existingChecksums = Get-MigrationChecksums -Container $dbContainer -User $dbUser -Database $dbName
+        $appliedVersions = Get-AppliedMigrations -Container $dbContainer -User $dbUser -Database $dbName
+        Write-Info "Found $($existingChecksums.Count) migrations with checksums, $($appliedVersions.Count) total applied"
+    }
+
+    # Collect all checksums for post-migration storage
+    $pendingChecksums = @{}
 
     foreach ($migration in $migrations) {
         $migName = $migration.Name
+        $fileChecksum = Get-FileChecksum -FilePath $migration.FullName
+        $pendingChecksums[$migName] = $fileChecksum
 
+        # Check if this migration should be skipped (RerunProof mode)
+        if ($RerunProof) {
+            # Case 1: File exists with checksum - compare checksums
+            if ($existingChecksums.ContainsKey($migName)) {
+                $dbChecksum = $existingChecksums[$migName]
+
+                if ($dbChecksum -eq $fileChecksum) {
+                    # Checksum matches - SKIP (true NO-OP)
+                    $migrationsSkipped++
+                    if ($Verbose) { Write-Info "  SKIP (checksum match): $migName" }
+                    continue
+                } else {
+                    # Checksum MISMATCH - FAIL CLOSED
+                    Write-Fail "CHECKSUM MISMATCH: $migName"
+                    Write-Host "  File checksum: $fileChecksum" -ForegroundColor Red
+                    Write-Host "  DB checksum:   $dbChecksum" -ForegroundColor Red
+                    Write-Host "  Migration file has changed since it was applied!" -ForegroundColor Red
+                    Write-Host "  This indicates a potentially breaking change to an already-applied migration." -ForegroundColor Red
+                    $migrationsFailed = $true
+                    break
+                }
+            }
+            # Case 2: Legacy migration (applied but no checksum) - FAIL CLOSED unless -BackfillChecksums
+            $version = Get-MigrationVersion -FileName $migName
+            if ($version -and ($appliedVersions -contains $version -or $appliedVersions -contains "file:$migName")) {
+                $script:legacyMigrationsFound++
+
+                if ($BackfillChecksums) {
+                    # Explicit backfill mode: compute and store checksum
+                    $insertSql = "INSERT INTO schema_migrations (version, description, checksum, file_name, applied_at) VALUES ('file:$migName', 'Checksum backfill for $migName', '$fileChecksum', '$migName', NOW()) ON CONFLICT (version) DO UPDATE SET checksum = EXCLUDED.checksum, file_name = EXCLUDED.file_name;"
+                    docker exec $dbContainer psql -U $dbUser -d $dbName -c "$insertSql" 2>&1 | Out-Null
+                    $migrationsSkipped++
+                    $migrationsLegacyUpgraded++
+                    if ($Verbose) { Write-Info "  BACKFILL: $migName (checksum now tracked)" }
+                } else {
+                    # FAIL CLOSED: NULL checksum without explicit backfill flag
+                    Write-Fail "NULL CHECKSUM: $migName"
+                    Write-Host "  This migration is applied but has no checksum (legacy migration)." -ForegroundColor Red
+                    Write-Host "  Use -BackfillChecksums to explicitly compute and store checksums." -ForegroundColor Yellow
+                    Write-Host "" -ForegroundColor Red
+                    Write-Host "  Example: .\scripts\fresh-db-proof.ps1 -RerunProof -BackfillChecksums" -ForegroundColor Yellow
+                    $migrationsFailed = $true
+                    break
+                }
+                continue
+            }
+            # Case 3: New migration - apply it
+        }
+
+        # Execute migration using file-based approach (handles special chars)
         try {
-            # Copy migration to container and run it
-            $sqlPath = $migration.FullName
             $containerPath = "/tmp/$migName"
-
-            # Use docker exec with psql
-            $sqlContent = Get-Content $sqlPath -Raw
-
-            # Execute via docker exec
-            $result = docker exec $dbContainer psql -U $dbUser -d $dbName -c "$sqlContent" 2>&1 | Out-String
+            docker cp $migration.FullName "${dbContainer}:${containerPath}" 2>&1 | Out-Null
+            $result = docker exec $dbContainer psql -U $dbUser -d $dbName -f $containerPath 2>&1 | Out-String
 
             if ($LASTEXITCODE -ne 0) {
                 Write-Fail "Migration failed: $migName"
@@ -233,8 +370,11 @@ for ($run = 1; $run -le $Repeat; $run++) {
                 break
             }
 
+            # Cleanup temp file
+            docker exec $dbContainer rm -f $containerPath 2>&1 | Out-Null
+
             $migrationsApplied++
-            if ($Verbose) { Write-Info "  Applied: $migName" }
+            if ($Verbose) { Write-Info "  APPLY: $migName (checksum: $($fileChecksum.Substring(0,8))...)" }
 
         } catch {
             Write-Fail "Migration error on $migName : $_"
@@ -243,11 +383,30 @@ for ($run = 1; $run -le $Repeat; $run++) {
         }
     }
 
-    if ($migrationsFailed) {
-        Write-Fail "Migrations failed ($migrationsApplied/$migrationCount applied)" -phase "migrations_$run"
-    } else {
-        Write-Pass "All $migrationsApplied migrations applied" -phase "migrations_$run"
+    # After all migrations, store checksums for tracking (file_name column now exists from 059)
+    if (-not $migrationsFailed -and $migrationsApplied -gt 0) {
+        Write-Info "Storing checksums for $($pendingChecksums.Count) migrations..."
+        foreach ($entry in $pendingChecksums.GetEnumerator()) {
+            $migName = $entry.Key
+            $hash = $entry.Value
+            $insertSql = "INSERT INTO schema_migrations (version, description, checksum, file_name, applied_at) VALUES ('file:$migName', 'Checksum tracking for $migName', '$hash', '$migName', NOW()) ON CONFLICT (version) DO UPDATE SET checksum = EXCLUDED.checksum, file_name = EXCLUDED.file_name;"
+            docker exec $dbContainer psql -U $dbUser -d $dbName -c "$insertSql" 2>&1 | Out-Null
+        }
     }
+
+    # Phase result with detailed counts
+    if ($migrationsFailed) {
+        Write-Fail "Migrations failed ($migrationsApplied applied, $migrationsSkipped skipped)" -phase "migrations_$run"
+    } else {
+        Write-Pass "Migrations: $migrationsApplied applied, $migrationsSkipped skipped" -phase "migrations_$run"
+        if ($migrationsLegacyUpgraded -gt 0) {
+            Write-Info "Legacy migrations upgraded to checksum tracking: $migrationsLegacyUpgraded"
+        }
+    }
+
+    # Store counts for final verdict
+    $script:lastApplied = $migrationsApplied
+    $script:lastSkipped = $migrationsSkipped
 
     # =========================================================================
     # PHASE 4: Seed Data (Optional)
@@ -353,9 +512,32 @@ $skipped = ($script:results.Values | Where-Object { $_ -eq "SKIP" }).Count
 Write-Host ""
 Write-Host " Results: $passed PASS, $failed FAIL, $skipped SKIP" -ForegroundColor White
 Write-Host " Duration: $duration seconds" -ForegroundColor White
-Write-Host " Migrations: $migrationCount" -ForegroundColor White
+Write-Host " N (migration files): $migrationCount" -ForegroundColor White
+Write-Host "   Applied: $($script:lastApplied)" -ForegroundColor $(if ($script:lastApplied -gt 0) { "Cyan" } else { "Gray" })
+Write-Host "   Skipped: $($script:lastSkipped)" -ForegroundColor $(if ($script:lastSkipped -gt 0) { "Green" } else { "Gray" })
+if ($script:legacyMigrationsFound -gt 0) {
+    Write-Host "   Legacy (NULL checksum): $($script:legacyMigrationsFound)" -ForegroundColor Yellow
+}
 Write-Host " Runs: $Repeat" -ForegroundColor White
 Write-Host ""
+
+# Greenfield verdict (not RerunProof mode)
+if (-not $RerunProof -and $script:exitCode -eq 0) {
+    if ($script:lastApplied -eq $migrationCount -and $script:lastSkipped -eq 0) {
+        Write-Host " GREENFIELD: PROVEN (applied=N where N=$migrationCount, skipped=0)" -ForegroundColor Green
+    }
+    Write-Host ""
+}
+
+# Idempotency verdict for RerunProof mode
+if ($RerunProof -and $script:exitCode -eq 0) {
+    if ($script:lastApplied -eq 0 -and $script:lastSkipped -eq $migrationCount) {
+        Write-Host " IDEMPOTENCY: PROVEN (applied=0, skipped=N where N=$migrationCount)" -ForegroundColor Green
+    } elseif ($script:lastApplied -gt 0) {
+        Write-Host " IDEMPOTENCY: PARTIAL ($($script:lastApplied) newly applied, N=$migrationCount)" -ForegroundColor Yellow
+    }
+    Write-Host ""
+}
 
 if ($script:exitCode -eq 0) {
     Write-Host " VERDICT: PASS - Fresh DB Proof Successful" -ForegroundColor Green

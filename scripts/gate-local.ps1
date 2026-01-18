@@ -9,8 +9,13 @@
 #   2. Frontend: npm ci + tsc --noEmit + next build
 #   3. Git: clean working directory (optional)
 #
+# AUTH_MODE:
+#   Default: AUTH_MODE=rbac (internal RBAC, Wien Pilot default)
+#   Entra tests are SKIPPED unless AUTH_MODE=entra
+#   This allows gate-local to pass without Entra dependency.
+#
 # Usage:
-#   .\scripts\gate-local.ps1              # Full gate (default)
+#   .\scripts\gate-local.ps1              # Full gate (default, AUTH_MODE=rbac)
 #   .\scripts\gate-local.ps1 -SkipFrontend  # Backend only (faster)
 #   .\scripts\gate-local.ps1 -Verbose       # Show all output
 #
@@ -118,6 +123,11 @@ if ($SkipBackend) {
     Write-Skip "Backend tests skipped (-SkipBackend)" -phase "backend_tests"
 } else {
     Write-Info "Running pytest on critical suites..."
+
+    # Set AUTH_MODE=rbac to skip Entra tests (Wien Pilot default)
+    # Entra/OIDC is OUT OF SCOPE for Wien Pilot
+    $env:AUTH_MODE = "rbac"
+    Write-Info "AUTH_MODE=rbac (Entra tests will be skipped)"
 
     try {
         Push-Location backend_py
