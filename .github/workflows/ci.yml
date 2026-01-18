@@ -9,6 +9,12 @@ on:
   pull_request:
     branches: [main]
 
+# Permissions for artifact upload and codecov
+permissions:
+  contents: read
+  pull-requests: read
+  actions: read
+
 jobs:
   # Backend Tests
   backend-test:
