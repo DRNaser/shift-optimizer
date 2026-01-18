@@ -200,6 +200,9 @@ CREATE INDEX IF NOT EXISTS idx_outbox_job_status
 -- STEP 8: ATOMIC CLAIM FUNCTION (Concurrency Safe)
 -- =============================================================================
 
+-- Drop old 2-parameter version from 034 to avoid function overload ambiguity
+DROP FUNCTION IF EXISTS notify.claim_outbox_batch(INTEGER, VARCHAR);
+
 CREATE OR REPLACE FUNCTION notify.claim_outbox_batch(
     p_batch_size INTEGER DEFAULT 10,
     p_worker_id VARCHAR(100) DEFAULT NULL,
@@ -903,7 +906,7 @@ GRANT USAGE ON SEQUENCE notify.webhook_events_id_seq TO solvereign_api;
 GRANT USAGE ON SEQUENCE notify.rate_limit_buckets_id_seq TO solvereign_api;
 
 -- Grant function execution
-GRANT EXECUTE ON FUNCTION notify.claim_outbox_batch TO solvereign_api;
+GRANT EXECUTE ON FUNCTION notify.claim_outbox_batch(INTEGER, VARCHAR, INTEGER) TO solvereign_api;
 GRANT EXECUTE ON FUNCTION notify.release_stuck_sending TO solvereign_api;
 GRANT EXECUTE ON FUNCTION notify.mark_outbox_sent TO solvereign_api;
 GRANT EXECUTE ON FUNCTION notify.mark_outbox_retry TO solvereign_api;
@@ -921,7 +924,7 @@ GRANT SELECT, INSERT, UPDATE ON notify.rate_limit_buckets TO solvereign_platform
 GRANT USAGE ON SEQUENCE notify.webhook_events_id_seq TO solvereign_platform;
 GRANT USAGE ON SEQUENCE notify.rate_limit_buckets_id_seq TO solvereign_platform;
 
-GRANT EXECUTE ON FUNCTION notify.claim_outbox_batch TO solvereign_platform;
+GRANT EXECUTE ON FUNCTION notify.claim_outbox_batch(INTEGER, VARCHAR, INTEGER) TO solvereign_platform;
 GRANT EXECUTE ON FUNCTION notify.release_stuck_sending TO solvereign_platform;
 GRANT EXECUTE ON FUNCTION notify.mark_outbox_sent TO solvereign_platform;
 GRANT EXECUTE ON FUNCTION notify.mark_outbox_retry TO solvereign_platform;

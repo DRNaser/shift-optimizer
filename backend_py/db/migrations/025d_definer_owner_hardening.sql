@@ -76,7 +76,8 @@ ALTER FUNCTION set_tenant_context(INTEGER) OWNER TO solvereign_definer;
 ALTER FUNCTION set_super_admin_context(BOOLEAN) OWNER TO solvereign_definer;
 ALTER FUNCTION verify_rls_boundary() OWNER TO solvereign_definer;
 
-RAISE NOTICE '[025d] Transferred ownership of security functions to solvereign_definer';
+-- GREENFIELD FIX: Wrap RAISE in DO block
+DO $$ BEGIN RAISE NOTICE '[025d] Transferred ownership of security functions to solvereign_definer'; END $$;
 
 -- ============================================================================
 -- 4. VERIFY NO BYPASSRLS ON ANY API/PLATFORM ROLES

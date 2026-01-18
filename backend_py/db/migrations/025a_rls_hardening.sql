@@ -219,7 +219,8 @@ BEGIN
 END;
 $$;
 
-COMMENT ON FUNCTION set_tenant_context IS
+-- GREENFIELD FIX: Specify argument list for overloaded function
+COMMENT ON FUNCTION set_tenant_context(INTEGER) IS
 'Sets tenant context for RLS policies. Clears super_admin flag.';
 
 REVOKE ALL ON FUNCTION set_tenant_context(INTEGER) FROM PUBLIC;

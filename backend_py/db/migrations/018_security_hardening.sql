@@ -18,10 +18,10 @@ ON CONFLICT (version) DO NOTHING;
 -- A) SIGNATURE CLEANUP OPTIMIZATION
 -- =============================================================================
 
--- Add partial index for faster cleanup queries
+-- Add index for faster cleanup queries (non-partial, NOW() is not IMMUTABLE)
+-- GREENFIELD FIX: Removed partial index predicate using NOW()
 CREATE INDEX IF NOT EXISTS idx_core_used_signatures_cleanup
-ON core.used_signatures(expires_at)
-WHERE expires_at < NOW() + INTERVAL '1 hour';
+ON core.used_signatures(expires_at);
 
 -- Batch cleanup function (more efficient for large tables)
 CREATE OR REPLACE FUNCTION core.cleanup_expired_signatures_batch(

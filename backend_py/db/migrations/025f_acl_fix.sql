@@ -72,7 +72,7 @@ BEGIN
     FROM pg_proc p
     JOIN pg_namespace n ON p.pronamespace = n.oid
     WHERE n.nspname IN ('public', 'core')
-      AND has_function_privilege('PUBLIC', p.oid, 'EXECUTE') = true;
+      AND p.proacl IS NOT NULL AND array_to_string(p.proacl, ',') ~ '(^|,)=X/';  -- PUBLIC EXECUTE grant pattern
 
     -- Tables with PUBLIC SELECT
     RETURN QUERY
@@ -94,7 +94,7 @@ BEGIN
     JOIN pg_namespace n ON c.relnamespace = n.oid
     WHERE n.nspname IN ('public', 'core')
       AND c.relkind = 'r'
-      AND has_table_privilege('PUBLIC', c.oid, 'SELECT') = true;
+      AND c.relacl IS NOT NULL AND array_to_string(c.relacl, ',') ~ '(^|,)=r/';  -- PUBLIC SELECT grant pattern
 END;
 $$;
 
@@ -122,7 +122,7 @@ BEGIN
         FROM pg_proc p
         JOIN pg_namespace n ON p.pronamespace = n.oid
         WHERE n.nspname IN ('public', 'core')
-          AND has_function_privilege('PUBLIC', p.oid, 'EXECUTE') = true
+          AND p.proacl IS NOT NULL AND array_to_string(p.proacl, ',') ~ '(^|,)=X/'  -- PUBLIC EXECUTE
           -- Exclude extension patterns
           AND p.proname NOT LIKE 'pg_%'
           AND p.proname NOT LIKE 'pgp_%'
@@ -158,7 +158,7 @@ BEGIN
         JOIN pg_namespace n ON c.relnamespace = n.oid
         WHERE n.nspname IN ('public', 'core')
           AND c.relkind = 'r'
-          AND has_table_privilege('PUBLIC', c.oid, 'SELECT') = true
+          AND c.relacl IS NOT NULL AND array_to_string(c.relacl, ',') ~ '(^|,)=r/'  -- PUBLIC SELECT
           -- Exclude extension patterns
           AND c.relname NOT LIKE 'pg_%'
           AND c.relname NOT LIKE 'spatial_ref_sys%'
@@ -185,13 +185,16 @@ BEGIN
     RAISE NOTICE '[025f] Starting ACL fix (REVOKE PUBLIC grants on user-defined objects)...';
 
     -- Fix functions
+    -- GREENFIELD FIX: Use ACL array check instead of has_function_privilege('PUBLIC')
+    -- PUBLIC grants are represented as '=X/' prefix (no grantee name before '=')
     FOR r IN
         SELECT n.nspname, p.proname, p.oid,
                pg_get_function_identity_arguments(p.oid) AS args
         FROM pg_proc p
         JOIN pg_namespace n ON p.pronamespace = n.oid
         WHERE n.nspname IN ('public', 'core')
-          AND has_function_privilege('PUBLIC', p.oid, 'EXECUTE') = true
+          AND p.proacl IS NOT NULL
+          AND array_to_string(p.proacl, ',') ~ '(^|,)=X/'  -- PUBLIC exec grant pattern
           -- Exclude extension patterns
           AND p.proname NOT LIKE 'pg_%'
           AND p.proname NOT LIKE 'pgp_%'
@@ -221,13 +224,15 @@ BEGIN
     END LOOP;
 
     -- Fix tables
+    -- GREENFIELD FIX: Use ACL array check instead of has_table_privilege('PUBLIC')
     FOR r IN
         SELECT n.nspname, c.relname
         FROM pg_class c
         JOIN pg_namespace n ON c.relnamespace = n.oid
         WHERE n.nspname IN ('public', 'core')
           AND c.relkind = 'r'
-          AND has_table_privilege('PUBLIC', c.oid, 'SELECT') = true
+          AND c.relacl IS NOT NULL
+          AND array_to_string(c.relacl, ',') ~ '(^|,)=[arwdDxtXUCTc]*/'  -- PUBLIC grant pattern
           -- Exclude extension patterns
           AND c.relname NOT LIKE 'pg_%'
           AND c.relname NOT LIKE 'spatial_ref_sys%'
@@ -271,7 +276,7 @@ BEGIN
         FROM pg_proc p
         JOIN pg_namespace n ON p.pronamespace = n.oid
         WHERE n.nspname IN ('public', 'core')
-          AND has_function_privilege('PUBLIC', p.oid, 'EXECUTE') = true
+          AND p.proacl IS NOT NULL AND array_to_string(p.proacl, ',') ~ '(^|,)=X/'  -- PUBLIC EXECUTE
           AND p.proname NOT LIKE 'pg_%'
           AND p.proname NOT LIKE 'pgp_%'
           AND p.proname NOT LIKE 'armor%'
@@ -297,7 +302,7 @@ BEGIN
         JOIN pg_namespace n ON c.relnamespace = n.oid
         WHERE n.nspname IN ('public', 'core')
           AND c.relkind = 'r'
-          AND has_table_privilege('PUBLIC', c.oid, 'SELECT') = true
+          AND c.relacl IS NOT NULL AND array_to_string(c.relacl, ',') ~ '(^|,)=r/'  -- PUBLIC SELECT
           AND c.relname NOT LIKE 'pg_%'
           AND c.relname NOT LIKE 'spatial_ref_sys%'
           AND c.relname NOT LIKE 'geometry_columns%'

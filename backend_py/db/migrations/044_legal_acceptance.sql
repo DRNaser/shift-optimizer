@@ -39,7 +39,7 @@ CREATE INDEX idx_legal_documents_effective
 -- Track when users accepted which document versions
 CREATE TABLE IF NOT EXISTS auth.legal_acceptances (
     id SERIAL PRIMARY KEY,
-    user_id INTEGER NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+    user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
     document_id INTEGER NOT NULL REFERENCES auth.legal_documents(id),
     accepted_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     ip_address INET,  -- For audit purposes
@@ -60,9 +60,9 @@ CREATE INDEX idx_legal_acceptances_document ON auth.legal_acceptances(document_i
 -- Track tenant-level acceptance (DPA, Master Agreement)
 CREATE TABLE IF NOT EXISTS auth.tenant_legal_acceptances (
     id SERIAL PRIMARY KEY,
-    tenant_id INTEGER NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    tenant_id UUID NOT NULL REFERENCES core.tenants(id) ON DELETE CASCADE,
     document_id INTEGER NOT NULL REFERENCES auth.legal_documents(id),
-    accepted_by_user_id INTEGER NOT NULL REFERENCES auth.users(id),
+    accepted_by_user_id UUID NOT NULL REFERENCES auth.users(id),
     accepted_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     ip_address INET,
     notes TEXT,  -- e.g., "Signed by CEO"
@@ -92,7 +92,7 @@ $$ LANGUAGE SQL STABLE;
 
 -- Check if user has accepted current version
 CREATE OR REPLACE FUNCTION auth.has_accepted_current(
-    p_user_id INTEGER,
+    p_user_id UUID,
     p_document_type TEXT
 ) RETURNS BOOLEAN AS $$
 DECLARE
@@ -121,7 +121,7 @@ $$ LANGUAGE plpgsql STABLE;
 
 -- Get all pending acceptances for a user
 CREATE OR REPLACE FUNCTION auth.get_pending_acceptances(
-    p_user_id INTEGER
+    p_user_id UUID
 ) RETURNS TABLE (
     document_type TEXT,
     version TEXT,
@@ -153,7 +153,7 @@ $$ LANGUAGE SQL STABLE;
 
 -- Record user acceptance
 CREATE OR REPLACE FUNCTION auth.record_acceptance(
-    p_user_id INTEGER,
+    p_user_id UUID,
     p_document_type TEXT,
     p_ip_address INET DEFAULT NULL,
     p_user_agent TEXT DEFAULT NULL
@@ -225,7 +225,7 @@ CREATE POLICY legal_documents_all ON auth.legal_documents
 CREATE POLICY legal_acceptances_select ON auth.legal_acceptances
     FOR SELECT TO solvereign_api
     USING (
-        user_id = NULLIF(current_setting('app.current_user_id', true), '')::INTEGER
+        user_id = NULLIF(current_setting('app.current_user_id', true), '')::UUID
     );
 
 -- Platform can see all acceptances
@@ -238,14 +238,14 @@ CREATE POLICY legal_acceptances_platform ON auth.legal_acceptances
 CREATE POLICY legal_acceptances_insert ON auth.legal_acceptances
     FOR INSERT TO solvereign_api
     WITH CHECK (
-        user_id = NULLIF(current_setting('app.current_user_id', true), '')::INTEGER
+        user_id = NULLIF(current_setting('app.current_user_id', true), '')::UUID
     );
 
 -- Tenant acceptances follow tenant isolation
 CREATE POLICY tenant_legal_acceptances_select ON auth.tenant_legal_acceptances
     FOR SELECT TO solvereign_api
     USING (
-        tenant_id = NULLIF(current_setting('app.current_tenant_id', true), '')::INTEGER
+        tenant_id = NULLIF(current_setting('app.current_tenant_id', true), '')::UUID
     );
 
 CREATE POLICY tenant_legal_acceptances_platform ON auth.tenant_legal_acceptances

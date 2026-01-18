@@ -76,6 +76,9 @@ END $$;
 -- FIX 3: IMPROVED publish_plan_snapshot() WITH LOCKING + FREEZE CHECK
 -- =============================================================================
 
+-- Drop old 6-parameter version from 027 to avoid function overload ambiguity
+DROP FUNCTION IF EXISTS publish_plan_snapshot(INTEGER, VARCHAR, TEXT, JSONB, JSONB, JSONB);
+
 CREATE OR REPLACE FUNCTION publish_plan_snapshot(
     p_plan_version_id INTEGER,
     p_published_by VARCHAR,
@@ -292,7 +295,7 @@ EXCEPTION
 END;
 $$ LANGUAGE plpgsql;
 
-COMMENT ON FUNCTION publish_plan_snapshot IS
+COMMENT ON FUNCTION publish_plan_snapshot(INTEGER, VARCHAR, TEXT, JSONB, JSONB, JSONB, BOOLEAN, TEXT) IS
 'V3.7.2: Race-safe snapshot creation with freeze window enforcement.
 - Locks parent plan_versions row to prevent version race
 - Enforces freeze window (requires force flag + reason to override)

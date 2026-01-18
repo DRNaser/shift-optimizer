@@ -49,11 +49,11 @@ CREATE TABLE IF NOT EXISTS ops.whatsapp_identities (
     wa_phone_hash CHAR(64) NOT NULL,           -- SHA-256 of E.164 phone number
 
     -- Binding to internal user
-    tenant_id INTEGER NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    tenant_id UUID NOT NULL REFERENCES core.tenants(id) ON DELETE CASCADE,
     user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
 
     -- Optional site override (schema-ready for Phase 2)
-    site_id INTEGER NULL REFERENCES sites(id) ON DELETE SET NULL,
+    site_id UUID NULL REFERENCES core.sites(id) ON DELETE SET NULL,
 
     -- Status tracking
     status VARCHAR(20) NOT NULL DEFAULT 'ACTIVE'
@@ -94,7 +94,7 @@ CREATE TABLE IF NOT EXISTS ops.pairing_invites (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 
     -- Target binding
-    tenant_id INTEGER NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    tenant_id UUID NOT NULL REFERENCES core.tenants(id) ON DELETE CASCADE,
     user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
 
     -- OTP (stored as hash, NEVER plain)
@@ -141,8 +141,8 @@ CREATE TABLE IF NOT EXISTS ops.threads (
     thread_id CHAR(64) NOT NULL UNIQUE,        -- SHA-256(sv:tenant_id:site_id:whatsapp:wa_user_id)
 
     -- Binding
-    tenant_id INTEGER NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
-    site_id INTEGER NULL REFERENCES sites(id) ON DELETE SET NULL,
+    tenant_id UUID NOT NULL REFERENCES core.tenants(id) ON DELETE CASCADE,
+    site_id UUID NULL REFERENCES core.sites(id) ON DELETE SET NULL,
     identity_id UUID NOT NULL REFERENCES ops.whatsapp_identities(id) ON DELETE CASCADE,
 
     -- Thread state (LangGraph checkpoint columns)
@@ -186,7 +186,7 @@ CREATE TABLE IF NOT EXISTS ops.events (
     event_id UUID NOT NULL DEFAULT gen_random_uuid(),
 
     -- Context
-    tenant_id INTEGER NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    tenant_id UUID NOT NULL REFERENCES core.tenants(id) ON DELETE CASCADE,
     thread_id CHAR(64) NOT NULL,
 
     -- Event type
@@ -254,7 +254,7 @@ CREATE TABLE IF NOT EXISTS ops.memories (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 
     -- Context
-    tenant_id INTEGER NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    tenant_id UUID NOT NULL REFERENCES core.tenants(id) ON DELETE CASCADE,
     thread_id CHAR(64) NOT NULL,
 
     -- Memory content
@@ -299,8 +299,8 @@ CREATE TABLE IF NOT EXISTS ops.playbooks (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 
     -- Scoping
-    tenant_id INTEGER NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
-    site_id INTEGER NULL REFERENCES sites(id) ON DELETE SET NULL,  -- NULL = all sites
+    tenant_id UUID NOT NULL REFERENCES core.tenants(id) ON DELETE CASCADE,
+    site_id UUID NULL REFERENCES core.sites(id) ON DELETE SET NULL,  -- NULL = all sites
 
     -- Identity
     slug VARCHAR(100) NOT NULL,
@@ -354,7 +354,7 @@ CREATE TABLE IF NOT EXISTS ops.drafts (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 
     -- Context
-    tenant_id INTEGER NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    tenant_id UUID NOT NULL REFERENCES core.tenants(id) ON DELETE CASCADE,
     thread_id CHAR(64) NOT NULL,
     identity_id UUID NOT NULL REFERENCES ops.whatsapp_identities(id) ON DELETE CASCADE,
 
@@ -405,8 +405,8 @@ CREATE TABLE IF NOT EXISTS ops.tickets (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 
     -- Scoping
-    tenant_id INTEGER NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
-    site_id INTEGER NULL REFERENCES sites(id) ON DELETE SET NULL,
+    tenant_id UUID NOT NULL REFERENCES core.tenants(id) ON DELETE CASCADE,
+    site_id UUID NULL REFERENCES core.sites(id) ON DELETE SET NULL,
 
     -- Ticket identity
     ticket_number SERIAL,                      -- Human-readable: OPS-{tenant}-{number}
@@ -474,7 +474,7 @@ CREATE TABLE IF NOT EXISTS ops.ticket_comments (
 
     -- Reference
     ticket_id UUID NOT NULL REFERENCES ops.tickets(id) ON DELETE CASCADE,
-    tenant_id INTEGER NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    tenant_id UUID NOT NULL REFERENCES core.tenants(id) ON DELETE CASCADE,
 
     -- Content
     comment_type VARCHAR(20) NOT NULL DEFAULT 'NOTE'
@@ -513,7 +513,7 @@ CREATE TABLE IF NOT EXISTS ops.broadcast_templates (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 
     -- Scoping
-    tenant_id INTEGER NULL REFERENCES tenants(id) ON DELETE CASCADE,  -- NULL = system
+    tenant_id UUID NULL REFERENCES core.tenants(id) ON DELETE CASCADE,  -- NULL = system
 
     -- Identity
     template_key VARCHAR(100) NOT NULL,
@@ -545,11 +545,13 @@ CREATE TABLE IF NOT EXISTS ops.broadcast_templates (
 
     -- Timestamps
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-
-    CONSTRAINT broadcast_templates_unique_key
-        UNIQUE (COALESCE(tenant_id, -1), template_key)
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+-- Unique constraint on template_key per tenant (with NULL handling)
+-- COALESCE not allowed in UNIQUE constraint, use unique index instead
+CREATE UNIQUE INDEX IF NOT EXISTS idx_broadcast_templates_unique_key
+    ON ops.broadcast_templates (COALESCE(tenant_id, -1), template_key);
 
 -- Indexes
 CREATE INDEX IF NOT EXISTS idx_broadcast_templates_tenant
@@ -568,7 +570,7 @@ CREATE TABLE IF NOT EXISTS ops.broadcast_subscriptions (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 
     -- Identity
-    tenant_id INTEGER NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    tenant_id UUID NOT NULL REFERENCES core.tenants(id) ON DELETE CASCADE,
     driver_id VARCHAR(255) NOT NULL,
     wa_user_id VARCHAR(64) NULL,  -- Optional: if driver has WhatsApp
 
@@ -611,8 +613,8 @@ CREATE INDEX IF NOT EXISTS idx_broadcast_subscriptions_active
 CREATE TABLE IF NOT EXISTS ops.personas (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 
-    tenant_id INTEGER NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
-    site_id INTEGER NULL REFERENCES sites(id) ON DELETE SET NULL,
+    tenant_id UUID NOT NULL REFERENCES core.tenants(id) ON DELETE CASCADE,
+    site_id UUID NULL REFERENCES core.sites(id) ON DELETE SET NULL,
 
     name VARCHAR(100) NOT NULL,
     system_prompt TEXT NOT NULL,
@@ -670,7 +672,7 @@ FOR ALL USING (
     OR (
         pg_has_role(session_user, 'solvereign_api', 'MEMBER')
         AND tenant_id = COALESCE(
-            NULLIF(current_setting('app.current_tenant_id', TRUE), '')::INTEGER,
+            NULLIF(current_setting('app.current_tenant_id', TRUE), '')::UUID,
             tenant_id
         )
     )
@@ -682,7 +684,7 @@ FOR ALL USING (
     OR (
         pg_has_role(session_user, 'solvereign_api', 'MEMBER')
         AND tenant_id = COALESCE(
-            NULLIF(current_setting('app.current_tenant_id', TRUE), '')::INTEGER,
+            NULLIF(current_setting('app.current_tenant_id', TRUE), '')::UUID,
             tenant_id
         )
     )
@@ -694,7 +696,7 @@ FOR ALL USING (
     OR (
         pg_has_role(session_user, 'solvereign_api', 'MEMBER')
         AND tenant_id = COALESCE(
-            NULLIF(current_setting('app.current_tenant_id', TRUE), '')::INTEGER,
+            NULLIF(current_setting('app.current_tenant_id', TRUE), '')::UUID,
             tenant_id
         )
     )
@@ -706,7 +708,7 @@ FOR ALL USING (
     OR (
         pg_has_role(session_user, 'solvereign_api', 'MEMBER')
         AND tenant_id = COALESCE(
-            NULLIF(current_setting('app.current_tenant_id', TRUE), '')::INTEGER,
+            NULLIF(current_setting('app.current_tenant_id', TRUE), '')::UUID,
             tenant_id
         )
     )
@@ -718,7 +720,7 @@ FOR ALL USING (
     OR (
         pg_has_role(session_user, 'solvereign_api', 'MEMBER')
         AND tenant_id = COALESCE(
-            NULLIF(current_setting('app.current_tenant_id', TRUE), '')::INTEGER,
+            NULLIF(current_setting('app.current_tenant_id', TRUE), '')::UUID,
             tenant_id
         )
     )
@@ -730,7 +732,7 @@ FOR ALL USING (
     OR (
         pg_has_role(session_user, 'solvereign_api', 'MEMBER')
         AND tenant_id = COALESCE(
-            NULLIF(current_setting('app.current_tenant_id', TRUE), '')::INTEGER,
+            NULLIF(current_setting('app.current_tenant_id', TRUE), '')::UUID,
             tenant_id
         )
     )
@@ -742,7 +744,7 @@ FOR ALL USING (
     OR (
         pg_has_role(session_user, 'solvereign_api', 'MEMBER')
         AND tenant_id = COALESCE(
-            NULLIF(current_setting('app.current_tenant_id', TRUE), '')::INTEGER,
+            NULLIF(current_setting('app.current_tenant_id', TRUE), '')::UUID,
             tenant_id
         )
     )
@@ -754,7 +756,7 @@ FOR ALL USING (
     OR (
         pg_has_role(session_user, 'solvereign_api', 'MEMBER')
         AND tenant_id = COALESCE(
-            NULLIF(current_setting('app.current_tenant_id', TRUE), '')::INTEGER,
+            NULLIF(current_setting('app.current_tenant_id', TRUE), '')::UUID,
             tenant_id
         )
     )
@@ -766,7 +768,7 @@ FOR ALL USING (
     OR (
         pg_has_role(session_user, 'solvereign_api', 'MEMBER')
         AND tenant_id = COALESCE(
-            NULLIF(current_setting('app.current_tenant_id', TRUE), '')::INTEGER,
+            NULLIF(current_setting('app.current_tenant_id', TRUE), '')::UUID,
             tenant_id
         )
     )
@@ -778,7 +780,7 @@ FOR ALL USING (
     OR (
         pg_has_role(session_user, 'solvereign_api', 'MEMBER')
         AND tenant_id = COALESCE(
-            NULLIF(current_setting('app.current_tenant_id', TRUE), '')::INTEGER,
+            NULLIF(current_setting('app.current_tenant_id', TRUE), '')::UUID,
             tenant_id
         )
     )
@@ -790,7 +792,7 @@ FOR ALL USING (
     OR (
         pg_has_role(session_user, 'solvereign_api', 'MEMBER')
         AND tenant_id = COALESCE(
-            NULLIF(current_setting('app.current_tenant_id', TRUE), '')::INTEGER,
+            NULLIF(current_setting('app.current_tenant_id', TRUE), '')::UUID,
             tenant_id
         )
     )
@@ -804,7 +806,7 @@ FOR ALL USING (
     OR (
         pg_has_role(session_user, 'solvereign_api', 'MEMBER')
         AND tenant_id = COALESCE(
-            NULLIF(current_setting('app.current_tenant_id', TRUE), '')::INTEGER,
+            NULLIF(current_setting('app.current_tenant_id', TRUE), '')::UUID,
             tenant_id
         )
     )

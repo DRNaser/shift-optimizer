@@ -252,16 +252,16 @@ CREATE TABLE IF NOT EXISTS notify.notification_templates (
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 
-    CONSTRAINT notification_templates_unique_key UNIQUE (
-        COALESCE(tenant_id, -1),
-        template_key,
-        delivery_channel,
-        language
-    ),
+    -- GREENFIELD FIX: Use partial unique index instead of UNIQUE constraint with COALESCE
+    -- Unique constraint moved to index below
     CONSTRAINT notification_templates_channel_check CHECK (
         delivery_channel IN ('WHATSAPP', 'EMAIL', 'SMS', 'PUSH')
     )
 );
+
+-- GREENFIELD FIX: Create unique index to handle NULL tenant_id
+CREATE UNIQUE INDEX IF NOT EXISTS idx_notification_templates_unique
+ON notify.notification_templates (COALESCE(tenant_id, -1), template_key, delivery_channel, language);
 
 
 -- =============================================================================

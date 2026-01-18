@@ -380,6 +380,9 @@ $$;
 -- STEP 6: UPDATE VERIFY FUNCTION
 -- =============================================================================
 
+-- Drop old version first (return type may have changed)
+DROP FUNCTION IF EXISTS notify.verify_notification_integrity();
+
 -- Add bounce/dnc checks to existing verify function
 CREATE OR REPLACE FUNCTION notify.verify_notification_integrity()
 RETURNS TABLE(check_name VARCHAR(100), status VARCHAR(10), details TEXT)
@@ -746,6 +749,9 @@ GRANT SELECT ON portal.snapshot_notify_summary TO solvereign_api;
 -- Replaces the function from 037a to add DNC check at outbox creation time.
 -- If driver is on DNC list for the channel, returns is_dnc_blocked=TRUE
 -- and does NOT create outbox entry (prevents wasted sends).
+
+-- Drop old version first (return type changed to add is_dnc_blocked)
+DROP FUNCTION IF EXISTS portal.issue_token_atomic(INTEGER, INTEGER, UUID, VARCHAR, VARCHAR, CHAR, TEXT, TEXT, TIMESTAMPTZ, UUID, VARCHAR, TEXT);
 
 CREATE OR REPLACE FUNCTION portal.issue_token_atomic(
     p_tenant_id INTEGER,

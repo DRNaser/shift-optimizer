@@ -47,8 +47,8 @@ CREATE TABLE IF NOT EXISTS solver_runs (
     run_id UUID NOT NULL UNIQUE DEFAULT gen_random_uuid(),
 
     -- Tenant/Site scope
-    tenant_id INTEGER NOT NULL REFERENCES core.tenants(id),
-    site_id INTEGER NOT NULL REFERENCES core.sites(id),
+    tenant_id UUID NOT NULL REFERENCES core.tenants(id),
+    site_id UUID NOT NULL REFERENCES core.sites(id),
 
     -- Plan reference (optional, set when run creates/updates a plan)
     plan_version_id INTEGER,  -- References plan_versions(id)
@@ -119,7 +119,7 @@ ALTER TABLE solver_runs ENABLE ROW LEVEL SECURITY;
 
 CREATE POLICY solver_runs_tenant_isolation ON solver_runs
     FOR ALL
-    USING (tenant_id = current_setting('app.current_tenant_id', true)::INTEGER);
+    USING (tenant_id = current_setting('app.current_tenant_id', true)::UUID);
 
 COMMENT ON TABLE solver_runs IS 'Tracks solver executions with determinism hashes and KPIs';
 
@@ -138,7 +138,7 @@ CREATE TABLE IF NOT EXISTS plan_approvals (
     solver_run_id UUID REFERENCES solver_runs(run_id),
 
     -- Tenant scope
-    tenant_id INTEGER NOT NULL REFERENCES core.tenants(id),
+    tenant_id UUID NOT NULL REFERENCES core.tenants(id),
 
     -- Approval details
     action VARCHAR(20) NOT NULL,  -- APPROVE, REJECT, PUBLISH
@@ -177,7 +177,7 @@ ALTER TABLE plan_approvals ENABLE ROW LEVEL SECURITY;
 
 CREATE POLICY plan_approvals_tenant_isolation ON plan_approvals
     FOR ALL
-    USING (tenant_id = current_setting('app.current_tenant_id', true)::INTEGER);
+    USING (tenant_id = current_setting('app.current_tenant_id', true)::UUID);
 
 COMMENT ON TABLE plan_approvals IS 'Audit trail for plan state transitions (approval workflow)';
 
@@ -244,7 +244,7 @@ SET search_path = public, core
 AS $$
 DECLARE
     v_current_state VARCHAR;
-    v_tenant_id INTEGER;
+    v_tenant_id UUID;
     v_solver_run_id UUID;
     v_allowed BOOLEAN := FALSE;
     v_result JSONB;

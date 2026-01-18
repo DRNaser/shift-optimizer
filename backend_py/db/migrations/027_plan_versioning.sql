@@ -37,8 +37,8 @@ CREATE TABLE IF NOT EXISTS plan_snapshots (
     plan_version_id INTEGER NOT NULL,  -- References plan_versions(id)
 
     -- Tenant/Site scope (denormalized for RLS)
-    tenant_id INTEGER NOT NULL REFERENCES core.tenants(id),
-    site_id INTEGER NOT NULL REFERENCES core.sites(id),
+    tenant_id UUID NOT NULL REFERENCES core.tenants(id),
+    site_id UUID NOT NULL REFERENCES core.sites(id),
 
     -- Version number within the plan
     version_number INTEGER NOT NULL DEFAULT 1,
@@ -84,12 +84,12 @@ CREATE TABLE IF NOT EXISTS plan_snapshots (
     -- Constraints
     CONSTRAINT plan_snapshots_status_check CHECK (
         snapshot_status IN ('ACTIVE', 'SUPERSEDED', 'ARCHIVED')
-    ),
-
-    -- Each plan_version can only have one ACTIVE snapshot
-    CONSTRAINT plan_snapshots_unique_active UNIQUE (plan_version_id, snapshot_status)
-        WHERE snapshot_status = 'ACTIVE'
+    )
 );
+
+-- Each plan_version can only have one ACTIVE snapshot (partial unique index, not constraint)
+CREATE UNIQUE INDEX IF NOT EXISTS idx_plan_snapshots_unique_active
+    ON plan_snapshots(plan_version_id) WHERE snapshot_status = 'ACTIVE';
 
 -- Indexes
 CREATE INDEX IF NOT EXISTS idx_plan_snapshots_tenant ON plan_snapshots(tenant_id);
@@ -104,7 +104,7 @@ ALTER TABLE plan_snapshots ENABLE ROW LEVEL SECURITY;
 
 CREATE POLICY plan_snapshots_tenant_isolation ON plan_snapshots
     FOR ALL
-    USING (tenant_id = current_setting('app.current_tenant_id', true)::INTEGER);
+    USING (tenant_id = current_setting('app.current_tenant_id', true)::UUID);
 
 COMMENT ON TABLE plan_snapshots IS
 'Immutable published plan snapshots. Each publish creates a new snapshot.

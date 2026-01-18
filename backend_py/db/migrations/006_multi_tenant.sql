@@ -295,7 +295,8 @@ ON tours_normalized(tenant_id, forecast_version_id, tour_fingerprint);
 
 -- assignments: tour unique per plan (already tenant-scoped via plan FK)
 
--- diff_results: unique per tenant + versions + fingerprint
+-- diff_results: unique per tenant + versions
+-- NOTE: tour_fingerprint does NOT exist in diff_results table - removed from index
 DO $$
 BEGIN
     IF EXISTS (
@@ -304,10 +305,16 @@ BEGIN
     ) THEN
         ALTER TABLE diff_results DROP CONSTRAINT diff_results_unique_diff;
     END IF;
+    IF EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'diff_results_unique'
+    ) THEN
+        ALTER TABLE diff_results DROP CONSTRAINT diff_results_unique;
+    END IF;
 END $$;
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_diff_results_tenant_unique
-ON diff_results(tenant_id, forecast_version_old, forecast_version_new, tour_fingerprint);
+ON diff_results(tenant_id, forecast_version_old, forecast_version_new);
 
 -- ============================================================================
 -- 5. TENANT ISOLATION VALIDATION FUNCTION

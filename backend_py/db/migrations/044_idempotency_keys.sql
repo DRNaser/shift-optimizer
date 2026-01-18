@@ -53,9 +53,10 @@ CREATE TABLE IF NOT EXISTS core.idempotency_keys (
 CREATE INDEX idx_idempotency_keys_lookup
     ON core.idempotency_keys (tenant_id, action, idempotency_key);
 
+-- GREENFIELD FIX: Removed partial index with NOW() (not IMMUTABLE)
+-- Use full index for cleanup queries instead
 CREATE INDEX idx_idempotency_keys_expires
-    ON core.idempotency_keys (expires_at)
-    WHERE expires_at < NOW();  -- Partial index for cleanup
+    ON core.idempotency_keys (expires_at);
 
 -- Grant permissions
 GRANT SELECT, INSERT, DELETE ON core.idempotency_keys TO solvereign_api;
@@ -79,9 +80,13 @@ DECLARE
     v_result JSONB;
 BEGIN
     -- Cleanup expired keys first (opportunistic)
+    -- PostgreSQL doesn't support DELETE...LIMIT, use subquery with ctid
     DELETE FROM core.idempotency_keys
-    WHERE expires_at < NOW()
-    LIMIT 100;  -- Don't block on large cleanup
+    WHERE ctid IN (
+        SELECT ctid FROM core.idempotency_keys
+        WHERE expires_at < NOW()
+        LIMIT 100
+    );
 
     -- Check for existing key
     SELECT request_hash, response_json

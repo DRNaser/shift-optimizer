@@ -19,7 +19,7 @@ CREATE TABLE IF NOT EXISTS ops.ingest_dedup (
     id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     idempotency_key VARCHAR(255) NOT NULL,
     wa_user_id      VARCHAR(100) NOT NULL,
-    tenant_id       INTEGER,  -- NULL for unpaired users
+    tenant_id       UUID,  -- NULL for unpaired users
     processed_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     event_id        UUID,  -- Reference to ops.events if created
 
@@ -87,7 +87,7 @@ CHECK (
 CREATE OR REPLACE FUNCTION ops.check_and_record_idempotency(
     p_idempotency_key VARCHAR,
     p_wa_user_id VARCHAR,
-    p_tenant_id INTEGER DEFAULT NULL
+    p_tenant_id UUID DEFAULT NULL
 ) RETURNS BOOLEAN
 LANGUAGE plpgsql
 SECURITY DEFINER
@@ -142,6 +142,9 @@ COMMENT ON FUNCTION ops.cleanup_old_idempotency_records IS
 -- ============================================================================
 -- 6. UPDATE VERIFY FUNCTION
 -- ============================================================================
+
+-- Drop old function with different return type (TEXT vs JSONB for details)
+DROP FUNCTION IF EXISTS ops.verify_ops_copilot_integrity();
 
 CREATE OR REPLACE FUNCTION ops.verify_ops_copilot_integrity()
 RETURNS TABLE(

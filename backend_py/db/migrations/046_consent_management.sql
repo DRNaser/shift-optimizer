@@ -48,7 +48,7 @@ ON CONFLICT (code) DO NOTHING;
 -- Track user consent decisions
 CREATE TABLE IF NOT EXISTS consent.user_consents (
     id SERIAL PRIMARY KEY,
-    user_id INTEGER NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+    user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
     purpose_id INTEGER NOT NULL REFERENCES consent.purposes(id),
     granted BOOLEAN NOT NULL,
     granted_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -72,7 +72,7 @@ CREATE INDEX idx_user_consents_current ON consent.user_consents(user_id, purpose
 -- Track driver consent (via portal, separate from auth.users)
 CREATE TABLE IF NOT EXISTS consent.driver_consents (
     id SERIAL PRIMARY KEY,
-    tenant_id INTEGER NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    tenant_id UUID NOT NULL REFERENCES core.tenants(id) ON DELETE CASCADE,
     driver_id TEXT NOT NULL,  -- External driver ID
     purpose_id INTEGER NOT NULL REFERENCES consent.purposes(id),
     granted BOOLEAN NOT NULL,
@@ -93,7 +93,7 @@ CREATE INDEX idx_driver_consents_driver ON consent.driver_consents(tenant_id, dr
 -- Track DSR (Data Subject Requests)
 CREATE TABLE IF NOT EXISTS consent.data_subject_requests (
     id SERIAL PRIMARY KEY,
-    tenant_id INTEGER REFERENCES tenants(id) ON DELETE SET NULL,
+    tenant_id UUID REFERENCES core.tenants(id) ON DELETE SET NULL,
     request_type TEXT NOT NULL CHECK (request_type IN (
         'access',      -- Art. 15: Right of access
         'rectification', -- Art. 16: Right to rectification
@@ -112,7 +112,7 @@ CREATE TABLE IF NOT EXISTS consent.data_subject_requests (
     verified_at TIMESTAMPTZ,
     notes TEXT,
     completed_at TIMESTAMPTZ,
-    completed_by INTEGER REFERENCES auth.users(id),
+    completed_by UUID REFERENCES auth.users(id),
     response_data JSONB,  -- For access/portability: exported data
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     -- GDPR requires response within 30 days
@@ -128,7 +128,7 @@ CREATE INDEX idx_dsr_due_date ON consent.data_subject_requests(due_date) WHERE s
 
 -- Check if user has granted consent for a purpose
 CREATE OR REPLACE FUNCTION consent.has_consent(
-    p_user_id INTEGER,
+    p_user_id UUID,
     p_purpose_code TEXT
 ) RETURNS BOOLEAN AS $$
 DECLARE
@@ -162,7 +162,7 @@ $$ LANGUAGE plpgsql STABLE;
 
 -- Record consent decision (handles history)
 CREATE OR REPLACE FUNCTION consent.record_consent(
-    p_user_id INTEGER,
+    p_user_id UUID,
     p_purpose_code TEXT,
     p_granted BOOLEAN,
     p_ip_address INET DEFAULT NULL,
@@ -211,7 +211,7 @@ END;
 $$ LANGUAGE plpgsql;
 
 -- Get user's current consents
-CREATE OR REPLACE FUNCTION consent.get_user_consents(p_user_id INTEGER)
+CREATE OR REPLACE FUNCTION consent.get_user_consents(p_user_id UUID)
 RETURNS TABLE (
     purpose_code TEXT,
     purpose_name TEXT,
@@ -253,8 +253,8 @@ CREATE POLICY purposes_all ON consent.purposes
 -- Users can see/manage their own consents
 CREATE POLICY user_consents_own ON consent.user_consents
     FOR ALL TO solvereign_api
-    USING (user_id = NULLIF(current_setting('app.current_user_id', true), '')::INTEGER)
-    WITH CHECK (user_id = NULLIF(current_setting('app.current_user_id', true), '')::INTEGER);
+    USING (user_id = NULLIF(current_setting('app.current_user_id', true), '')::UUID)
+    WITH CHECK (user_id = NULLIF(current_setting('app.current_user_id', true), '')::UUID);
 
 -- Platform can see all consents
 CREATE POLICY user_consents_platform ON consent.user_consents
@@ -264,8 +264,8 @@ CREATE POLICY user_consents_platform ON consent.user_consents
 -- Driver consents follow tenant isolation
 CREATE POLICY driver_consents_tenant ON consent.driver_consents
     FOR ALL TO solvereign_api
-    USING (tenant_id = NULLIF(current_setting('app.current_tenant_id', true), '')::INTEGER)
-    WITH CHECK (tenant_id = NULLIF(current_setting('app.current_tenant_id', true), '')::INTEGER);
+    USING (tenant_id = NULLIF(current_setting('app.current_tenant_id', true), '')::UUID)
+    WITH CHECK (tenant_id = NULLIF(current_setting('app.current_tenant_id', true), '')::UUID);
 
 CREATE POLICY driver_consents_platform ON consent.driver_consents
     FOR SELECT TO solvereign_platform

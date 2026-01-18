@@ -34,7 +34,7 @@ ON CONFLICT (version) DO NOTHING;
 
 CREATE TABLE IF NOT EXISTS masterdata.daily_plans (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    tenant_id INTEGER NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    tenant_id UUID NOT NULL REFERENCES core.tenants(id) ON DELETE CASCADE,
     site_id UUID REFERENCES masterdata.md_sites(id) ON DELETE SET NULL,
 
     -- Plan identification
@@ -100,7 +100,7 @@ COMMENT ON TABLE masterdata.daily_plans IS
 
 CREATE TABLE IF NOT EXISTS masterdata.daily_plan_assignments (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    tenant_id INTEGER NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    tenant_id UUID NOT NULL REFERENCES core.tenants(id) ON DELETE CASCADE,
     daily_plan_id UUID NOT NULL REFERENCES masterdata.daily_plans(id) ON DELETE CASCADE,
 
     -- Raw import data (as received from Google Sheets)
@@ -167,7 +167,7 @@ COMMENT ON TABLE masterdata.daily_plan_assignments IS
 
 CREATE TABLE IF NOT EXISTS masterdata.verification_reports (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    tenant_id INTEGER NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    tenant_id UUID NOT NULL REFERENCES core.tenants(id) ON DELETE CASCADE,
     daily_plan_id UUID NOT NULL REFERENCES masterdata.daily_plans(id) ON DELETE CASCADE,
 
     -- Report summary
@@ -230,18 +230,18 @@ ALTER TABLE masterdata.verification_reports FORCE ROW LEVEL SECURITY;
 
 CREATE POLICY daily_plans_tenant ON masterdata.daily_plans
     FOR ALL
-    USING (tenant_id = current_setting('app.current_tenant_id', TRUE)::INTEGER)
-    WITH CHECK (tenant_id = current_setting('app.current_tenant_id', TRUE)::INTEGER);
+    USING (tenant_id = current_setting('app.current_tenant_id', TRUE)::UUID)
+    WITH CHECK (tenant_id = current_setting('app.current_tenant_id', TRUE)::UUID);
 
 CREATE POLICY assignments_tenant ON masterdata.daily_plan_assignments
     FOR ALL
-    USING (tenant_id = current_setting('app.current_tenant_id', TRUE)::INTEGER)
-    WITH CHECK (tenant_id = current_setting('app.current_tenant_id', TRUE)::INTEGER);
+    USING (tenant_id = current_setting('app.current_tenant_id', TRUE)::UUID)
+    WITH CHECK (tenant_id = current_setting('app.current_tenant_id', TRUE)::UUID);
 
 CREATE POLICY reports_tenant ON masterdata.verification_reports
     FOR ALL
-    USING (tenant_id = current_setting('app.current_tenant_id', TRUE)::INTEGER)
-    WITH CHECK (tenant_id = current_setting('app.current_tenant_id', TRUE)::INTEGER);
+    USING (tenant_id = current_setting('app.current_tenant_id', TRUE)::UUID)
+    WITH CHECK (tenant_id = current_setting('app.current_tenant_id', TRUE)::UUID);
 
 
 -- =============================================================================

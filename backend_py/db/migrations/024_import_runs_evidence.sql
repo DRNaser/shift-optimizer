@@ -26,8 +26,8 @@ CREATE TABLE IF NOT EXISTS import_runs (
     import_run_id VARCHAR(50) NOT NULL UNIQUE,
 
     -- Tenant/Site scope
-    tenant_id INTEGER NOT NULL REFERENCES core.tenants(id),
-    site_id INTEGER NOT NULL REFERENCES core.sites(id),
+    tenant_id UUID NOT NULL REFERENCES core.tenants(id),
+    site_id UUID NOT NULL REFERENCES core.sites(id),
 
     -- Timestamps
     started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -85,7 +85,7 @@ ALTER TABLE import_runs ENABLE ROW LEVEL SECURITY;
 
 CREATE POLICY import_runs_tenant_isolation ON import_runs
     FOR ALL
-    USING (tenant_id = current_setting('app.current_tenant_id', true)::INTEGER);
+    USING (tenant_id = current_setting('app.current_tenant_id', true)::UUID);
 
 COMMENT ON TABLE import_runs IS 'Tracks FLS import batches with hashes and verdicts';
 
@@ -143,8 +143,8 @@ CREATE TABLE IF NOT EXISTS routing_evidence (
     plan_version_id INTEGER NOT NULL, -- References plan_versions(id)
 
     -- Tenant/Site scope
-    tenant_id INTEGER NOT NULL REFERENCES core.tenants(id),
-    site_id INTEGER NOT NULL REFERENCES core.sites(id),
+    tenant_id UUID NOT NULL REFERENCES core.tenants(id),
+    site_id UUID NOT NULL REFERENCES core.sites(id),
 
     -- Matrix info
     matrix_version VARCHAR(100) NOT NULL,
@@ -202,7 +202,7 @@ ALTER TABLE routing_evidence ENABLE ROW LEVEL SECURITY;
 
 CREATE POLICY routing_evidence_tenant_isolation ON routing_evidence
     FOR ALL
-    USING (tenant_id = current_setting('app.current_tenant_id', true)::INTEGER);
+    USING (tenant_id = current_setting('app.current_tenant_id', true)::UUID);
 
 COMMENT ON TABLE routing_evidence IS 'Stores routing evidence for plan audit trail';
 
@@ -211,15 +211,24 @@ COMMENT ON TABLE routing_evidence IS 'Stores routing evidence for plan audit tra
 -- ADD COLUMNS TO EXISTING TABLES
 -- =============================================================================
 
--- Add import_run_id to orders if not exists
+-- Add import_run_id to orders if table exists and column not exists
+-- GREENFIELD FIX: Check table exists first
 DO $$
 BEGIN
-    IF NOT EXISTS (
-        SELECT 1 FROM information_schema.columns
-        WHERE table_name = 'orders' AND column_name = 'import_run_id'
+    -- Only proceed if orders table exists
+    IF EXISTS (
+        SELECT 1 FROM information_schema.tables
+        WHERE table_name = 'orders'
     ) THEN
-        ALTER TABLE orders ADD COLUMN import_run_id VARCHAR(50);
-        CREATE INDEX idx_orders_import_run ON orders(import_run_id);
+        IF NOT EXISTS (
+            SELECT 1 FROM information_schema.columns
+            WHERE table_name = 'orders' AND column_name = 'import_run_id'
+        ) THEN
+            ALTER TABLE orders ADD COLUMN import_run_id VARCHAR(50);
+            CREATE INDEX idx_orders_import_run ON orders(import_run_id);
+        END IF;
+    ELSE
+        RAISE NOTICE '[024] Table orders does not exist - skipping import_run_id column';
     END IF;
 END $$;
 

@@ -28,7 +28,7 @@ ON CONFLICT (version) DO NOTHING;
 
 CREATE TABLE IF NOT EXISTS notify.providers (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    tenant_id INTEGER REFERENCES tenants(id) ON DELETE CASCADE,  -- NULL = system default
+    tenant_id UUID REFERENCES core.tenants(id) ON DELETE CASCADE,  -- NULL = system default
 
     -- Provider identification
     provider_key VARCHAR(50) NOT NULL,  -- whatsapp_meta, whatsapp_clawdbot, email_sendgrid
@@ -64,11 +64,14 @@ CREATE TABLE IF NOT EXISTS notify.providers (
 
     -- Constraints
     CONSTRAINT providers_channel_check CHECK (channel IN ('WHATSAPP', 'EMAIL', 'SMS', 'PUSH')),
-    CONSTRAINT providers_health_check CHECK (health_status IN ('HEALTHY', 'DEGRADED', 'UNHEALTHY', 'UNKNOWN')),
-    -- One primary provider per channel per tenant (or system)
-    CONSTRAINT providers_unique_primary UNIQUE NULLS NOT DISTINCT (tenant_id, channel, is_primary)
-        WHERE is_primary = TRUE
+    CONSTRAINT providers_health_check CHECK (health_status IN ('HEALTHY', 'DEGRADED', 'UNHEALTHY', 'UNKNOWN'))
 );
+
+-- One primary provider per channel per tenant (or system)
+-- UNIQUE constraints cannot have WHERE clause, use partial unique index
+CREATE UNIQUE INDEX IF NOT EXISTS idx_providers_unique_primary
+    ON notify.providers (COALESCE(tenant_id, -1), channel)
+    WHERE is_primary = TRUE;
 
 CREATE INDEX IF NOT EXISTS idx_providers_tenant ON notify.providers(tenant_id);
 CREATE INDEX IF NOT EXISTS idx_providers_channel ON notify.providers(channel, is_active);
@@ -87,7 +90,7 @@ COMMENT ON COLUMN notify.providers.config IS
 
 CREATE TABLE IF NOT EXISTS notify.provider_templates (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    tenant_id INTEGER REFERENCES tenants(id) ON DELETE CASCADE,  -- NULL = system default
+    tenant_id UUID REFERENCES core.tenants(id) ON DELETE CASCADE,  -- NULL = system default
     provider_id UUID NOT NULL REFERENCES notify.providers(id) ON DELETE CASCADE,
 
     -- Template identification
@@ -192,7 +195,7 @@ COMMENT ON TABLE notify.webhook_events IS
 
 CREATE TABLE IF NOT EXISTS notify.dm_queue (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    tenant_id INTEGER NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    tenant_id UUID NOT NULL REFERENCES core.tenants(id) ON DELETE CASCADE,
 
     -- Target driver
     driver_id UUID NOT NULL,
@@ -271,7 +274,7 @@ CREATE POLICY providers_access ON notify.providers
     FOR ALL
     USING (
         tenant_id IS NULL
-        OR tenant_id = current_setting('app.current_tenant_id', TRUE)::INTEGER
+        OR tenant_id = current_setting('app.current_tenant_id', TRUE)::UUID
     );
 
 -- Provider templates: follow provider access
@@ -279,7 +282,7 @@ CREATE POLICY provider_templates_access ON notify.provider_templates
     FOR ALL
     USING (
         tenant_id IS NULL
-        OR tenant_id = current_setting('app.current_tenant_id', TRUE)::INTEGER
+        OR tenant_id = current_setting('app.current_tenant_id', TRUE)::UUID
     );
 
 -- Webhook events: no tenant isolation (system-level processing)
@@ -291,7 +294,7 @@ CREATE POLICY webhook_events_platform ON notify.webhook_events
 -- DM queue: tenant isolation
 CREATE POLICY dm_queue_tenant ON notify.dm_queue
     FOR ALL
-    USING (tenant_id = current_setting('app.current_tenant_id', TRUE)::INTEGER);
+    USING (tenant_id = current_setting('app.current_tenant_id', TRUE)::UUID);
 
 
 -- =============================================================================

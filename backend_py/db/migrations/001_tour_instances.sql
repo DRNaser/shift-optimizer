@@ -78,22 +78,68 @@ $$ LANGUAGE plpgsql;
 
 COMMENT ON FUNCTION expand_tour_instances IS 'Auto-expand tours_normalized.count to tour_instances';
 
--- 3. Modify assignments: tour_id → tour_instance_id
-ALTER TABLE assignments DROP CONSTRAINT IF EXISTS assignments_tour_id_fkey;
-ALTER TABLE assignments RENAME COLUMN tour_id TO tour_id_deprecated;
-ALTER TABLE assignments ALTER COLUMN tour_id_deprecated DROP NOT NULL;
-ALTER TABLE assignments ADD COLUMN tour_instance_id INTEGER;
+-- 3. Modify assignments: tour_id → tour_instance_id (idempotent)
+-- GREENFIELD FIX: 000_initial_schema already creates tour_instance_id
+-- This migration is for UPGRADE path from older schemas with tour_id column.
+DO $$
+BEGIN
+    -- Only rename if tour_id exists (upgrade path)
+    IF EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'assignments' AND column_name = 'tour_id'
+    ) THEN
+        ALTER TABLE assignments DROP CONSTRAINT IF EXISTS assignments_tour_id_fkey;
+        ALTER TABLE assignments RENAME COLUMN tour_id TO tour_id_deprecated;
+        ALTER TABLE assignments ALTER COLUMN tour_id_deprecated DROP NOT NULL;
+        RAISE NOTICE '[001] Renamed tour_id to tour_id_deprecated (upgrade path)';
+    ELSE
+        RAISE NOTICE '[001] Column tour_id not found - skipping rename (greenfield path)';
+    END IF;
 
--- Add foreign key constraint
-ALTER TABLE assignments ADD CONSTRAINT fk_tour_instance 
-    FOREIGN KEY (tour_instance_id) REFERENCES tour_instances(id) ON DELETE RESTRICT;
+    -- Add tour_instance_id if not exists (upgrade path)
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'assignments' AND column_name = 'tour_instance_id'
+    ) THEN
+        ALTER TABLE assignments ADD COLUMN tour_instance_id INTEGER;
+        RAISE NOTICE '[001] Added tour_instance_id column';
+    ELSE
+        RAISE NOTICE '[001] Column tour_instance_id already exists - skipping';
+    END IF;
+END $$;
 
--- Update unique constraint
+-- Add foreign key constraint (idempotent)
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.table_constraints
+        WHERE constraint_name = 'fk_tour_instance' AND table_name = 'assignments'
+    ) THEN
+        ALTER TABLE assignments ADD CONSTRAINT fk_tour_instance
+            FOREIGN KEY (tour_instance_id) REFERENCES tour_instances(id) ON DELETE RESTRICT;
+        RAISE NOTICE '[001] Added FK constraint fk_tour_instance';
+    END IF;
+EXCEPTION WHEN OTHERS THEN
+    RAISE NOTICE '[001] FK constraint already exists or skipped: %', SQLERRM;
+END $$;
+
+-- Update unique constraint (idempotent)
 ALTER TABLE assignments DROP CONSTRAINT IF EXISTS assignments_unique_tour_assignment;
-ALTER TABLE assignments ADD CONSTRAINT assignments_unique_instance_assignment 
-    UNIQUE (plan_version_id, tour_instance_id);
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.table_constraints
+        WHERE constraint_name = 'assignments_unique_instance_assignment' AND table_name = 'assignments'
+    ) THEN
+        ALTER TABLE assignments ADD CONSTRAINT assignments_unique_instance_assignment
+            UNIQUE (plan_version_id, tour_instance_id);
+        RAISE NOTICE '[001] Added unique constraint assignments_unique_instance_assignment';
+    END IF;
+EXCEPTION WHEN OTHERS THEN
+    RAISE NOTICE '[001] Unique constraint skipped: %', SQLERRM;
+END $$;
 
-CREATE INDEX idx_assignments_tour_instance ON assignments(tour_instance_id);
+CREATE INDEX IF NOT EXISTS idx_assignments_tour_instance ON assignments(tour_instance_id);
 
 -- 4. LOCKED Plan Immutability (CASCADE FIX)
 CREATE OR REPLACE FUNCTION prevent_locked_plan_data_modification()

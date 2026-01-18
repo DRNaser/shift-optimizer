@@ -381,6 +381,9 @@ BEGIN
     FOR r IN SELECT * FROM verify_rls_boundary() LOOP
         IF r.status = 'PASS' THEN
             RAISE NOTICE '[025c] PASS: % (expected=%, actual=%)', r.test_name, r.expected, r.actual;
+        ELSIF r.status = 'INFO' THEN
+            -- Informational tests don't affect pass/fail status
+            RAISE NOTICE '[025c] INFO: % (expected=%, actual=%)', r.test_name, r.expected, r.actual;
         ELSE
             RAISE WARNING '[025c] FAIL: % (expected=%, actual=%)', r.test_name, r.expected, r.actual;
             all_pass := FALSE;

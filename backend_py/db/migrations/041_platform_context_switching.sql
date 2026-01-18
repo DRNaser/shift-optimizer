@@ -25,8 +25,8 @@ BEGIN;
 
 -- Add active tenant/site context columns to sessions
 ALTER TABLE auth.sessions
-ADD COLUMN IF NOT EXISTS active_tenant_id INTEGER NULL REFERENCES tenants(id),
-ADD COLUMN IF NOT EXISTS active_site_id INTEGER NULL REFERENCES sites(id);
+ADD COLUMN IF NOT EXISTS active_tenant_id UUID NULL REFERENCES core.tenants(id),
+ADD COLUMN IF NOT EXISTS active_site_id UUID NULL REFERENCES core.sites(id);
 
 -- Index for efficient context-aware queries
 CREATE INDEX IF NOT EXISTS idx_sessions_active_tenant
@@ -40,14 +40,14 @@ ON auth.sessions(active_tenant_id) WHERE active_tenant_id IS NOT NULL;
 
 CREATE OR REPLACE FUNCTION auth.set_platform_context(
     p_session_hash TEXT,
-    p_tenant_id INTEGER,
-    p_site_id INTEGER DEFAULT NULL
+    p_tenant_id UUID,
+    p_site_id UUID DEFAULT NULL
 )
 RETURNS JSONB AS $$
 DECLARE
     v_session auth.sessions%ROWTYPE;
     v_user_id UUID;
-    v_site_tenant_id INTEGER;
+    v_site_tenant_id UUID;
 BEGIN
     -- Get and validate session
     SELECT * INTO v_session
@@ -72,7 +72,7 @@ BEGIN
 
     -- Validate site belongs to tenant (if provided)
     IF p_site_id IS NOT NULL THEN
-        SELECT tenant_id INTO v_site_tenant_id FROM sites WHERE id = p_site_id;
+        SELECT tenant_id INTO v_site_tenant_id FROM core.sites WHERE id = p_site_id;
         IF v_site_tenant_id IS NULL OR v_site_tenant_id != p_tenant_id THEN
             RETURN jsonb_build_object('success', FALSE, 'error', 'Site does not belong to tenant');
         END IF;
@@ -108,7 +108,7 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;
 
-GRANT EXECUTE ON FUNCTION auth.set_platform_context(TEXT, INTEGER, INTEGER) TO solvereign_api;
+GRANT EXECUTE ON FUNCTION auth.set_platform_context(TEXT, UUID, UUID) TO solvereign_api;
 
 -- =============================================================================
 -- FUNCTION: auth.clear_platform_context()

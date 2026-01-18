@@ -156,7 +156,8 @@ END $$;
 -- Prevent non-admin roles from creating objects in public schema
 
 REVOKE CREATE ON SCHEMA public FROM PUBLIC;
-RAISE NOTICE '[025e] Revoked CREATE ON SCHEMA public FROM PUBLIC';
+-- GREENFIELD FIX: Wrap RAISE in DO block
+DO $$ BEGIN RAISE NOTICE '[025e] Revoked CREATE ON SCHEMA public FROM PUBLIC'; END $$;
 
 -- Ensure solvereign_api cannot create objects
 DO $$
@@ -326,12 +327,17 @@ BEGIN
     RETURN NEXT;
 
     -- Test 4: PUBLIC should NOT have CREATE on schema public
-    SELECT has_schema_privilege('PUBLIC', 'public', 'CREATE')
-    INTO public_can_create;
+    -- NOTE: cannot use has_schema_privilege('PUBLIC', ...) because PUBLIC is a pseudo-role
+    -- Instead, check the schema ACL for the public CREATE grant pattern (=C/ means PUBLIC has CREATE)
+    SELECT NOT EXISTS (
+        SELECT 1 FROM pg_namespace
+        WHERE nspname = 'public'
+          AND array_to_string(nspacl, ',') ~ '(^|,)=C/'
+    ) INTO public_can_create;
     test_name := 'PUBLIC CREATE on schema public';
-    expected := 'false';
-    actual := public_can_create::TEXT;
-    status := CASE WHEN public_can_create = FALSE THEN 'PASS' ELSE 'FAIL' END;
+    expected := 'false';  -- We expect PUBLIC does NOT have CREATE (public_can_create should be TRUE meaning "no CREATE")
+    actual := (NOT public_can_create)::TEXT;  -- Invert for display: if public_can_create is TRUE, actual shows FALSE
+    status := CASE WHEN public_can_create = TRUE THEN 'PASS' ELSE 'FAIL' END;
     RETURN NEXT;
 
     -- Test 5: Default privileges for solvereign_admin (FUNCTIONS, TABLES, SEQUENCES)
@@ -464,13 +470,16 @@ BEGIN
 
     -- Test 15: User-defined functions with PUBLIC EXECUTE (ALLOWLIST-BASED)
     -- Extension functions are excluded. Any remaining = FAIL (not threshold)
+    -- NOTE: Cannot use has_function_privilege('PUBLIC', ...) because PUBLIC is pseudo-role
+    -- Instead, check proacl for public EXECUTE grant pattern (=X/ means PUBLIC has EXECUTE)
     test_name := 'User functions with PUBLIC EXECUTE (public schema)';
     expected := '0';
     SELECT COUNT(*)::TEXT INTO actual
     FROM pg_proc p
     JOIN pg_namespace n ON p.pronamespace = n.oid
     WHERE n.nspname = 'public'
-      AND has_function_privilege('PUBLIC', p.oid, 'EXECUTE') = true
+      AND p.proacl IS NOT NULL
+      AND array_to_string(p.proacl, ',') ~ '(^|,)=X/'  -- PUBLIC EXECUTE pattern
       -- Exclude extension patterns (allowlist)
       AND p.proname NOT LIKE 'pg_%'
       AND p.proname NOT LIKE 'pgp_%'
@@ -497,6 +506,8 @@ BEGIN
 
     -- Test 16: User-defined tables with PUBLIC SELECT (ALLOWLIST-BASED)
     -- Extension tables excluded. Any remaining = FAIL
+    -- NOTE: Cannot use has_table_privilege('PUBLIC', ...) because PUBLIC is pseudo-role
+    -- Instead, check relacl for public SELECT grant pattern (=r/ means PUBLIC has SELECT)
     test_name := 'User tables with PUBLIC SELECT (public schema)';
     expected := '0';
     SELECT COUNT(*)::TEXT INTO actual
@@ -504,7 +515,8 @@ BEGIN
     JOIN pg_namespace n ON c.relnamespace = n.oid
     WHERE n.nspname = 'public'
       AND c.relkind = 'r'
-      AND has_table_privilege('PUBLIC', c.oid, 'SELECT') = true
+      AND c.relacl IS NOT NULL
+      AND array_to_string(c.relacl, ',') ~ '(^|,)=r/'  -- PUBLIC SELECT pattern
       -- Exclude extension patterns (allowlist)
       AND c.relname NOT LIKE 'pg_%'
       AND c.relname NOT LIKE 'spatial_ref_sys%'

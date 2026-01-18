@@ -491,6 +491,9 @@ GRANT EXECUTE ON FUNCTION auth.create_platform_admin_binding(UUID) TO solvereign
 -- UPDATE auth.get_user_bindings() to handle NULL tenant_id
 -- =============================================================================
 
+-- Drop old version first (return type may have changed)
+DROP FUNCTION IF EXISTS auth.get_user_bindings(UUID);
+
 CREATE OR REPLACE FUNCTION auth.get_user_bindings(p_user_id UUID)
 RETURNS TABLE (
     binding_id INTEGER,

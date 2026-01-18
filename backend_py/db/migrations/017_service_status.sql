@@ -37,6 +37,9 @@ CREATE TYPE core.scope_type AS ENUM ('platform', 'org', 'tenant', 'site');
 -- =============================================================================
 -- Tracks operational health state at different scopes.
 -- UI dashboards read this to show health tiles and banners.
+-- GREENFIELD FIX: Drop simpler version from 000_initial_schema if exists
+
+DROP TABLE IF EXISTS core.service_status CASCADE;
 
 CREATE TABLE core.service_status (
     id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),

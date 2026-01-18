@@ -219,7 +219,7 @@ CREATE OR REPLACE FUNCTION test_function_access(func_name TEXT)
 RETURNS TABLE (
     function_name TEXT,
     can_execute BOOLEAN,
-    current_role NAME
+    executing_role NAME  -- renamed from current_role (reserved keyword)
 )
 LANGUAGE plpgsql
 STABLE
@@ -230,7 +230,7 @@ BEGIN
     SELECT
         func_name,
         has_function_privilege(current_user, func_name, 'EXECUTE'),
-        current_user;
+        current_user::NAME;
 END;
 $$;
 
