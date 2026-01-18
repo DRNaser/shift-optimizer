@@ -1,17 +1,20 @@
 """
-SOLVEREIGN V3.3b - Auth Mode Configuration
+SOLVEREIGN V4.5 - Auth Mode Configuration
 
 =============================================================================
 SOURCE OF TRUTH
 =============================================================================
 
-External IdP Mode (OIDC) is DEFAULT.
-Self-Hosted Auth is OPTIONAL and DISABLED in production by default.
+Internal RBAC Mode is DEFAULT (Wien Pilot).
+Entra/OIDC is OPTIONAL and requires explicit configuration.
 
-| Mode        | AUTH_MODE      | Production                                |
-|-------------|----------------|-------------------------------------------|
-| OIDC        | OIDC (default) | Allowed                                   |
-| Self-Hosted | SELF_HOSTED    | Blocked unless ALLOW_SELF_HOSTED_IN_PROD  |
+| Mode        | AUTH_MODE      | Production | Notes                        |
+|-------------|----------------|------------|------------------------------|
+| RBAC        | rbac (default) | Allowed    | Internal email/password auth |
+| Entra/OIDC  | entra          | Allowed    | Microsoft Entra ID SSO       |
+| Self-Hosted | SELF_HOSTED    | Blocked*   | Legacy - use RBAC instead    |
+
+* SELF_HOSTED blocked unless ALLOW_SELF_HOSTED_IN_PROD=true
 
 =============================================================================
 """
@@ -28,8 +31,10 @@ logger = logging.getLogger(__name__)
 
 class AuthMode(Enum):
     """Authentication mode."""
-    OIDC = "OIDC"              # External IdP (Keycloak, Auth0) - DEFAULT
-    SELF_HOSTED = "SELF_HOSTED"  # Self-hosted auth (dev/air-gapped only)
+    RBAC = "rbac"              # Internal RBAC with email/password (V4.4+ DEFAULT)
+    ENTRA = "entra"            # Microsoft Entra ID / Azure AD SSO
+    OIDC = "OIDC"              # External IdP (Keycloak, Auth0) - alias for ENTRA
+    SELF_HOSTED = "SELF_HOSTED"  # Self-hosted auth (legacy, dev/air-gapped only)
 
 
 @dataclass
@@ -54,14 +59,28 @@ def get_auth_mode() -> AuthMode:
         AuthMode enum value
 
     Environment Variables:
-        AUTH_MODE: "OIDC" (default) or "SELF_HOSTED"
+        AUTH_MODE: "rbac" (default), "entra", "OIDC", or "SELF_HOSTED"
     """
-    mode_str = os.environ.get("AUTH_MODE", "OIDC").upper()
+    mode_str = os.environ.get("AUTH_MODE", "rbac").lower()
 
-    if mode_str == "SELF_HOSTED":
+    if mode_str == "rbac":
+        return AuthMode.RBAC
+    elif mode_str == "entra":
+        return AuthMode.ENTRA
+    elif mode_str == "oidc":
+        return AuthMode.OIDC  # Alias for ENTRA
+    elif mode_str == "self_hosted":
         return AuthMode.SELF_HOSTED
     else:
-        return AuthMode.OIDC
+        # Default to RBAC for unknown values
+        logger.warning(f"Unknown AUTH_MODE '{mode_str}', defaulting to RBAC")
+        return AuthMode.RBAC
+
+
+def is_entra_enabled() -> bool:
+    """Check if Entra/OIDC authentication is enabled."""
+    mode = get_auth_mode()
+    return mode in (AuthMode.ENTRA, AuthMode.OIDC)
 
 
 def validate_auth_mode_for_environment() -> None:
@@ -69,8 +88,9 @@ def validate_auth_mode_for_environment() -> None:
     Validate that the auth mode is allowed for the current environment.
 
     PRODUCTION GUARDRAIL:
+    - RBAC is allowed in all environments (default)
+    - Entra/OIDC is allowed in all environments
     - Self-Hosted Auth is BLOCKED in production unless explicitly allowed.
-    - This prevents accidental deployment of self-hosted auth in prod.
 
     Raises:
         SystemExit: If self-hosted auth is used in production without explicit allow.
@@ -84,7 +104,7 @@ def validate_auth_mode_for_environment() -> None:
         if not allow_self_hosted:
             logger.critical(
                 "SECURITY VIOLATION: Self-Hosted Auth Mode is not allowed in production! "
-                "Set AUTH_MODE=OIDC or set ALLOW_SELF_HOSTED_IN_PROD=true if you really need it."
+                "Set AUTH_MODE=rbac (recommended) or ALLOW_SELF_HOSTED_IN_PROD=true."
             )
             print(
                 "\n"
@@ -96,8 +116,9 @@ def validate_auth_mode_for_environment() -> None:
                 "  - Development/testing without IdP\n"
                 "  - Air-gapped environments\n"
                 "\n"
-                "In production, use External IdP (Keycloak/Auth0):\n"
-                "  AUTH_MODE=OIDC\n"
+                "In production, use:\n"
+                "  AUTH_MODE=rbac  (Internal RBAC - recommended)\n"
+                "  AUTH_MODE=entra (Microsoft Entra ID SSO)\n"
                 "\n"
                 "If you REALLY need Self-Hosted Auth in production:\n"
                 "  ALLOW_SELF_HOSTED_IN_PROD=true\n"
@@ -108,8 +129,10 @@ def validate_auth_mode_for_environment() -> None:
             sys.exit(1)
 
     # Log the auth mode being used
-    if mode == AuthMode.OIDC:
-        logger.info(f"Auth mode: OIDC (External IdP)")
+    if mode == AuthMode.RBAC:
+        logger.info("Auth mode: RBAC (Internal email/password)")
+    elif mode in (AuthMode.ENTRA, AuthMode.OIDC):
+        logger.info("Auth mode: Entra/OIDC (External IdP)")
     else:
         if environment == "production":
             logger.warning(
@@ -117,7 +140,7 @@ def validate_auth_mode_for_environment() -> None:
                 "Ensure this is intentional."
             )
         else:
-            logger.info(f"Auth mode: SELF_HOSTED (development/testing)")
+            logger.info("Auth mode: SELF_HOSTED (development/testing)")
 
 
 def get_auth_config() -> AuthConfig:
@@ -129,14 +152,17 @@ def get_auth_config() -> AuthConfig:
     """
     mode = get_auth_mode()
 
-    if mode == AuthMode.OIDC:
+    if mode == AuthMode.RBAC:
+        # Internal RBAC uses session cookies, no JWT config needed
+        return AuthConfig(mode=mode)
+    elif mode in (AuthMode.ENTRA, AuthMode.OIDC):
         return AuthConfig(
             mode=mode,
             oidc_issuer=os.environ.get("OIDC_ISSUER"),
             oidc_audience=os.environ.get("OIDC_AUDIENCE"),
             oidc_jwks_url=os.environ.get("OIDC_JWKS_URL"),
         )
-    else:
+    else:  # SELF_HOSTED
         return AuthConfig(
             mode=mode,
             jwt_secret_key=os.environ.get("JWT_SECRET_KEY"),
