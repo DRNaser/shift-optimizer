@@ -56,9 +56,10 @@ class PostgresPortalRepository(PortalTokenRepository):
         self.pool = pool
 
     async def _set_tenant_context(self, conn, tenant_id: int) -> None:
-        """Set tenant context for RLS."""
+        """Set dual tenant context for RLS (P0 fix: migration 061)."""
         await conn.execute(
-            f"SET LOCAL app.current_tenant_id = '{tenant_id}'"
+            "SELECT auth.set_dual_tenant_context($1, $2, $3)",
+            tenant_id, None, False
         )
 
     # =========================================================================

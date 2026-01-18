@@ -246,11 +246,14 @@ for ($run = 1; $run -le $Repeat; $run++) {
     Write-Info "Starting postgres + api..."
 
     try {
+        # Suppress errors temporarily as docker compose outputs "Building" to stderr
+        $ErrorActionPreference = "Continue"
         $output = docker compose -f $composeFile up -d --build 2>&1 | Out-String
+        $ErrorActionPreference = "Stop"
         if ($Verbose) { Write-Host $output }
 
         if ($LASTEXITCODE -ne 0) {
-            Write-Fail "docker compose up failed" -phase "start_$run"
+            Write-Fail "docker compose up failed: $output" -phase "start_$run"
             continue
         }
 
@@ -360,10 +363,14 @@ for ($run = 1; $run -le $Repeat; $run++) {
         # Execute migration using file-based approach (handles special chars)
         try {
             $containerPath = "/tmp/$migName"
+            # Suppress errors temporarily as psql outputs NOTICE to stderr
+            $ErrorActionPreference = "Continue"
             docker cp $migration.FullName "${dbContainer}:${containerPath}" 2>&1 | Out-Null
             $result = docker exec $dbContainer psql -U $dbUser -d $dbName -f $containerPath 2>&1 | Out-String
+            $exitCode = $LASTEXITCODE
+            $ErrorActionPreference = "Stop"
 
-            if ($LASTEXITCODE -ne 0) {
+            if ($exitCode -ne 0) {
                 Write-Fail "Migration failed: $migName"
                 if ($Verbose) { Write-Host $result }
                 $migrationsFailed = $true

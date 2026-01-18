@@ -41,10 +41,10 @@ class NotificationRepository:
         self._pool = pool
 
     async def _set_tenant_context(self, conn, tenant_id: int) -> None:
-        """Set RLS tenant context for connection."""
+        """Set dual RLS tenant context for connection (P0 fix: migration 061)."""
         await conn.execute(
-            "SELECT set_config('app.current_tenant_id', $1, TRUE)",
-            str(tenant_id)
+            "SELECT auth.set_dual_tenant_context($1, $2, $3)",
+            tenant_id, None, False
         )
 
     # =========================================================================
