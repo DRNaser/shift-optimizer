@@ -176,8 +176,18 @@ def check_fatigue_violation(duties: List[Duty]) -> List[Dict]:
 
     # Check each driver
     for driver_id, driver_duties in by_driver.items():
-        # Sort by day (considering cross-midnight)
-        driver_duties_sorted = sorted(driver_duties, key=lambda d: d.day)
+        # Sort by day with week-wrap awareness:
+        # If both So(7) and Mo(1) exist, So must come BEFORE Mo to detect So→Mo wrap
+        days_present = {d.day for d in driver_duties}
+        has_week_wrap = 7 in days_present and 1 in days_present
+
+        def wrap_aware_sort_key(d):
+            # If week-wrap scenario, treat So(7) as day 0 so it sorts before Mo(1)
+            if has_week_wrap and d.day == 7:
+                return 0
+            return d.day
+
+        driver_duties_sorted = sorted(driver_duties, key=wrap_aware_sort_key)
 
         # Find 3er blocks
         triple_days = [d for d in driver_duties_sorted if d.block_type == BlockType.TRIPLE]

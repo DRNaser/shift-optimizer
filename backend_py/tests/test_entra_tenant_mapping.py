@@ -9,12 +9,24 @@ Tests for:
 4. Roles mapping from Entra App Roles
 
 Run with: pytest backend_py/tests/test_entra_tenant_mapping.py -v
+
+NOTE: These tests are SKIPPED unless AUTH_MODE=entra.
+Wien Pilot uses RBAC mode (internal auth), Entra is out of scope.
 """
 
+import os
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 from dataclasses import dataclass
 from typing import List, Optional
+
+
+# Skip entire module unless AUTH_MODE=entra
+_auth_mode = os.environ.get("AUTH_MODE", "rbac").lower()
+pytestmark = pytest.mark.skipif(
+    _auth_mode not in ("entra", "oidc"),
+    reason=f"Entra tests skipped: AUTH_MODE={_auth_mode} (set AUTH_MODE=entra to run)"
+)
 
 
 # =============================================================================
