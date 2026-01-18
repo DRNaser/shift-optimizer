@@ -26,6 +26,13 @@ concurrency:
 env:
   PYTHONIOENCODING: utf-8
 
+# Permissions needed for PR comments, SARIF upload, and artifact upload
+permissions:
+  contents: read
+  pull-requests: write
+  security-events: write
+  actions: read
+
 jobs:
   # ============================================
   # GUARDIAN BOOTSTRAP (<30 sec)
@@ -50,6 +57,22 @@ jobs:
 
       - name: Install dependencies
         run: pip install jsonschema requests
+
+      - name: Bootstrap .claude/state files
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .claude/state
+          if [ -d ".claude/state/examples" ]; then
+            for f in active-incidents.json drift-baselines.json last-known-good.json tenant-status.json; do
+              if [ ! -f ".claude/state/$f" ] && [ -f ".claude/state/examples/$f" ]; then
+                cp ".claude/state/examples/$f" ".claude/state/$f"
+                echo "Copied: $f"
+              fi
+            done
+          fi
+          echo "State dir contents:"
+          ls -la .claude/state || true
 
       - name: Run Guardian Bootstrap
         id: bootstrap

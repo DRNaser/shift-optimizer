@@ -672,17 +672,20 @@ async def require_session(
                 "SELECT set_config('app.current_user_id', %s, TRUE)",
                 (str(user.user_id),)
             )
-            # Set platform admin flag for SQL functions
+            # Set dual tenant context (P0 fix: migration 061)
+            # Uses auth.set_dual_tenant_context() which sets:
+            #   - app.current_tenant_id_int (INTEGER)
+            #   - app.current_tenant_id_uuid (UUID, auto-mapped if available)
+            #   - app.current_tenant_id (legacy, for backward compat)
+            #   - app.is_platform_admin
             cur.execute(
-                "SELECT set_config('app.is_platform_admin', %s, TRUE)",
-                ('true' if user.is_platform_admin else 'false',)
-            )
-            # Set tenant context (NULL for platform admin binding)
-            if user.tenant_id is not None:
-                cur.execute(
-                    "SELECT set_config('app.current_tenant_id', %s, TRUE)",
-                    (str(user.tenant_id),)
+                "SELECT auth.set_dual_tenant_context(%s, %s, %s)",
+                (
+                    user.tenant_id,  # INTEGER or NULL
+                    None,  # UUID - auto-mapped from INT
+                    user.is_platform_admin
                 )
+            )
             if user.site_id:
                 cur.execute(
                     "SELECT set_config('app.current_site_id', %s, TRUE)",

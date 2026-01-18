@@ -98,12 +98,15 @@ class DatabaseManager:
             raise RuntimeError("Database pool not initialized")
 
         async with self._pool.connection() as conn:
-            # Set RLS context IMMEDIATELY on this connection
-            # P0-2 FIX: Uses true (transaction-scoped) not false (session-scoped)
+            # Set dual tenant context IMMEDIATELY on this connection
+            # P0 FIX (migration 061): Uses auth.set_dual_tenant_context() which sets:
+            #   - app.current_tenant_id_int (INTEGER)
+            #   - app.current_tenant_id_uuid (UUID, auto-mapped if available)
+            #   - app.current_tenant_id (legacy, for backward compat)
             async with conn.cursor() as cur:
                 await cur.execute(
-                    "SELECT set_config('app.current_tenant_id', %s, true)",
-                    (str(tenant_id),)
+                    "SELECT auth.set_dual_tenant_context(%s, %s, %s)",
+                    (tenant_id, None, False)
                 )
             logger.debug(
                 "rls_context_set",

@@ -16,6 +16,12 @@ on:
   pull_request:
     branches: [main]
 
+# Permissions needed for PR comments and SARIF upload
+permissions:
+  contents: read
+  pull-requests: write
+  security-events: write
+
 jobs:
   gitleaks:
     name: Secret Detection
@@ -31,5 +37,5 @@ jobs:
         uses: gitleaks/gitleaks-action@v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Scan mode: detect (fail on secrets) or protect (warn only)
           GITLEAKS_ENABLE_COMMENTS: true
+          GITLEAKS_CONFIG: .gitleaks.toml
